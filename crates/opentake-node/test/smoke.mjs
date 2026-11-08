@@ -2,6 +2,8 @@
 // Usage: node crates/opentake-node/test/smoke.mjs [path/to/opentake_engine.node]
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -25,6 +27,17 @@ assert.equal(undone.timeline.fps, 30);
 assert.equal(engine.canRedo(), true);
 const redone = JSON.parse(engine.redo());
 assert.equal(redone.timeline.fps, 24);
+
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'opentake-routeb-smoke-'));
+const projectPath = path.join(tempRoot, 'demo.opentake');
+const saved = JSON.parse(engine.newProjectAt(projectPath));
+assert.equal(saved.projectPath, projectPath);
+assert.ok(fs.existsSync(path.join(projectPath, 'project.json')));
+const reopened = new Engine();
+const opened = JSON.parse(reopened.openProject(projectPath));
+assert.equal(opened.projectPath, projectPath);
+assert.equal(opened.timeline.fps, 30);
+fs.rmSync(tempRoot, { recursive: true, force: true });
 
 const media = JSON.parse(engine.mediaList());
 assert.ok(Array.isArray(media.items));
