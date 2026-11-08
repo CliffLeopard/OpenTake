@@ -441,6 +441,84 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
     Ok(serde_json::json!({ "width": rendered.width, "height": rendered.height, "dataUrl": data_url }))
 }
 
+fn collect_audio_clips(
+    timeline: &opentake_domain::Timeline,
+    frame_offset: i32,
+    depth: u32,
+    media_entries: &[MediaManifestEntry],
+    project_dir: Option<&std::path::Path>,
+    out: &mut Vec<ClipAudio>,
+) {
+    if depth > 8 {
+        return;
+    }
+    for track in &timeline.tracks {
+        if track.muted {
+            continue;
+        }
+        for clip in &track.clips {
+            if let Some(sequence_id) = clip.nested_sequence_id.as_deref() {
+                if let Some(sequence) = timeline.nested_sequences.iter().find(|sequence| sequence.id == sequence_id) {
+                    collect_audio_clips(
+                        &sequence.timeline,
+                        frame_offset + clip.start_frame.max(0),
+                        depth + 1,
+                        media_entries,
+                        project_dir,
+                        out,
+                    );
+                }
+                continue;
+            }
+            if clip.media_type != ClipType::Audio {
+                continue;
+            }
+            let Some(entry) = media_entries.iter().find(|entry| entry.id == clip.media_ref) else {
+                continue;
+            };
+            let Some(path) = resolve_media_path(entry, project_dir) else {
+                continue;
+            };
+            let fps = timeline.fps.max(1) as f64;
+            let start_secs = clip.trim_start_frame.max(0) as f64 / fps;
+            let end_secs = start_secs + clip.duration_frames.max(1) as f64 / fps;
+            let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
+            let Ok(pcm) = opentake_media::extract_pcm(&path, &spec, Some((start_secs, end_secs))) else {
+                continue;
+            };
+            if pcm.samples_f32.is_empty() {
+                continue;
+            }
+            let start_frame = frame_offset + clip.start_frame.max(0);
+            let start_sample = ((start_frame as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+            let sample_count = pcm.samples_f32.len();
+            let fade_in_samples = ((clip.fade_in_frames.max(0) as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+            let fade_out_samples = ((clip.fade_out_frames.max(0) as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+            let gains = if fade_in_samples == 0 && fade_out_samples == 0 && (clip.volume - 1.0).abs() < f64::EPSILON {
+                Vec::new()
+            } else {
+                (0..sample_count)
+                    .map(|index| {
+                        let fade_in = if fade_in_samples == 0 {
+                            1.0
+                        } else {
+                            (index as f64 / fade_in_samples as f64).clamp(0.0, 1.0)
+                        };
+                        let remaining = sample_count.saturating_sub(1).saturating_sub(index);
+                        let fade_out = if fade_out_samples == 0 {
+                            1.0
+                        } else {
+                            (remaining as f64 / fade_out_samples as f64).clamp(0.0, 1.0)
+                        };
+                        (clip.volume * fade_in * fade_out) as f32
+                    })
+                    .collect()
+            };
+            out.push(ClipAudio { start_sample, samples: pcm.samples_f32, gains });
+        }
+    }
+}
+
 struct ExportSession {
     encoder: opentake_media::VideoEncoder,
     transparent: bool,
@@ -532,56 +610,7 @@ impl Engine {
         let media_entries = self.core.media().entries;
         let project_dir = self.core.project_dir();
         let mut clips: Vec<ClipAudio> = Vec::new();
-        for track in &timeline.tracks {
-            if track.muted {
-                continue;
-            }
-            for clip in &track.clips {
-                if clip.media_type != ClipType::Audio {
-                    continue;
-                }
-                let Some(entry) = media_entries.iter().find(|entry| entry.id == clip.media_ref) else {
-                    continue;
-                };
-                let Some(path) = resolve_media_path(entry, project_dir.as_deref()) else {
-                    continue;
-                };
-                let start_secs = clip.trim_start_frame.max(0) as f64 / f64::from(timeline.fps.max(1));
-                let end_secs = start_secs + clip.duration_frames.max(1) as f64 / f64::from(timeline.fps.max(1));
-                let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
-                let Ok(pcm) = opentake_media::extract_pcm(&path, &spec, Some((start_secs, end_secs))) else {
-                    continue;
-                };
-                if pcm.samples_f32.is_empty() {
-                    continue;
-                }
-                let start_sample = ((clip.start_frame.max(0) as f64 / f64::from(timeline.fps.max(1))) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
-                let sample_count = pcm.samples_f32.len();
-                let fade_in_samples = ((clip.fade_in_frames.max(0) as f64 / f64::from(timeline.fps.max(1))) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
-                let fade_out_samples = ((clip.fade_out_frames.max(0) as f64 / f64::from(timeline.fps.max(1))) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
-                let gains = if fade_in_samples == 0 && fade_out_samples == 0 && (clip.volume - 1.0).abs() < f64::EPSILON {
-                    Vec::new()
-                } else {
-                    (0..sample_count)
-                        .map(|index| {
-                            let fade_in = if fade_in_samples == 0 {
-                                1.0
-                            } else {
-                                (index as f64 / fade_in_samples as f64).clamp(0.0, 1.0)
-                            };
-                            let remaining = sample_count.saturating_sub(1).saturating_sub(index);
-                            let fade_out = if fade_out_samples == 0 {
-                                1.0
-                            } else {
-                                (remaining as f64 / fade_out_samples as f64).clamp(0.0, 1.0)
-                            };
-                            (clip.volume * fade_in * fade_out) as f32
-                        })
-                        .collect()
-                };
-                clips.push(ClipAudio { start_sample, samples: pcm.samples_f32, gains });
-            }
-        }
+        collect_audio_clips(timeline, 0, 0, &media_entries, project_dir.as_deref(), &mut clips);
         let Ok(mixed) = mix_clips(&clips) else {
             return None;
         };
