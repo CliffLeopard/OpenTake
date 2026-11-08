@@ -55,7 +55,9 @@ not runtime-tested on this machine.
   and clears Route B's derived caches. An agent tool can generate an image via
   an OpenAI-compatible provider and import it into the project. Search is
   text-only over names/cached transcripts; visual SigLIP search is not bridged.
-  The UI's "capture frame to media" button imports a composited still. Agent tools
+  The UI's "capture frame to media" button imports a composited still. Motion
+  Studio documents (HTML/CSS) can be listed/created/edited and previewed through
+  headless Chrome; publishing motion clips is not bridged yet. Agent tools
   can generate images, speech and short videos through configured providers. Caption cues export
   to SRT/VTT; XMEML/EDL/OTIO/FCPXML interchange export is bridged. Provider
   ASR (OpenAI-compatible verbose JSON) can transcribe and generate captions;

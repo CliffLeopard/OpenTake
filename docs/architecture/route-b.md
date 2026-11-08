@@ -64,6 +64,10 @@ by the DSH Host through N-API.
   a simple shape Lottie animation.
 - Capture-current-frame is bridged: composite/decode one frame, write a PNG,
   and import it as an image asset (verified 320x180 frame and 1920x1080 black).
+- Motion Studio document CRUD is bridged to project-local `motion-documents/`
+  (list/create/read/hash/patch) and `motion_preview` renders a frame through
+  local Chrome headless with `--virtual-time-budget`. Verified create + frame-15
+  PNG preview at 320x180. Motion clip publishing (`motion_add`) is not bridged.
 - Search is text-only: `search_query` matches media names and cached
   transcripts (Spoken/Files); visual embeddings/Moments are explicitly
   unavailable. `search_model_status` reports `route-b-text-search`, not SigLIP.

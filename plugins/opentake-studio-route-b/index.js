@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
@@ -442,6 +442,121 @@ export function apply(ctx) {
     };
   }
 
+  const MOTION_HTML = `<main class="motion-stage">\n  <p class="motion-kicker">Motion Studio</p>\n  <h1>让创意动起来</h1>\n  <p class="motion-subtitle">Real HTML · Real CSS · Real motion</p>\n</main>\n`;
+  const MOTION_CSS = `html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #111214; color: #f7f7f5; font-family: Inter, "PingFang SC", sans-serif; }\n.motion-stage { display: grid; align-content: center; width: 100%; height: 100%; padding: 10%; background: radial-gradient(circle at 72% 24%, #5f5cff 0, transparent 34%); }\n.motion-kicker { color: #a9a7ff; letter-spacing: .18em; text-transform: uppercase; }\nh1 { margin: .12em 0; font-size: clamp(48px, 8vw, 144px); animation: title-in 1.2s both; }\n.motion-subtitle { font-size: clamp(18px, 2.2vw, 42px); opacity: .72; animation: subtitle-in 1.2s .18s both; }\n@keyframes title-in { from { opacity: 0; transform: translateY(48px) scale(.96); } to { opacity: 1; transform: none; } }\n@keyframes subtitle-in { from { opacity: 0; transform: translateY(24px); } to { opacity: .72; transform: none; } }\n`;
+
+  function motionRoot() {
+    const snapshot = JSON.parse(state.engine.getTimeline());
+    if (typeof snapshot.projectPath !== 'string' || snapshot.projectPath.length === 0) {
+      throw new Error('save the project before using Motion Studio');
+    }
+    return path.join(snapshot.projectPath, 'motion-documents');
+  }
+
+  function motionHash(html, css) {
+    return createHash('sha256').update(html).update('\u0000').update(css).digest('hex');
+  }
+
+  function readMotionDocument(root, id) {
+    const directory = path.join(root, id);
+    const html = readFileSync(path.join(directory, 'index.html'), 'utf8');
+    const css = readFileSync(path.join(directory, 'styles.css'), 'utf8');
+    const manifest = JSON.parse(readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    return { summary: manifest.summary, html, css, parameters: manifest.parameters ?? {} };
+  }
+
+  function writeMotionDocument(root, document) {
+    const directory = path.join(root, document.summary.id);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, 'index.html'), document.html, 'utf8');
+    writeFileSync(path.join(directory, 'styles.css'), document.css, 'utf8');
+    writeFileSync(
+      path.join(directory, 'manifest.json'),
+      JSON.stringify({ schemaVersion: 1, summary: document.summary, parameters: document.parameters ?? {} }, null, 2),
+      'utf8',
+    );
+    const catalogFile = path.join(root, 'catalog.json');
+    mkdirSync(root, { recursive: true });
+    let documents = [];
+    if (existsSync(catalogFile)) {
+      try { documents = JSON.parse(readFileSync(catalogFile, 'utf8')).documents ?? []; } catch { documents = []; }
+    }
+    documents = documents.filter((entry) => entry?.summary?.id !== document.summary.id);
+    documents.push({ summary: document.summary });
+    documents.sort((a, b) => String(a.summary.id).localeCompare(String(b.summary.id)));
+    writeFileSync(catalogFile, JSON.stringify({ schemaVersion: 1, documents }, null, 2), 'utf8');
+  }
+
+  function motionDocuments() {
+    const root = motionRoot();
+    const catalogFile = path.join(root, 'catalog.json');
+    if (!existsSync(catalogFile)) return [];
+    try {
+      return (JSON.parse(readFileSync(catalogFile, 'utf8')).documents ?? []).map((entry) => entry.summary);
+    } catch {
+      return [];
+    }
+  }
+
+  function motionDirectory(id) {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new Error('invalid motion document id');
+    return motionRoot();
+  }
+
+  function applyMotionEdits(source, edits) {
+    const bytes = Buffer.from(source, 'utf8');
+    const ordered = Array.isArray(edits) ? [...edits].sort((a, b) => b.start - a.start) : [];
+    let content = bytes;
+    for (const edit of ordered) {
+      if (!Number.isInteger(edit.start) || !Number.isInteger(edit.end) || edit.start < 0 || edit.end < edit.start || edit.end > content.length) {
+        throw new Error('invalid motion edit range');
+      }
+      const replacement = Buffer.from(String(edit.replacement ?? ''), 'utf8');
+      content = Buffer.concat([content.subarray(0, edit.start), replacement, content.subarray(edit.end)]);
+    }
+    return content.toString('utf8');
+  }
+
+  function chromeExecutable() {
+    const candidates = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    ];
+    return candidates.find((candidate) => existsSync(candidate)) ?? null;
+  }
+
+  async function motionPreview(request) {
+    const root = motionRoot();
+    const document = readMotionDocument(root, String(request.documentId));
+    if (request.revisionHash !== document.summary.revisionHash) throw new Error('motion document changed; reload before previewing');
+    const width = Math.max(2, Math.round(Number(request.width) || 1280));
+    const height = Math.max(2, Math.round(Number(request.height) || 720));
+    const fps = Math.max(1, Number(request.fps) || 30);
+    const frame = Math.max(0, Math.round(Number(request.frame) || 0));
+    const chrome = chromeExecutable();
+    if (chrome === null) throw new Error('Chromium/Chrome is required for Motion preview');
+    const directory = path.join(CACHE_ROOT, 'motion-preview');
+    await mkdir(directory, { recursive: true });
+    const htmlFile = path.join(directory, `${request.documentId}-${frame}.html`);
+    const pngFile = path.join(directory, `${request.documentId}-${frame}.png`);
+    const page = `<!doctype html><html><head><meta charset="utf-8"><style>${document.css}</style><style>html,body{width:${width}px;height:${height}px;margin:0;overflow:hidden}</style></head><body>${document.html}</body></html>`;
+    await writeFile(htmlFile, page, 'utf8');
+    const budget = Math.max(50, Math.round((frame / fps) * 1000));
+    await execFileAsync(chrome, [
+      '--headless=new', '--disable-gpu', '--no-sandbox', '--hide-scrollbars',
+      '--force-device-scale-factor=1', '--default-background-color=00000000',
+      `--window-size=${width},${height}`, `--virtual-time-budget=${budget}`,
+      `--screenshot=${pngFile}`, `file://${htmlFile}`,
+    ], { timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+    const bytes = await readFile(pngFile);
+    return {
+      revisionHash: document.summary.revisionHash,
+      frame,
+      pngDataUrl: `data:image/png;base64,${bytes.toString('base64')}`,
+      diagnostics: [],
+    };
+  }
+
   function invokeCore(cmd, args) {
     if (state.engine === null) throw new Error(state.loadError ?? 'OpenTake Rust engine is unavailable');
     switch (cmd) {
@@ -565,6 +680,65 @@ export function apply(ctx) {
         if (!existsSync(file)) return null;
         return JSON.parse(readFileSync(file, 'utf8'));
       }
+      case 'motion_capability':
+        return chromeExecutable() !== null;
+      case 'motion_document_list':
+        return motionDocuments();
+      case 'motion_document_create': {
+        const root = motionRoot();
+        const id = randomUUID();
+        const summary = {
+          id,
+          title: typeof args.request?.title === 'string' && args.request.title.length > 0 ? args.request.title : 'Untitled Motion',
+          revisionHash: motionHash(MOTION_HTML, MOTION_CSS),
+          updatedAt: Date.now(),
+        };
+        const document = { summary, html: MOTION_HTML, css: MOTION_CSS, parameters: {} };
+        writeMotionDocument(root, document);
+        return document;
+      }
+      case 'motion_document_read': {
+        const root = motionRoot();
+        const id = String(args.documentId ?? '');
+        motionDirectory(id);
+        return readMotionDocument(root, id);
+      }
+      case 'motion_document_hash': {
+        const request = args.request ?? {};
+        const root = motionRoot();
+        const document = readMotionDocument(root, String(request.documentId ?? ''));
+        if (document.summary.revisionHash !== request.baselineHash) throw new Error('motion document revision conflict');
+        const result = applyMotionEdits(request.file === 'styles.css' ? document.css : document.html, request.edits);
+        return motionHash(
+          request.file === 'styles.css' ? document.html : result,
+          request.file === 'styles.css' ? result : document.css,
+        );
+      }
+      case 'motion_document_patch': {
+        const request = args.request ?? {};
+        const root = motionRoot();
+        const document = readMotionDocument(root, String(request.documentId ?? ''));
+        if (document.summary.revisionHash !== request.baselineHash) throw new Error('motion document revision conflict');
+        const result = applyMotionEdits(request.file === 'styles.css' ? document.css : document.html, request.edits);
+        const next = {
+          ...document,
+          html: request.file === 'styles.css' ? document.html : result,
+          css: request.file === 'styles.css' ? result : document.css,
+          summary: {
+            ...document.summary,
+            revisionHash: motionHash(
+              request.file === 'styles.css' ? document.html : result,
+              request.file === 'styles.css' ? result : document.css,
+            ),
+            updatedAt: Date.now(),
+          },
+        };
+        if (next.summary.revisionHash !== request.expectedResultHash) throw new Error('motion document result hash mismatch');
+        writeMotionDocument(root, next);
+        return next;
+      }
+      case 'motion_preview_cancel':
+        return false;
       case 'search_model_status':
         return { installed: true, model: 'route-b-text-search', bytes: 0 };
       case 'download_search_model':
@@ -917,6 +1091,14 @@ export function apply(ctx) {
         try {
           const cmd = typeof body.cmd === 'string' ? body.cmd : '';
           const args = body.args !== null && typeof body.args === 'object' ? body.args : {};
+          if (cmd === 'motion_preview') {
+            try {
+              sendJson(res, 200, await motionPreview(args.request ?? {}));
+            } catch (error) {
+              sendJson(res, 400, { error: { code: 'motion-preview-failed', message: error instanceof Error ? error.message : String(error) } });
+            }
+            return;
+          }
           if (cmd === 'transcribe_media') {
             await handleTranscribeInvoke(args, res);
             return;
