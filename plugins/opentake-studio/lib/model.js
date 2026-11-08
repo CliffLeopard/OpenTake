@@ -24,8 +24,11 @@ const DEFAULT_PROJECT_NAME = 'Untitled';
 /** Timeline frames used when an `add-clip` for an image omits `durationFrames`. */
 const IMAGE_DEFAULT_DURATION_SECONDS = 5;
 
-const CLIP_TYPES = ['video', 'image', 'audio', 'text', 'caption', 'lottie'];
+const CLIP_TYPES = ['video', 'image', 'audio', 'text', 'caption', 'lottie', 'motion'];
 const MEDIA_KINDS = ['video', 'audio', 'image', 'lottie'];
+
+const MOTION_TEMPLATES = ['title', 'lowerThird', 'callout'];
+const MOTION_ALIGNS = ['left', 'center', 'right'];
 const TRACK_TYPES = ['video', 'audio'];
 const FONT_WEIGHTS = ['400', '600', '700'];
 const TEXT_ALIGNS = ['left', 'center', 'right'];
@@ -236,7 +239,8 @@ function clipTypeAllowedOnTrack(trackType, clipType) {
       clipType === 'image' ||
       clipType === 'text' ||
       clipType === 'caption' ||
-      clipType === 'lottie'
+      clipType === 'lottie' ||
+      clipType === 'motion'
     );
   }
   return clipType === 'audio';
@@ -719,6 +723,42 @@ function pruneTransitions(project) {
   sortTransitions(project);
 }
 
+function normalizeMotion(value, code) {
+  assertObject(value, code, 'motion');
+  if (!MOTION_TEMPLATES.includes(value.template)) {
+    fail(code, `motion.template must be one of ${MOTION_TEMPLATES.join('/')}`);
+  }
+  if (typeof value.text !== 'string') {
+    fail(code, 'motion.text must be a string');
+  }
+  const motion = {
+    template: value.template,
+    text: value.text,
+    subtitle: value.subtitle === undefined ? '' : requireString(value.subtitle, code, 'motion.subtitle'),
+    color:
+      value.color === undefined ? '#ffffff' : requireNonEmptyString(value.color, code, 'motion.color'),
+    accentColor:
+      value.accentColor === undefined
+        ? '#4f8cff'
+        : requireNonEmptyString(value.accentColor, code, 'motion.accentColor'),
+    fontSize:
+      value.fontSize === undefined ? 64 : requireFiniteNumber(value.fontSize, code, 'motion.fontSize'),
+    align: value.align === undefined ? 'center' : value.align,
+    background: optionalBoolean(value.background, false, code, 'motion.background'),
+  };
+  if (!HEX_COLOR_RE.test(motion.color)) fail(code, 'motion.color must be a #rrggbb color');
+  if (!HEX_COLOR_RE.test(motion.accentColor)) {
+    fail(code, 'motion.accentColor must be a #rrggbb color');
+  }
+  if (motion.fontSize < 18 || motion.fontSize > 200) {
+    fail(code, 'motion.fontSize must be in 18..200');
+  }
+  if (!MOTION_ALIGNS.includes(motion.align)) {
+    fail(code, `motion.align must be one of ${MOTION_ALIGNS.join('/')}`);
+  }
+  return motion;
+}
+
 function normalizeMedia(value, projectFps) {
   const code = 'invalid-media';
   assertObject(value, code, 'media');
@@ -804,8 +844,9 @@ function sourceFramesConsumed(durationFrames, speed) {
   return Math.round(durationFrames * speed);
 }
 
+/** Overlay clips that have no source window (mediaId null, trimStart 0). */
 function isTextLikeClip(type) {
-  return type === 'text' || type === 'caption';
+  return type === 'text' || type === 'caption' || type === 'motion';
 }
 
 function normalizeClip(value) {
@@ -841,7 +882,11 @@ function normalizeClip(value) {
     fail(code, `clip.speed must be a number in [${SPEED_MIN},${SPEED_MAX}]`);
   }
   if (
-    (type === 'image' || type === 'text' || type === 'caption' || type === 'lottie') &&
+    (type === 'image' ||
+      type === 'text' ||
+      type === 'caption' ||
+      type === 'lottie' ||
+      type === 'motion') &&
     speed !== 1
   ) {
     fail(code, `${type} clips must keep speed 1`);
@@ -887,6 +932,16 @@ function normalizeClip(value) {
 
   const crop = normalizeCrop(value.crop, code);
 
+  let motion = null;
+  if (type === 'motion') {
+    if (value.motion === undefined || value.motion === null) {
+      fail(code, 'motion clip requires a motion object');
+    }
+    motion = normalizeMotion(value.motion, code);
+  } else if (value.motion !== undefined && value.motion !== null) {
+    fail(code, 'non-motion clip must have motion: null');
+  }
+
   let caption = null;
   if (type === 'caption') {
     if (value.caption === undefined || value.caption === null) {
@@ -912,6 +967,7 @@ function normalizeClip(value) {
     mask,
     blendMode,
     text,
+    motion,
     fadeInFrames,
     fadeOutFrames,
     keyframes,
@@ -995,6 +1051,9 @@ function validateProject(project) {
         }
         if (clip.type === 'caption' && (clip.caption === null || clip.caption === undefined)) {
           fail('invalid-clip', `caption clip ${clip.id} requires a caption object`);
+        }
+        if (clip.type === 'motion' && (clip.motion === null || clip.motion === undefined)) {
+          fail('invalid-clip', `motion clip ${clip.id} requires a motion object`);
         }
       } else {
         const media = mediaById.get(clip.mediaId);
@@ -1350,6 +1409,7 @@ function createClip({
   mask = null,
   blendMode = 'normal',
   text = null,
+  motion = null,
   fadeInFrames = 0,
   fadeOutFrames = 0,
   keyframes = {},
@@ -1371,6 +1431,7 @@ function createClip({
     mask: mask === null ? null : { ...mask },
     blendMode,
     text: text === null ? null : { ...text },
+    motion: motion === null ? null : deepClone(motion),
     fadeInFrames,
     fadeOutFrames,
     keyframes: deepClone(keyframes),
@@ -2136,6 +2197,60 @@ function setBlendModeOperation(project, operation) {
   entry.clip.blendMode = normalizeBlendMode(operation.blendMode, 'invalid-input');
 }
 
+/**
+ * Add a browser-rendered Motion template clip (DESIGN §17). Motion clips are
+ * overlays: video-track only, mediaId null, trimStart 0, speed 1. The caller
+ * supplies the clip id; when `trackId` is omitted a free video track is reused
+ * or a deterministic `motion-track-<clipId>` track is created.
+ */
+function addMotionOperation(project, operation) {
+  const clipId = requireId(operation.clipId, 'invalid-input', 'clipId');
+  if (findClip(project, clipId)) fail('duplicate-id', `clip id already exists: ${clipId}`);
+
+  const startFrame = requireNonNegativeInteger(operation.startFrame, 'invalid-input', 'startFrame');
+  const durationFrames = requirePositiveInteger(
+    operation.durationFrames,
+    'invalid-input',
+    'durationFrames',
+  );
+  const motion = normalizeMotion(operation.motion, 'invalid-input');
+
+  const track = pickVideoTrackForOverlay(
+    project,
+    operation,
+    startFrame,
+    durationFrames,
+    clipId,
+    'motion',
+  );
+  const clip = createClip({
+    id: clipId,
+    type: 'motion',
+    mediaId: null,
+    startFrame,
+    durationFrames,
+    trimStartFrame: 0,
+    motion,
+  });
+  insertClipWithOverwrite(project, track, clip, operation.splitRightClipId);
+}
+
+/** Patch a Motion clip's template data, preserving unspecified fields. */
+function updateMotionOperation(project, operation) {
+  const clipId = requireId(operation.clipId, 'invalid-input', 'clipId');
+  const entry = findClip(project, clipId);
+  if (!entry) fail('clip-not-found', `clip not found: ${clipId}`);
+  if (entry.clip.type !== 'motion' || entry.clip.motion === null) {
+    fail('not-motion-clip', `clip ${clipId} is not a motion clip`);
+  }
+  const patch = operation.motion;
+  if (patch === undefined || patch === null) {
+    fail('invalid-input', 'update-motion requires a motion patch object');
+  }
+  assertObject(patch, 'invalid-input', 'motion');
+  entry.clip.motion = normalizeMotion({ ...entry.clip.motion, ...patch }, 'invalid-input');
+}
+
 function addTextOperation(project, operation) {
   const clipId = requireId(operation.clipId, 'invalid-input', 'clipId');
   if (findClip(project, clipId)) fail('duplicate-id', `clip id already exists: ${clipId}`);
@@ -2264,7 +2379,8 @@ function setSpeedOperation(project, operation) {
     clip.type === 'image' ||
     clip.type === 'text' ||
     clip.type === 'caption' ||
-    clip.type === 'lottie'
+    clip.type === 'lottie' ||
+    clip.type === 'motion'
   ) {
     fail('invalid-input', `${clip.type} clips must keep speed 1`);
   }
@@ -2596,8 +2712,10 @@ const OPERATIONS = Object.freeze({
   'set-crop': setCropOperation,
   'set-mask': setMaskOperation,
   'set-blend-mode': setBlendModeOperation,
+  'add-motion': addMotionOperation,
   'add-text': addTextOperation,
   'update-text': updateTextOperation,
+  'update-motion': updateMotionOperation,
   'reorder-tracks': reorderTracksOperation,
   // Phase 1 (DESIGN §11.2)
   'set-speed': setSpeedOperation,

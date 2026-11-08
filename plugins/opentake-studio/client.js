@@ -1055,6 +1055,11 @@ window.__ModuleLoader__.load({
 		}
 
 		function clipDisplayLabel(project, clip, fallback) {
+			if (clip.type === 'motion') {
+				const motion = motionOf(clip);
+				const text = motion.text.trim();
+				return text.length > 0 ? text.split('\n')[0] : fallback;
+			}
 			if (clip.type === 'text') {
 				const content = clip.text && typeof clip.text.content === 'string' ? clip.text.content : '';
 				const firstLine = content.split('\n')[0].trim();
@@ -1513,6 +1518,31 @@ window.__ModuleLoader__.load({
 			return collectClipsOfType(project, 'lottie');
 		}
 
+		function collectMotionClips(project) {
+			return collectClipsOfType(project, 'motion');
+		}
+
+		function renderMotionFrameDataUrl(clip, project, index) {
+			const canvas = document.createElement('canvas');
+			canvas.width = Math.max(2, Math.round(project.width));
+			canvas.height = Math.max(2, Math.round(project.height));
+			const context = canvas.getContext('2d');
+			if (!context) throw new Error('motion-canvas-unavailable');
+			context.clearRect(0, 0, canvas.width, canvas.height);
+			context.save();
+			context.translate(canvas.width / 2, canvas.height / 2);
+			drawMotionClip(
+				context,
+				clip,
+				index,
+				{ x: 0, y: 0, width: canvas.width, height: canvas.height, rotation: 0 },
+				project,
+			);
+			context.restore();
+			if (typeof canvas.toDataURL !== 'function') throw new Error('motion-canvas-unavailable');
+			return canvas.toDataURL('image/png');
+		}
+
 		function collectClipsOfType(project, type) {
 			const seen = new Set();
 			const rows = [];
@@ -1536,6 +1566,7 @@ window.__ModuleLoader__.load({
 				}
 			}
 			for (const clip of collectLottieClips(project)) count += Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1)));
+			for (const clip of collectMotionClips(project)) count += Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1)));
 			return count;
 		}
 
@@ -1565,7 +1596,7 @@ window.__ModuleLoader__.load({
 				await hostRequest('lottie/clear', { method: 'POST', body: { clipId: clip.id } });
 				for (let index = 0; index < total; index += 1) {
 					if (typeof onProgress === 'function') {
-						onProgress(media.name || clip.id, index + 1, total);
+						onProgress('lottie', media.name || clip.id, index + 1, total);
 					}
 					const dataUrl = renderLottieFrameDataUrl(asset.animation, clip, project, index);
 					await hostRequest('lottie/frame', {
@@ -1574,6 +1605,208 @@ window.__ModuleLoader__.load({
 					});
 				}
 			}
+			for (const clip of collectMotionClips(project)) {
+				const total = Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1)));
+				const motion = motionOf(clip);
+				await hostRequest('lottie/clear', { method: 'POST', body: { clipId: clip.id } });
+				for (let index = 0; index < total; index += 1) {
+					if (typeof onProgress === 'function') onProgress('motion', motion.text || clip.id, index + 1, total);
+					const dataUrl = renderMotionFrameDataUrl(clip, project, index);
+					await hostRequest('lottie/frame', {
+						method: 'POST',
+						body: { clipId: clip.id, index, dataUrl },
+					});
+				}
+			}
+		}
+
+		const MOTION_TEMPLATES = ['title', 'lowerThird', 'callout'];
+		const MOTION_DEFAULT = Object.freeze({
+			template: 'title',
+			text: 'Your title',
+			subtitle: '',
+			color: '#ffffff',
+			accentColor: '#4f8cff',
+			fontSize: 64,
+			align: 'center',
+			background: false,
+		});
+
+		function motionColor(value, fallback) {
+			return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
+		}
+
+		function motionOf(clip) {
+			const motion = clip && clip.motion && typeof clip.motion === 'object' ? clip.motion : {};
+			const template = MOTION_TEMPLATES.includes(motion.template) ? motion.template : MOTION_DEFAULT.template;
+			const align = motion.align === 'left' || motion.align === 'right' || motion.align === 'center' ? motion.align : MOTION_DEFAULT.align;
+			return {
+				template,
+				text: typeof motion.text === 'string' ? motion.text : MOTION_DEFAULT.text,
+				subtitle: typeof motion.subtitle === 'string' ? motion.subtitle : '',
+				color: motionColor(motion.color, MOTION_DEFAULT.color),
+				accentColor: motionColor(motion.accentColor, MOTION_DEFAULT.accentColor),
+				fontSize: clamp(Math.round(finiteNumber(motion.fontSize, MOTION_DEFAULT.fontSize)), 18, 200),
+				align,
+				background: motion.background === true,
+			};
+		}
+
+		function normalizeMotionInput(motion) {
+			return motionOf({ motion });
+		}
+
+		function defaultMotionForm(t) {
+			return Object.assign({}, MOTION_DEFAULT, {
+				text: t ? t('motion.textDefault') : MOTION_DEFAULT.text,
+				subtitle: '',
+				durationSeconds: 3,
+				error: null,
+				busy: false,
+			});
+		}
+
+		function motionRoundRect(context, x, y, width, height, radius) {
+			const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+			context.beginPath();
+			context.moveTo(x + r, y);
+			context.lineTo(x + width - r, y);
+			context.quadraticCurveTo(x + width, y, x + width, y + r);
+			context.lineTo(x + width, y + height - r);
+			context.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+			context.lineTo(x + r, y + height);
+			context.quadraticCurveTo(x, y + height, x, y + height - r);
+			context.lineTo(x, y + r);
+			context.quadraticCurveTo(x, y, x + r, y);
+			context.closePath();
+		}
+
+		function drawMotionClip(context, clip, relativeFrame, box, project) {
+			const motion = motionOf(clip);
+			const duration = Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1)));
+			const local = clamp(Math.round(finiteNumber(relativeFrame, 0)), 0, duration - 1);
+			const inFrames = Math.max(1, Math.min(12, Math.round(duration * 0.2)));
+			const outFrames = Math.max(1, Math.min(12, Math.round(duration * 0.2)));
+			const fadeIn = clamp(local / inFrames, 0, 1);
+			const fadeOut = clamp((duration - 1 - local) / outFrames, 0, 1);
+			const alpha = Math.min(fadeIn, fadeOut);
+			if (alpha <= 0.001 || box.width < 2 || box.height < 2) return;
+			const easeOut = (value) => 1 - Math.pow(1 - clamp(value, 0, 1), 3);
+			const easeIn = (value) => Math.pow(clamp(value, 0, 1), 3);
+			const align = motion.align;
+			const fontSize = Math.max(1, motion.fontSize);
+			const fontFamily = '-apple-system, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif';
+			context.save();
+			context.globalAlpha = clamp01(finiteNumber(context.globalAlpha, 1) * alpha);
+			if (motion.template === 'lowerThird') {
+				const slide = (1 - easeOut(fadeIn)) * -0.22 * box.width;
+				const outSlide = (1 - easeOut(fadeOut)) * 0.08 * box.width;
+				context.translate(slide + outSlide, 0);
+				const maxWidth = Math.max(40, box.width * 0.72);
+				context.font = `600 ${fontSize}px ${fontFamily}`;
+				const lines = wrapTextLines(context, motion.text || '', maxWidth);
+				const subSize = Math.max(10, Math.round(fontSize * 0.44));
+				const lineHeight = fontSize * 1.16;
+				const subHeight = motion.subtitle ? subSize * 1.3 : 0;
+				const blockHeight = lines.length * lineHeight + subHeight + fontSize * 0.4;
+				const left = align === 'right' ? box.width / 2 - maxWidth : align === 'center' ? -maxWidth / 2 : -box.width / 2 + box.width * 0.06;
+				const top = box.height / 2 - blockHeight - box.height * 0.1;
+				if (motion.background) {
+					context.fillStyle = 'rgba(8, 12, 20, 0.58)';
+					motionRoundRect(context, left - fontSize * 0.28, top - fontSize * 0.2, maxWidth + fontSize * 0.56, blockHeight + fontSize * 0.3, fontSize * 0.18);
+					context.fill();
+				}
+				context.fillStyle = motion.accentColor;
+				context.fillRect(left - fontSize * 0.22, top, Math.max(3, fontSize * 0.1), blockHeight);
+				context.textBaseline = 'top';
+				context.textAlign = align;
+				const textX = align === 'left' ? left : align === 'right' ? left + maxWidth : left + maxWidth / 2;
+				context.fillStyle = motion.color;
+				context.font = `600 ${fontSize}px ${fontFamily}`;
+				let y = top;
+				for (const line of lines) {
+					context.fillText(line, textX, y);
+					y += lineHeight;
+				}
+				if (motion.subtitle) {
+					context.font = `400 ${subSize}px ${fontFamily}`;
+					context.fillStyle = motion.color;
+					context.globalAlpha *= 0.75;
+					context.fillText(motion.subtitle, textX, y + fontSize * 0.1);
+				}
+			} else if (motion.template === 'callout') {
+				const pop = 0.85 + 0.15 * (1 - easeIn(1 - fadeIn)) + 0.03 * Math.sin(fadeIn * Math.PI);
+				context.scale(pop, pop);
+				const maxWidth = Math.max(60, box.width * 0.58);
+				const subSize = Math.max(10, Math.round(fontSize * 0.46));
+				context.font = `600 ${fontSize}px ${fontFamily}`;
+				const lines = wrapTextLines(context, motion.text || '', maxWidth - fontSize * 0.8);
+				const lineHeight = fontSize * 1.2;
+				const cardWidth = Math.min(box.width * 0.78, maxWidth + fontSize * 0.8);
+				const cardHeight = lines.length * lineHeight + (motion.subtitle ? subSize * 1.4 : 0) + fontSize * 0.8;
+				const cardX = align === 'left' ? -box.width / 2 + box.width * 0.08 : align === 'right' ? box.width / 2 - cardWidth - box.width * 0.08 : -cardWidth / 2;
+				const cardY = -cardHeight / 2;
+				context.fillStyle = 'rgba(8, 12, 20, 0.72)';
+				motionRoundRect(context, cardX, cardY, cardWidth, cardHeight, fontSize * 0.3);
+				context.fill();
+				context.fillStyle = motion.accentColor;
+				context.fillRect(cardX, cardY, Math.max(3, fontSize * 0.12), cardHeight);
+				context.textAlign = 'left';
+				context.textBaseline = 'top';
+				context.fillStyle = motion.color;
+				context.font = `600 ${fontSize}px ${fontFamily}`;
+				let y = cardY + fontSize * 0.4;
+				for (const line of lines) {
+					context.fillText(line, cardX + fontSize * 0.5, y);
+					y += lineHeight;
+				}
+				if (motion.subtitle) {
+					context.font = `400 ${subSize}px ${fontFamily}`;
+					context.globalAlpha *= 0.78;
+					context.fillText(motion.subtitle, cardX + fontSize * 0.5, y + fontSize * 0.08);
+				}
+			} else {
+				const scale = 0.94 + 0.06 * easeOut(fadeIn);
+				context.scale(scale, scale);
+				const maxWidth = Math.max(80, box.width * 0.84);
+				const subSize = Math.max(10, Math.round(fontSize * 0.46));
+				context.font = `700 ${fontSize}px ${fontFamily}`;
+				const lines = wrapTextLines(context, motion.text || '', maxWidth);
+				const lineHeight = fontSize * 1.12;
+				const subHeight = motion.subtitle ? subSize * 1.4 : 0;
+				const textHeight = lines.length * lineHeight;
+				const blockHeight = textHeight + subHeight;
+				const startY = -blockHeight / 2;
+				const anchorX = align === 'left' ? -box.width / 2 + box.width * 0.08 : align === 'right' ? box.width / 2 - box.width * 0.08 : 0;
+				if (motion.background) {
+					const padding = fontSize * 0.45;
+					const cardW = Math.min(box.width * 0.94, maxWidth + padding * 2);
+					const cardX = align === 'left' ? -box.width / 2 + box.width * 0.04 : align === 'right' ? box.width / 2 - box.width * 0.04 - cardW : -cardW / 2;
+					context.fillStyle = 'rgba(8, 12, 20, 0.58)';
+					motionRoundRect(context, cardX, startY - padding, cardW, blockHeight + padding * 2, fontSize * 0.22);
+					context.fill();
+				}
+				context.textBaseline = 'top';
+				context.textAlign = align;
+				context.fillStyle = motion.color;
+				let y = startY;
+				for (const line of lines) {
+					context.fillText(line, anchorX, y);
+					y += lineHeight;
+				}
+				if (motion.subtitle) {
+					context.font = `400 ${subSize}px ${fontFamily}`;
+					context.globalAlpha *= 0.78;
+					context.fillText(motion.subtitle, anchorX, y + fontSize * 0.12);
+				}
+				context.globalAlpha = clamp01(finiteNumber(context.globalAlpha, 1) / Math.max(0.0001, motion.subtitle ? 0.78 : 1));
+				const underlineWidth = Math.min(box.width * 0.28, maxWidth * 0.35) * easeOut(fadeIn);
+				const underlineY = startY + blockHeight + fontSize * 0.28;
+				const underlineX = align === 'left' ? anchorX : align === 'right' ? anchorX - underlineWidth : -underlineWidth / 2;
+				context.fillStyle = motion.accentColor;
+				context.fillRect(underlineX, underlineY, underlineWidth, Math.max(3, fontSize * 0.08));
+			}
+			context.restore();
 		}
 
 		function drawComposite(context, project, frame, mediaElements) {
@@ -1622,7 +1855,7 @@ window.__ModuleLoader__.load({
 						}
 					}
 					const crop = clipCropOf(clip);
-					if (crop && (clip.type === 'text' || clip.type === 'caption')) {
+					if (crop && (clip.type === 'text' || clip.type === 'caption' || clip.type === 'motion')) {
 						const cropX = crop.x * width - (box.x + box.width / 2);
 						const cropY = crop.y * height - (box.y + box.height / 2);
 						context.beginPath();
@@ -1641,6 +1874,8 @@ window.__ModuleLoader__.load({
 						drawTextClip(context, clip, box);
 					} else if (clip.type === 'caption') {
 						drawCaptionClip(context, clip, relative, box);
+					} else if (clip.type === 'motion') {
+						drawMotionClip(context, clip, relative, box, project);
 					} else if (clip.type === 'video' && elements && elements.video) {
 						const video = elements.video;
 						if (video.readyState >= 2 && video.videoWidth > 0) {
@@ -2112,6 +2347,7 @@ window.__ModuleLoader__.load({
 .ots-mini:disabled{opacity:.4;cursor:default}
 .ots-mini[data-danger="true"]:hover:not(:disabled){color:var(--dsw-alias-state-error-primary)}
 .ots-mini[data-active="true"]{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.ots-color-input{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:4px;cursor:pointer;height:24px;padding:1px;width:38px}
 .ots-check{align-items:center;display:flex;gap:6px;font-size:11.5px;color:var(--dsw-alias-label-secondary);cursor:pointer}
 .ots-check input{accent-color:var(--dsw-alias-brand-primary);margin:0}
 .ots-effect{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;display:flex;flex-direction:column;gap:5px;padding:6px 7px}
@@ -2723,6 +2959,34 @@ window.__ModuleLoader__.load({
 			'preview.exportFrameTitle': 'Export the current composited preview frame as PNG.',
 			'preview.frameExported': 'Exported {file}.',
 			'preview.exportFrameError': 'Could not export the frame: {message}',
+			'timeline.addMotion': 'Add motion',
+			'motion.addTitle': 'Add motion template',
+			'motion.addAction': 'Add motion',
+			'motion.added': 'Motion clip added.',
+			'motion.addFailed': 'Could not add the motion clip.',
+			'motion.template': 'Template',
+			'motion.templateTitle': 'Title',
+			'motion.templateLowerThird': 'Lower third',
+			'motion.templateCallout': 'Callout',
+			'motion.text': 'Text',
+			'motion.textPlaceholder': 'Motion text…',
+			'motion.textDefault': 'Your title',
+			'motion.subtitle': 'Subtitle',
+			'motion.subtitlePlaceholder': 'Optional subtitle…',
+			'motion.color': 'Text color',
+			'motion.accentColor': 'Accent color',
+			'motion.fontSize': 'Font size',
+			'motion.align': 'Align',
+			'motion.alignLeft': 'Left',
+			'motion.alignCenter': 'Center',
+			'motion.alignRight': 'Right',
+			'motion.background': 'Background panel',
+			'motion.duration': 'Duration (frames)',
+			'motion.durationSeconds': 'Duration (seconds)',
+			'motion.hint': 'Canvas-rendered template clip; frames are pre-rendered before export like Lottie.',
+			'inspector.motion': 'Motion template',
+			'inspector.kindMotion': 'Motion clip',
+			'status.preparingMotion': 'Rendering motion frame {index}/{total} for {name}…',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -3312,6 +3576,34 @@ window.__ModuleLoader__.load({
 			'preview.exportFrameTitle': '将当前合成预览帧导出为 PNG。',
 			'preview.frameExported': '已导出 {file}。',
 			'preview.exportFrameError': '无法导出帧：{message}',
+			'timeline.addMotion': '添加动效',
+			'motion.addTitle': '添加动效模板',
+			'motion.addAction': '添加动效',
+			'motion.added': '动效片段已添加。',
+			'motion.addFailed': '无法添加动效片段。',
+			'motion.template': '模板',
+			'motion.templateTitle': '标题',
+			'motion.templateLowerThird': '下三分之一',
+			'motion.templateCallout': '标注卡片',
+			'motion.text': '文本',
+			'motion.textPlaceholder': '动效文本…',
+			'motion.textDefault': '你的标题',
+			'motion.subtitle': '副标题',
+			'motion.subtitlePlaceholder': '可选副标题…',
+			'motion.color': '文字颜色',
+			'motion.accentColor': '强调色',
+			'motion.fontSize': '字号',
+			'motion.align': '对齐',
+			'motion.alignLeft': '左',
+			'motion.alignCenter': '居中',
+			'motion.alignRight': '右',
+			'motion.background': '背景面板',
+			'motion.duration': '时长（帧）',
+			'motion.durationSeconds': '时长（秒）',
+			'motion.hint': 'Canvas 渲染的模板片段；导出前会像 Lottie 一样逐帧预渲染。',
+			'inspector.motion': '动效模板',
+			'inspector.kindMotion': '动效片段',
+			'status.preparingMotion': '正在为 {name} 渲染动效帧 {index}/{total}…',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -6912,6 +7204,142 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		function MotionEditor(props) {
+			const { t, clip, onUpdateMotion, onSetDuration } = props;
+			const signature = JSON.stringify(clip.motion || null);
+			const [draft, setDraft] = React.useState(() => motionOf(clip));
+			const [durationDraft, setDurationDraft] = React.useState(() => Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1))));
+			const syncKey = `${clip.id}:${signature}`;
+			React.useEffect(() => {
+				setDraft(motionOf(clip));
+			}, [syncKey]);
+			React.useEffect(() => {
+				setDurationDraft(Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1))));
+			}, [clip.id, clip.durationFrames]);
+			const commit = () => onUpdateMotion(draft);
+			const update = (patch, commitNow) => {
+				const next = Object.assign({}, draft, patch);
+				setDraft(next);
+				if (commitNow) onUpdateMotion(next);
+			};
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'motion' },
+				h('h3', { className: 'ots-section-title' }, t('inspector.motion')),
+				h(
+					'div',
+					{ className: 'ots-field-grid' },
+					h(SelectField, {
+						label: t('motion.template'),
+						value: draft.template,
+						onChange: (value) => update({ template: value }, true),
+						options: MOTION_TEMPLATES.map((value) => ({
+							value,
+							label: t(`motion.template${value.charAt(0).toUpperCase()}${value.slice(1)}`),
+						})),
+					}),
+					h(SelectField, {
+						label: t('motion.align'),
+						value: draft.align,
+						onChange: (value) => update({ align: value }, true),
+						options: ['left', 'center', 'right'].map((value) => ({
+							value,
+							label: t(`motion.align${value.charAt(0).toUpperCase()}${value.slice(1)}`),
+						})),
+					}),
+				),
+				h(
+					'label',
+					{ className: 'ots-field' },
+					h('span', { className: 'ots-field-label' }, t('motion.text')),
+					h('textarea', {
+						className: 'ots-textarea',
+						value: draft.text,
+						'aria-label': t('motion.text'),
+						onChange: (event) => update({ text: event.target.value }),
+						onBlur: commit,
+					}),
+				),
+				h(
+					'label',
+					{ className: 'ots-field' },
+					h('span', { className: 'ots-field-label' }, t('motion.subtitle')),
+					h('input', {
+						className: 'ots-input',
+						type: 'text',
+						value: draft.subtitle,
+						'aria-label': t('motion.subtitle'),
+						onChange: (event) => update({ subtitle: event.target.value }),
+						onBlur: commit,
+					}),
+				),
+				h(
+					'div',
+					{ className: 'ots-field-grid' },
+					h(
+						'label',
+						{ className: 'ots-field' },
+						h('span', { className: 'ots-field-label' }, t('motion.color')),
+						h('input', {
+							className: 'ots-color-input',
+							type: 'color',
+							value: draft.color,
+							'aria-label': t('motion.color'),
+							onChange: (event) => update({ color: event.target.value }, true),
+						}),
+					),
+					h(
+						'label',
+						{ className: 'ots-field' },
+						h('span', { className: 'ots-field-label' }, t('motion.accentColor')),
+						h('input', {
+							className: 'ots-color-input',
+							type: 'color',
+							value: draft.accentColor,
+							'aria-label': t('motion.accentColor'),
+							onChange: (event) => update({ accentColor: event.target.value }, true),
+						}),
+					),
+					h(NumberField, {
+						label: t('motion.fontSize'),
+						value: draft.fontSize,
+						min: 18,
+						max: 200,
+						step: 1,
+						onChange: (value) => update({ fontSize: value }),
+						onBlur: commit,
+					}),
+					h(
+						'label',
+						{ className: 'ots-field' },
+						h('span', { className: 'ots-field-label' }, t('motion.duration')),
+						h('input', {
+							className: 'ots-input',
+							type: 'number',
+							min: 1,
+							step: 1,
+							value: durationDraft,
+							'aria-label': t('motion.duration'),
+							onChange: (event) => setDurationDraft(event.target.value),
+							onBlur: () => onSetDuration(Math.max(1, Math.round(finiteNumber(durationDraft, clip.durationFrames)))),
+						}),
+					),
+				),
+				h(
+					'label',
+					{ className: 'ots-check' },
+					h('input', {
+						type: 'checkbox',
+						checked: draft.background === true,
+						'aria-label': t('motion.background'),
+						onChange: (event) => update({ background: event.target.checked }, true),
+					}),
+					t('motion.background'),
+				),
+				h('p', { className: 'ots-field-hint' }, t('motion.hint')),
+			);
+		}
+
 		function Inspector(props) {
 			const {
 				t,
@@ -6929,6 +7357,8 @@ window.__ModuleLoader__.load({
 				onSetCrop,
 				onSetMask,
 				onSetBlendMode,
+				onUpdateMotion,
+				onSetMotionDuration,
 				onAddText,
 				onSpeedChange,
 				onFadeChange,
@@ -7030,6 +7460,7 @@ window.__ModuleLoader__.load({
 				const fps = project.fps;
 				const isText = clip.type === 'text';
 				const isAudio = clip.type === 'audio';
+				const isMotion = clip.type === 'motion';
 				const isVisual = !isAudio;
 				const mediaHasAudio = media ? Boolean(media.hasAudio) : false;
 				const timing = [
@@ -7230,6 +7661,16 @@ window.__ModuleLoader__.load({
 					body.push(h(CropEditor, { t, clip, onSetCrop }));
 					body.push(h(MaskEditor, { t, clip, onSetMask }));
 					body.push(h(BlendEditor, { t, clip, onSetBlendMode }));
+				}
+				if (isMotion) {
+					body.push(
+						h(MotionEditor, {
+							t,
+							clip,
+							onUpdateMotion,
+							onSetDuration: onSetMotionDuration,
+						}),
+					);
 				}
 				if (isText) {
 					const text = draft || draftFromClip(clip);
@@ -7477,6 +7918,7 @@ window.__ModuleLoader__.load({
 				onAddMarker,
 				onAddTrack,
 				onAddText,
+				onAddMotion,
 				onUpdateTrack,
 				onRemoveTrack,
 				missingMediaIds,
@@ -8083,6 +8525,7 @@ window.__ModuleLoader__.load({
 						t('timeline.delete'),
 					),
 					h(Btn, { variant: 'outline', onClick: onAddText, disabled: !project }, t('timeline.addText')),
+					h(Btn, { variant: 'outline', onClick: onAddMotion, disabled: !project }, t('timeline.addMotion')),
 					h(Btn, { variant: 'outline', onClick: onAddMarker, disabled: !project, title: t('timeline.addMarker') }, t('timeline.addMarker')),
 					h(Btn, { variant: 'outline', onClick: onDeleteRipple, disabled: !canDelete, title: t('timeline.rippleDelete') }, t('timeline.rippleDelete')),
 					h(Btn, { onClick: onCopy, disabled: !canCopy, title: t('timeline.copy') }, t('timeline.copy')),
@@ -8197,6 +8640,153 @@ window.__ModuleLoader__.load({
 		// -------------------------------------------------------------------
 		// Dialogs
 		// -------------------------------------------------------------------
+
+		function MotionDialog(props) {
+			const { t, dialog, onChange, onClose, onSubmit } = props;
+			const busy = Boolean(dialog.busy);
+			return h(
+				'div',
+				{
+					className: 'ots-modal-backdrop ots-modal-fixed',
+					role: 'dialog',
+					'aria-modal': 'true',
+					'aria-label': t('motion.addTitle'),
+					onPointerDown: (event) => {
+						if (event.target === event.currentTarget && !busy) onClose();
+					},
+				},
+				h(
+					'div',
+					{ className: 'ots-modal' },
+					h('h2', { className: 'ots-modal-title' }, t('motion.addTitle')),
+					h(
+						'div',
+						{ className: 'ots-modal-body' },
+						h(
+							'div',
+							{ className: 'ots-field-grid' },
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('motion.template')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: dialog.template,
+										'aria-label': t('motion.template'),
+										onChange: (event) => onChange({ template: event.target.value }),
+									},
+									MOTION_TEMPLATES.map((value) => h('option', { key: value, value }, t(`motion.template${value.charAt(0).toUpperCase()}${value.slice(1)}`))),
+								),
+							),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('motion.align')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: dialog.align,
+										'aria-label': t('motion.align'),
+										onChange: (event) => onChange({ align: event.target.value }),
+									},
+									['left', 'center', 'right'].map((value) => h('option', { key: value, value }, t(`motion.align${value.charAt(0).toUpperCase()}${value.slice(1)}`))),
+								),
+							),
+						),
+						h(
+							'label',
+							{ className: 'ots-field' },
+							h('span', { className: 'ots-field-label' }, t('motion.text')),
+							h('textarea', {
+								className: 'ots-textarea',
+								value: dialog.text,
+								placeholder: t('motion.textPlaceholder'),
+								'aria-label': t('motion.text'),
+								onChange: (event) => onChange({ text: event.target.value }),
+							}),
+						),
+						h(
+							'label',
+							{ className: 'ots-field' },
+							h('span', { className: 'ots-field-label' }, t('motion.subtitle')),
+							h('input', {
+								className: 'ots-input',
+								type: 'text',
+								value: dialog.subtitle,
+								placeholder: t('motion.subtitlePlaceholder'),
+								'aria-label': t('motion.subtitle'),
+								onChange: (event) => onChange({ subtitle: event.target.value }),
+							}),
+						),
+						h(
+							'div',
+							{ className: 'ots-field-grid' },
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('motion.color')),
+								h('input', {
+									className: 'ots-color-input',
+									type: 'color',
+									value: dialog.color,
+									'aria-label': t('motion.color'),
+									onChange: (event) => onChange({ color: event.target.value }),
+								}),
+							),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('motion.accentColor')),
+								h('input', {
+									className: 'ots-color-input',
+									type: 'color',
+									value: dialog.accentColor,
+									'aria-label': t('motion.accentColor'),
+									onChange: (event) => onChange({ accentColor: event.target.value }),
+								}),
+							),
+							h(NumberField, {
+								label: t('motion.fontSize'),
+								value: dialog.fontSize,
+								min: 18,
+								max: 200,
+								step: 1,
+								onChange: (value) => onChange({ fontSize: value }),
+							}),
+							h(NumberField, {
+								label: t('motion.durationSeconds'),
+								value: dialog.durationSeconds,
+								min: 0.5,
+								max: 60,
+								step: 0.5,
+								onChange: (value) => onChange({ durationSeconds: value }),
+							}),
+						),
+						h(
+							'label',
+							{ className: 'ots-check' },
+							h('input', {
+								type: 'checkbox',
+								checked: dialog.background === true,
+								'aria-label': t('motion.background'),
+								onChange: (event) => onChange({ background: event.target.checked }),
+							}),
+							t('motion.background'),
+						),
+						dialog.error ? h('p', { className: 'ots-modal-error', role: 'alert' }, dialog.error) : null,
+					),
+					h(
+						'div',
+						{ className: 'ots-modal-actions' },
+						h(Btn, { variant: 'ghost', onClick: onClose, disabled: busy }, t('actions.cancel')),
+						h(Btn, { variant: 'primary', onClick: onSubmit, disabled: busy }, busy ? t('dialog.working') : t('motion.addAction')),
+					),
+				),
+			);
+		}
 
 		function Dialog(props) {
 			const {
@@ -8690,6 +9280,7 @@ window.__ModuleLoader__.load({
 			const [zoom, setZoom] = React.useState(DEFAULT_ZOOM);
 			const [busy, setBusy] = React.useState(0);
 			const [dialog, setDialog] = React.useState(null);
+			const [motionDialog, setMotionDialog] = React.useState(null);
 			const [importing, setImporting] = React.useState(false);
 			const [uploading, setUploading] = React.useState(null);
 			const [inspectorDraft, setInspectorDraft] = React.useState(null);
@@ -9596,6 +10187,50 @@ window.__ModuleLoader__.load({
 				if (!clipId) return;
 				void runEdit([{ type: 'update-caption', clipId, ...patch }]);
 			};
+			const handleOpenMotionDialog = () => {
+				setMotionDialog(defaultMotionForm(t));
+			};
+			const submitMotionDialog = async () => {
+				const projectValue = projectRef.current;
+				if (!projectValue || !motionDialog || motionDialog.busy) return;
+				const durationFrames = Math.max(
+					1,
+					Math.round(finiteNumber(motionDialog.durationSeconds, 3) * Math.max(1, Number(projectValue.fps) || 30)),
+				);
+				const motion = normalizeMotionInput(motionDialog);
+				setMotionDialog(Object.assign({}, motionDialog, { busy: true, error: null }));
+				const payload = await runEdit(
+					[
+						{
+							type: 'add-motion',
+							clipId: newId(),
+							startFrame: Math.max(0, Math.round(currentFrameRef.current)),
+							durationFrames,
+							motion,
+						},
+					],
+					{ selectNew: (clip) => clip.type === 'motion' },
+				);
+				if (payload) {
+					setMotionDialog(null);
+					showNotice(t('motion.added'));
+				} else {
+					setMotionDialog(Object.assign({}, motionDialog, { busy: false, error: t('motion.addFailed') }));
+				}
+			};
+			const handleUpdateMotion = (motion) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				const entry = projectRef.current ? findClipEntry(projectRef.current, clipId) : null;
+				if (!entry || entry.clip.type !== 'motion') return;
+				const next = Object.assign({}, motionOf(entry.clip), motion);
+				void runEdit([{ type: 'update-motion', clipId, motion: next }]);
+			};
+			const handleSetMotionDuration = (durationFrames) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'trim-clip', clipId, durationFrames: Math.max(1, Math.round(durationFrames)) }]);
+			};
 			const handleOpenSearchResult = (result) => {
 				if (!result) return;
 				const projectValue = projectRef.current;
@@ -9885,10 +10520,14 @@ window.__ModuleLoader__.load({
 						const exportProject = projectRef.current;
 						if (countExportRenders(exportProject) > 0) {
 							setDialog(Object.assign({}, workingDialog, { status: t('status.preparingText') }));
-							await prepareExportRenders(exportProject, (name, index, total) => {
+							await prepareExportRenders(exportProject, (kind, name, index, total) => {
 								setDialog(
 									Object.assign({}, workingDialog, {
-										status: t('status.preparingLottie', { name, index, total }),
+										status: t(kind === 'motion' ? 'status.preparingMotion' : 'status.preparingLottie', {
+											name,
+											index,
+											total,
+										}),
 									}),
 								);
 							});
@@ -10153,6 +10792,8 @@ window.__ModuleLoader__.load({
 										onSetCrop: handleSetCrop,
 										onSetMask: handleSetMask,
 										onSetBlendMode: handleSetBlendMode,
+										onUpdateMotion: handleUpdateMotion,
+										onSetMotionDuration: handleSetMotionDuration,
 										onSetKeyframes: handleSetKeyframes,
 										onAddEffect: handleAddEffect,
 										onUpdateEffect: handleUpdateEffect,
@@ -10251,6 +10892,7 @@ window.__ModuleLoader__.load({
 									onAddMarker: handleAddMarker,
 									onAddTrack: handleAddTrack,
 									onAddText: handleAddText,
+									onAddMotion: handleOpenMotionDialog,
 									onUpdateTrack: handleUpdateTrack,
 									onRemoveTrack: handleRemoveTrack,
 									missingMediaIds,
@@ -10272,6 +10914,15 @@ window.__ModuleLoader__.load({
 							onRefreshRecent: refreshRecentProjects,
 							onSubmit: submitDialog,
 							onClose: () => setDialog(null),
+						})
+					: null,
+				motionDialog
+					? h(MotionDialog, {
+							t,
+							dialog: motionDialog,
+							onChange: (patch) => setMotionDialog((current) => (current ? Object.assign({}, current, patch) : current)),
+							onClose: () => setMotionDialog(null),
+							onSubmit: submitMotionDialog,
 						})
 					: null,
 			);

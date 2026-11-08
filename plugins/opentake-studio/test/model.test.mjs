@@ -5277,3 +5277,373 @@ describe('lottie clips', () => {
     assert.equal(findClip(next, 'l1').track.id, 't-video2');
   });
 });
+
+// ===========================================================================
+// Phase 17: Motion template clips (DESIGN §17).
+// ===========================================================================
+
+function addMotion(project, options = {}) {
+  const operation = {
+    type: 'add-motion',
+    clipId: options.clipId,
+    startFrame: options.startFrame ?? 0,
+    durationFrames: options.durationFrames ?? 60,
+    motion:
+      options.motion === undefined ? { template: 'title', text: 'Hello' } : options.motion,
+  };
+  if (options.trackId !== undefined) operation.trackId = options.trackId;
+  if (options.splitRightClipId !== undefined) operation.splitRightClipId = options.splitRightClipId;
+  return applyOperation(project, operation);
+}
+
+function rawMotionProject() {
+  return {
+    version: 1,
+    name: 'motion',
+    fps: 30,
+    tracks: [
+      {
+        id: 'tv',
+        type: 'video',
+        clips: [
+          {
+            id: 'm1',
+            type: 'motion',
+            mediaId: null,
+            startFrame: 0,
+            durationFrames: 60,
+            motion: { template: 'title', text: 'Hi', bogus: true },
+            bogus: true,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe('motion clips', () => {
+  const FULL_MOTION = {
+    template: 'lowerThird',
+    text: 'Jane Doe',
+    subtitle: 'CEO',
+    color: '#112233',
+    accentColor: '#445566',
+    fontSize: 96,
+    align: 'left',
+    background: true,
+  };
+
+  it('defaults motion to null on every other clip type', () => {
+    let project = phase1Fixture();
+    project = addClip(project, {
+      clipId: 'img',
+      mediaId: 'm-image',
+      trackId: 't-video2',
+      startFrame: 0,
+      durationFrames: 30,
+    });
+    project = addText(project, { clipId: 'txt', trackId: 't-video2', startFrame: 100, durationFrames: 30 });
+    project = addCaption(project, { clipId: 'cap', trackId: 't-video2', startFrame: 200, durationFrames: 30 });
+    for (const clipId of ['c1', 'img', 'txt', 'cap']) {
+      assert.equal(clipById(project, clipId).motion, null);
+    }
+  });
+
+  it('adds a motion clip with DESIGN defaults', () => {
+    const project = addMotion(fixture(), { clipId: 'm1', trackId: 't-video2', startFrame: 10 });
+    const clip = clipById(project, 'm1');
+    assert.equal(clip.type, 'motion');
+    assert.equal(clip.mediaId, null);
+    assert.equal(clip.startFrame, 10);
+    assert.equal(clip.durationFrames, 60);
+    assert.equal(clip.trimStartFrame, 0);
+    assert.equal(clip.speed, 1);
+    assert.equal(clip.text, null);
+    assert.equal(clip.caption, null);
+    assert.deepEqual(clip.motion, {
+      template: 'title',
+      text: 'Hello',
+      subtitle: '',
+      color: '#ffffff',
+      accentColor: '#4f8cff',
+      fontSize: 64,
+      align: 'center',
+      background: false,
+    });
+  });
+
+  it('stores every provided motion field and strips unknown keys', () => {
+    const project = addMotion(fixture(), {
+      clipId: 'm1',
+      trackId: 't-video2',
+      motion: { ...FULL_MOTION, bogus: 1 },
+    });
+    assert.deepEqual(clipById(project, 'm1').motion, FULL_MOTION);
+  });
+
+  it('picks a free video track or auto-creates a deterministic motion track', () => {
+    let project = addMotion(fixture(), { clipId: 'm1' });
+    assert.equal(findClip(project, 'm1').track.id, 't-video');
+
+    project = addMotion(emptyProject(), { clipId: 'm2' });
+    assert.equal(findClip(project, 'm2').track.id, 'motion-track-m2');
+    assert.equal(findClip(project, 'm2').track.type, 'video');
+
+    let busy = fixture();
+    busy = addClip(busy, { clipId: 'v1', startFrame: 0, durationFrames: 100 });
+    busy = addClip(busy, {
+      clipId: 'v2',
+      trackId: 't-video2',
+      startFrame: 0,
+      durationFrames: 100,
+    });
+    busy = addMotion(busy, { clipId: 'm3', startFrame: 0 });
+    assert.equal(findClip(busy, 'm3').track.id, 'motion-track-m3');
+    assert.equal(busy.tracks.length, 4);
+  });
+
+  it('rejects invalid tracks and duplicate ids', () => {
+    const project = fixture();
+    expectModelError(
+      () => addMotion(project, { clipId: 'm1', trackId: 't-audio' }),
+      'incompatible-track-type',
+    );
+    expectModelError(
+      () => addMotion(project, { clipId: 'm1', trackId: 'ghost' }),
+      'track-not-found',
+    );
+    const withClip = addClip(project, { clipId: 'm1', startFrame: 0, durationFrames: 50 });
+    expectModelError(() => addMotion(withClip, { clipId: 'm1' }), 'duplicate-id');
+  });
+
+  it('rejects invalid motion data', () => {
+    const project = fixture();
+    const add = (motion) => addMotion(project, { clipId: 'm1', trackId: 't-video2', motion });
+    expectModelError(() => applyOperation(project, { type: 'add-motion', clipId: 'm1', startFrame: 0, durationFrames: 30 }), 'invalid-input');
+    expectModelError(() => add(null), 'invalid-input');
+    expectModelError(() => add('title'), 'invalid-input');
+    expectModelError(() => add({ text: 'x' }), 'invalid-input');
+    expectModelError(() => add({ template: 'banner', text: 'x' }), 'invalid-input');
+    expectModelError(() => add({ template: 'title' }), 'invalid-input');
+    expectModelError(() => add({ template: 'title', text: 42 }), 'invalid-input');
+    expectModelError(() => add({ template: 'title', text: 'x', subtitle: 1 }), 'invalid-input');
+    expectModelError(() => add({ template: 'title', text: 'x', color: 'red' }), 'invalid-input');
+    expectModelError(() => add({ template: 'title', text: 'x', color: '#fff' }), 'invalid-input');
+    expectModelError(() => add({ template: 'title', text: 'x', accentColor: 'blue' }), 'invalid-input');
+    for (const fontSize of [17, 201, Number.NaN]) {
+      expectModelError(() => add({ template: 'title', text: 'x', fontSize }), 'invalid-input');
+    }
+    expectModelError(() => add({ template: 'title', text: 'x', align: 'justify' }), 'invalid-input');
+    expectModelError(() => add({ template: 'title', text: 'x', background: 'yes' }), 'invalid-input');
+  });
+
+  it('overwrites/splits an explicit track like other overlay clips', () => {
+    let project = addClip(fixture(), { clipId: 'c1', startFrame: 0, durationFrames: 100 });
+    expectModelError(
+      () => addMotion(project, { clipId: 'm1', trackId: 't-video', startFrame: 40, durationFrames: 20 }),
+      'invalid-input',
+    );
+    project = addMotion(project, {
+      clipId: 'm1',
+      trackId: 't-video',
+      startFrame: 40,
+      durationFrames: 20,
+      splitRightClipId: 'c1-right',
+    });
+    assert.equal(clipById(project, 'c1').durationFrames, 40);
+    assert.equal(clipById(project, 'c1-right').startFrame, 60);
+    assert.equal(clipById(project, 'm1').startFrame, 40);
+  });
+
+  it('normalizes raw motion clips, enforces overlay rules and strips unknown fields', () => {
+    const project = normalizeProject(rawMotionProject());
+    const clip = project.tracks[0].clips[0];
+    assert.equal(clip.type, 'motion');
+    assert.equal(clip.trimStartFrame, 0);
+    assert.equal(clip.speed, 1);
+    assert.deepEqual(clip.motion, {
+      template: 'title',
+      text: 'Hi',
+      subtitle: '',
+      color: '#ffffff',
+      accentColor: '#4f8cff',
+      fontSize: 64,
+      align: 'center',
+      background: false,
+    });
+    assert.equal('bogus' in clip.motion, false);
+    assert.deepEqual(normalizeProject(project), project);
+
+    const invalid = (mutator) => {
+      const raw = rawMotionProject();
+      mutator(raw.tracks[0].clips[0]);
+      return normalizeProject(raw);
+    };
+    expectModelError(() => invalid((clipValue) => { clipValue.mediaId = 'm'; }), 'invalid-clip');
+    expectModelError(() => invalid((clipValue) => { clipValue.trimStartFrame = 5; }), 'invalid-clip');
+    expectModelError(() => invalid((clipValue) => { clipValue.speed = 0.5; }), 'invalid-clip');
+    expectModelError(() => invalid((clipValue) => { clipValue.motion = null; }), 'invalid-clip');
+    expectModelError(() => invalid((clipValue) => { clipValue.motion = { template: 'title' }; }), 'invalid-clip');
+    expectModelError(
+      () =>
+        normalizeProject({
+          tracks: [
+            {
+              id: 'ta',
+              type: 'audio',
+              clips: [{ id: 'm', type: 'motion', mediaId: null, startFrame: 0, durationFrames: 30, motion: { template: 'title', text: 'x' } }],
+            },
+          ],
+        }),
+      'incompatible-track-type',
+    );
+  });
+
+  it('updates motion fields partially and preserves unspecified ones', () => {
+    let project = addMotion(fixture(), {
+      clipId: 'm1',
+      trackId: 't-video2',
+      motion: FULL_MOTION,
+    });
+    project = applyOperation(project, {
+      type: 'update-motion',
+      clipId: 'm1',
+      motion: { text: 'New text', fontSize: 32, bogus: 1 },
+    });
+    assert.deepEqual(clipById(project, 'm1').motion, {
+      ...FULL_MOTION,
+      text: 'New text',
+      fontSize: 32,
+    });
+    project = applyOperation(project, {
+      type: 'update-motion',
+      clipId: 'm1',
+      motion: { template: 'callout' },
+    });
+    assert.equal(clipById(project, 'm1').motion.template, 'callout');
+    assert.equal(clipById(project, 'm1').motion.text, 'New text');
+    // Empty patch is an allowed no-op.
+    const noop = applyOperation(project, { type: 'update-motion', clipId: 'm1', motion: {} });
+    assert.deepEqual(clipById(noop, 'm1').motion, clipById(project, 'm1').motion);
+  });
+
+  it('rejects invalid update-motion calls', () => {
+    let project = addMotion(fixture(), { clipId: 'm1', trackId: 't-video2' });
+    project = addClip(project, { clipId: 'v1', startFrame: 0, durationFrames: 50 });
+    expectModelError(
+      () => applyOperation(project, { type: 'update-motion', clipId: 'm1', motion: { fontSize: 10 } }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-motion', clipId: 'm1', motion: { template: 'banner' } }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-motion', clipId: 'm1' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-motion', clipId: 'ghost', motion: { text: 'x' } }),
+      'clip-not-found',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-motion', clipId: 'v1', motion: { text: 'x' } }),
+      'not-motion-clip',
+    );
+  });
+
+  it('honours overlay trim/speed rules and splits both halves with the motion data', () => {
+    let project = addMotion(fixture(), { clipId: 'm1', trackId: 't-video2', durationFrames: 100 });
+    expectModelError(
+      () => applyOperation(project, { type: 'trim-clip', clipId: 'm1', trimStartFrame: 10 }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-speed', clipId: 'm1', speed: 2 }),
+      'invalid-input',
+    );
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'm1', durationFrames: 80 });
+    assert.equal(clipById(project, 'm1').durationFrames, 80);
+    const expectedMotion = clipById(project, 'm1').motion;
+    project = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'm1',
+      atFrame: 30,
+      leftClipId: 'L',
+      rightClipId: 'R',
+    });
+    for (const clipId of ['L', 'R']) {
+      const clip = clipById(project, clipId);
+      assert.equal(clip.type, 'motion');
+      assert.equal(clip.trimStartFrame, 0);
+      assert.deepEqual(clip.motion, expectedMotion);
+    }
+    project = applyOperation(project, {
+      type: 'update-motion',
+      clipId: 'L',
+      motion: { text: 'Left only' },
+    });
+    assert.equal(clipById(project, 'L').motion.text, 'Left only');
+    assert.equal(clipById(project, 'R').motion.text, 'Hello');
+  });
+
+  it('preserves motion through overlap trims, moves and visual property edits', () => {
+    let project = addMotion(fixture(), { clipId: 'm1', trackId: 't-video2', durationFrames: 100 });
+    const motionBefore = { ...clipById(project, 'm1').motion };
+    project = applyOperation(project, { type: 'set-crop', clipId: 'm1', crop: { x: 0, y: 0, width: 0.5, height: 0.5 } });
+    project = applyOperation(project, { type: 'set-mask', clipId: 'm1', mask: { shape: 'rect' } });
+    project = applyOperation(project, { type: 'set-blend-mode', clipId: 'm1', blendMode: 'screen' });
+    project = applyOperation(project, { type: 'set-fades', clipId: 'm1', fadeInFrames: 10 });
+    project = applyOperation(project, { type: 'move-clip', clipId: 'm1', startFrame: 50 });
+    assert.deepEqual(clipById(project, 'm1').motion, motionBefore);
+
+    let overlap = addMotion(fixture(), { clipId: 'm1', trackId: 't-video2', durationFrames: 100 });
+    overlap = addClip(overlap, {
+      clipId: 'cover',
+      trackId: 't-video2',
+      startFrame: 50,
+      durationFrames: 50,
+    });
+    assert.equal(clipById(overlap, 'm1').durationFrames, 50);
+    assert.deepEqual(clipById(overlap, 'm1').motion, motionBefore);
+
+    expectModelError(
+      () => applyOperation(overlap, { type: 'move-clip', clipId: 'm1', trackId: 't-audio', startFrame: 0 }),
+      'incompatible-track-type',
+    );
+  });
+
+  it('cannot participate in transitions yet', () => {
+    let project = fixture();
+    project = addMotion(project, { clipId: 'a', trackId: 't-video2', startFrame: 0, durationFrames: 60 });
+    project = addMotion(project, { clipId: 'b', trackId: 't-video2', startFrame: 60, durationFrames: 60 });
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'add-transition',
+          transition: {
+            id: 'tr',
+            trackId: 't-video2',
+            fromClipId: 'a',
+            toClipId: 'b',
+            type: 'dissolve',
+            durationFrames: 20,
+          },
+        }),
+      'invalid-transition',
+    );
+  });
+
+  it('is pure and normalize-idempotent', () => {
+    const project = addMotion(fixture(), { clipId: 'm1', trackId: 't-video2' });
+    const before = JSON.stringify(project);
+    const operation = { type: 'update-motion', clipId: 'm1', motion: { text: 'Pure', fontSize: 64 } };
+    const operationBefore = JSON.stringify(operation);
+    const next = applyOperation(project, operation);
+    assert.equal(JSON.stringify(project), before);
+    assert.equal(JSON.stringify(operation), operationBefore);
+    assert.deepEqual(normalizeProject(next), next);
+    assert.equal(clipById(next, 'm1').motion.text, 'Pure');
+    assert.equal(clipById(next, 'm1').motion.fontSize, 64);
+  });
+});

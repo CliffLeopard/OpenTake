@@ -174,6 +174,10 @@ Importing only fills the media library; it does not add clips to the timeline.
 - **Recent projects**: welcome screen and New/Open dialog list recent projects
   with missing badges, open/refresh/clear.
 - **Export current frame**: capture the composited preview frame as a PNG.
+- **Motion templates**: title/lower-third/callout clips rendered with Canvas 2D
+  in the editor and exported by pre-rendering transparent PNG frames; editable
+  text/subtitle/colors/font size/alignment/background. This is template-based,
+  not the full Motion Studio document authoring workflow.
 - **Lottie**: import bodymovin `.json` animations, preview them in the editor,
   and export them by rendering per-frame PNGs in the browser and compositing
   them through ffmpeg. Both bodymovin `.json` and `.lottie` ZIP containers (with
@@ -334,6 +338,7 @@ MCP endpoint, client or credential is involved.
 | `opentake_studio_remove_clips` | `clipIds` | Removes one or more clips in one undoable edit. |
 | `opentake_studio_set_clip_properties` | `clipIds`, `volume?`, `opacity?`, `transform?` | Sets volume/opacity (`0..1`) and/or normalized transform. |
 | `opentake_studio_add_text` | `content`, `startFrame`, `durationFrames?`, `trackId?`, `fontSize?`, `color?`, `x?`, `y?` | Adds a text overlay; `durationFrames` defaults to 90 frames, `x`/`y` are normalized top-left coordinates. Uses or creates a `Text` video track with a free interval. |
+| `opentake_studio_add_motion` | `template` (title/lowerThird/callout), `text`, `startFrame`, `durationFrames?`, `subtitle?`, colors, `fontSize?`, `align?`, `background?`, `trackId?` | Adds an editable Canvas motion-template clip on a Motion track. |
 | `opentake_studio_undo` | — | Undoes the most recent edit. |
 | `opentake_studio_redo` | — | Redoes the most recently undone edit. |
 | `opentake_studio_export` | `path?`, `overwrite?`, `codec?` (h264/h265/prores/prores4444/vp9), `transparent?`, `bitDepth?`, `colorPrimaries?`, `colorTrc?`, `colorspace?`, `width?`, `height?`, `fps?`, `crf?`, `bitrate?` | Starts an asynchronous ffmpeg export; omit `path` to write into `exports/`. Existing output refused unless `overwrite:true`. Poll `get_state` for progress. |
@@ -429,9 +434,9 @@ gaps:
   endpoints and keys. There is no bundled Whisper/CLIP model; visual search is a
   provider-generated description index, not CLIP/SigLIP embeddings.
 - **Still missing from the Rust/Tauri app:** multicam, nested sequences/groups,
-  Motion Studio document authoring, CLIP/SigLIP embedding search, true HDR
-  tone-mapping/playback, per-track ducking amount UI, account/updater surfaces,
-  and full 1:1 UI parity.
+  full Motion Studio document authoring (templates only here), CLIP/SigLIP
+  embedding search, true HDR tone-mapping/playback, per-track ducking amount
+  UI, account/updater surfaces, and full 1:1 UI parity.
 - **Preview is approximate.** The canvas composite is for interaction, not a
   frame-accurate reference. Export is authoritative. Browser codec support can
   differ from ffmpeg.
@@ -517,7 +522,7 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **382/382 tests pass**, 36 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **400/400 tests pass**, 36 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |
@@ -529,6 +534,7 @@ this document; the Client/UI/export rows are the verification run's results.
 | Masks/blend/ducking | Rect/ellipse masks and screen blend were pixel-verified in exported frames; track-volume attenuation measured, and ducking argv/real-audio verification is covered by tests. |
 | Alpha/10-bit | Transparent ProRes 4444 alphaextract (255/0) and 10-bit H.265 (`yuv420p10le`) were real-export verified. |
 | Lottie | A vendored lottie-web sample rendered in the editor preview/card; UI export pre-rendered 20 PNG frames and produced a 640×360 H.264 clip (0.667 s), verified with ffprobe. |
+| Motion templates | A title template was added via the Host tool, rendered in preview, pre-rendered to PNG frames, and exported into a 640×360 H.264 clip; the exported frame shows the centered title/subtitle/accent. |
 
 Not verified / not claimed:
 

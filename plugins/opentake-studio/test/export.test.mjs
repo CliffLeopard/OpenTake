@@ -3073,3 +3073,186 @@ it(
     assert.ok(green.g > 90 && green.r < 40 && green.b < 40, JSON.stringify(green));
   },
 );
+
+// ---------------------------------------------------------------------------
+// Phase 17: motion-template PNG-sequence export
+// ---------------------------------------------------------------------------
+
+function makeMotionProject({ clipId = 'motion-clip', durationFrames = 30, startFrame = 15, clipOverrides = {} } = {}) {
+  return makeProject({
+    media: [],
+    clips: [
+      makeClip({
+        id: clipId,
+        type: 'motion',
+        mediaId: null,
+        startFrame,
+        durationFrames,
+        motion: {
+          template: 'title',
+          text: 'Hello motion',
+          subtitle: 'Phase 17',
+          color: '#ffffff',
+          accentColor: '#22d3ee',
+          fontSize: 72,
+          align: 'center',
+          background: false,
+        },
+        ...clipOverrides,
+      }),
+    ],
+  });
+}
+
+it('uses a motion PNG sequence with timing and RGBA alpha (no media file)', async () => {
+  const clipId = 'motion-argv';
+  await writeLottieFrames(phaseRoot, clipId, 30);
+  const project = makeMotionProject({ clipId, durationFrames: 30, startFrame: 15 });
+  const built = buildExportArgs({
+    project,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'motion.mp4'),
+  });
+  const filter = filterOf(built);
+  const pattern = path.join(phaseRoot, 'lottie', clipId, '%05d.png');
+  const inputs = inputsOf(built.args);
+
+  assert.equal(inputs.length, 2, 'only the base canvas and the motion sequence');
+  assert.ok(inputs.includes(pattern), built.args.join(' '));
+  assert.ok(hasPair(built.args, '-framerate', '30'));
+  assert.ok(hasPair(built.args, '-start_number', '0'));
+  assert.ok(hasPair(built.args, '-t', '1'));
+  assert.match(filter, /format=rgba/);
+  assert.match(filter, /overlay=x=0:y=0:enable='between\(t,0\.5,1\.5\)'/);
+  assert.equal(built.durationFrames, 45);
+  assert.ok(built.args.includes('-an'), 'motion clips carry no audio');
+  assert.ok(!filter.includes('amix'));
+});
+
+it('applies crop/mask/rotation to motion layers and keeps blend off', async () => {
+  const clipId = 'motion-rich';
+  await writeLottieFrames(phaseRoot, clipId, 30);
+  const project = makeMotionProject({
+    clipId,
+    startFrame: 0,
+    clipOverrides: {
+      crop: { x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+      mask: { shape: 'ellipse', x: 0.1, y: 0.1, width: 0.8, height: 0.8, feather: 0.2, invert: false },
+      transform: { x: 0, y: 0, width: 1, height: 1, rotation: 20 },
+      blendMode: 'screen',
+      opacity: 0.75,
+    },
+  });
+  const filter = filterOf(buildExportArgs({
+    project,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'motion-rich.mp4'),
+  }));
+  const cropIndex = filter.indexOf('crop=w=iw*0.8');
+  const scaleIndex = filter.indexOf('scale=320:180');
+  const rotateIndex = filter.indexOf('rotate=');
+  const maskIndex = filter.indexOf('geq=');
+  assert.ok(cropIndex >= 0 && cropIndex < scaleIndex, filter);
+  assert.ok(rotateIndex > scaleIndex, filter);
+  assert.ok(maskIndex > rotateIndex, filter);
+  assert.ok(filter.includes('format=rgba'), 'alpha layer');
+  assert.ok(!filter.includes('blend='), 'motion alpha cannot survive yuv blend');
+  assert.ok(filter.includes('overlay='));
+});
+
+it('throws motion-unrendered for missing boards and skips hidden tracks', async () => {
+  const missing = makeMotionProject({ clipId: 'motion-missing', startFrame: 0 });
+  assert.throws(
+    () => buildExportArgs({
+      project: missing,
+      projectRoot: phaseRoot,
+      outputPath: path.join(phaseRoot, 'motion-missing.mp4'),
+    }),
+    (error) => error instanceof ExportError &&
+      error.code === 'motion-unrendered' &&
+      /motion-missing/.test(error.message) &&
+      /no rendered frames/.test(error.message),
+  );
+
+  const incompleteClipId = 'motion-incomplete';
+  await writeLottieFrames(phaseRoot, incompleteClipId, 2);
+  const incomplete = makeMotionProject({ clipId: incompleteClipId, startFrame: 0, durationFrames: 3 });
+  assert.throws(
+    () => buildExportArgs({
+      project: incomplete,
+      projectRoot: phaseRoot,
+      outputPath: path.join(phaseRoot, 'motion-incomplete.mp4'),
+    }),
+    (error) => error instanceof ExportError &&
+      error.code === 'motion-unrendered' && /00002\.png/.test(error.message),
+  );
+
+  const hidden = makeMotionProject({ clipId: 'motion-hidden', startFrame: 0 });
+  hidden.tracks[0].hidden = true;
+  const hiddenBuilt = buildExportArgs({
+    project: hidden,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'motion-hidden.mp4'),
+  });
+  assert.ok(!inputsOf(hiddenBuilt.args).some((input) => input.includes('/lottie/')));
+  assert.ok(hiddenBuilt.args.includes('-an'));
+});
+
+it(
+  'exports a motion sequence with transparent ProRes alpha',
+  {
+    skip: toolSkip
+      ? toolSkip
+      : (!hasProresEncoder ? 'prores_ks encoder is not available' : false),
+  },
+  async () => {
+    const clipId = 'motion-real';
+    const directory = path.join(exportProjectRoot, 'lottie', clipId);
+    await mkdir(directory, { recursive: true });
+    const framePath = path.join(exportTemp, 'motion-frame.png');
+    // Transparent 320x180 frame with an opaque cyan box at (32,32)-(112,112).
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'color=c=black@0.0:s=320x180:d=1,format=rgba',
+      '-f', 'lavfi', '-i', 'color=c=cyan:s=80x80:d=1,format=rgba',
+      '-filter_complex', '[0:v][1:v]overlay=x=32:y=32:format=auto[out]',
+      '-map', '[out]', '-frames:v', '1', framePath,
+    ]);
+    for (let index = 0; index < 3; index += 1) {
+      await copyFile(framePath, path.join(directory, `${String(index).padStart(5, '0')}.png`));
+    }
+
+    const project = makeMotionProject({ clipId, startFrame: 0, durationFrames: 3 });
+    const outputPath = path.join(exportTemp, 'motion-real.mov');
+    const result = await runExport({
+      project,
+      projectRoot: exportProjectRoot,
+      outputPath,
+      options: { codec: 'prores4444', transparent: true },
+    });
+    assert.equal(result.durationFrames, 3);
+    assert.equal(result.codec, 'prores4444');
+    assert.equal(result.container, 'mov');
+    assert.equal(result.transparent, true);
+
+    const probe = await probeMedia(outputPath);
+    assert.equal(probe.kind, 'video');
+    assert.equal(probe.width, 320);
+    assert.equal(probe.height, 180);
+    assert.ok(probe.durationSeconds > 0.05 && probe.durationSeconds < 0.3);
+
+    const streams = JSON.parse(await runFfprobe([
+      '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+    ]));
+    const videoStream = streams.streams.find((stream) => stream.codec_type === 'video');
+    assert.equal(videoStream.codec_name, 'prores');
+    assert.ok(videoStream.pix_fmt.startsWith('yuva444p'));
+
+    const insideAlpha = await sampleAlpha(outputPath, 0.05, 60, 60);
+    const outsideAlpha = await sampleAlpha(outputPath, 0.05, 250, 150);
+    assert.ok(insideAlpha > 200, `expected opaque motion pixels, alpha ${insideAlpha}`);
+    assert.ok(outsideAlpha < 20, `expected transparent motion background, alpha ${outsideAlpha}`);
+    const cyan = await samplePixel(outputPath, 0.05, 60, 60);
+    assert.ok(cyan.g > 90 && cyan.b > 90 && cyan.r < 40, JSON.stringify(cyan));
+  },
+);

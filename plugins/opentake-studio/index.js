@@ -458,6 +458,31 @@ export function apply(ctx) {
         }
         op.style = normalizeCaptionStyle(op.style);
         op.segments = Array.isArray(op.segments) ? op.segments : [];
+      } else if (op.type === 'add-motion') {
+        op.clipId = typeof op.clipId === 'string' && op.clipId.length > 0 ? op.clipId : randomUUID();
+        op.splitRightClipId = randomUUID();
+        op.startFrame = intOr(op.startFrame, 0);
+        op.durationFrames = Math.max(1, intOr(op.durationFrames, 90));
+        const rangeEnd = op.startFrame + op.durationFrames;
+        if (typeof op.trackId === 'string' && op.trackId.length > 0) {
+          op.trackId = pickTrack(project, 'video', op.trackId, createdTracks);
+        } else {
+          const existingMotion = project.tracks.find(
+            (track) =>
+              track.type === 'video' &&
+              track.name === 'Motion' &&
+              !track.clips.some(
+                (clip) => clip.startFrame < rangeEnd && clip.startFrame + clip.durationFrames > op.startFrame,
+              ),
+          );
+          if (existingMotion !== undefined) {
+            op.trackId = existingMotion.id;
+          } else {
+            op.trackId = randomUUID();
+            createdTracks.set(op.trackId, 'video');
+            expanded.push({ type: 'add-track', trackId: op.trackId, trackType: 'video', name: 'Motion' });
+          }
+        }
       } else if (op.type === 'move-clip') {
         op.splitRightClipId = randomUUID();
       } else if (op.type === 'split-clip') {
@@ -888,6 +913,7 @@ export function apply(ctx) {
             : {}),
           ...(clip.caption === undefined ? {} : { caption: clip.caption }),
           ...(clip.crop === undefined ? {} : { crop: clip.crop }),
+          ...(clip.motion === undefined ? {} : { motion: clip.motion }),
           ...(clip.mask === undefined ? {} : { mask: clip.mask }),
           ...(clip.blendMode === undefined ? {} : { blendMode: clip.blendMode }),
         })),
@@ -2293,6 +2319,51 @@ export function apply(ctx) {
         },
       });
       return { text: `Added text clip ${result.clipId}`, data: { clipId: result.clipId } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_add_motion',
+    'Add an editable motion-template clip (title/lowerThird/callout) at a project frame.',
+    {
+      type: 'object',
+      properties: {
+        template: { type: 'string', enum: ['title', 'lowerThird', 'callout'] },
+        text: { type: 'string' },
+        subtitle: { type: 'string' },
+        startFrame: { type: 'number' },
+        durationFrames: { type: 'number' },
+        color: { type: 'string' },
+        accentColor: { type: 'string' },
+        fontSize: { type: 'number' },
+        align: { type: 'string', enum: ['left', 'center', 'right'] },
+        background: { type: 'boolean' },
+        trackId: { type: 'string' },
+      },
+      required: ['template', 'text', 'startFrame'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const motion = {
+        template: args.template,
+        text: args.text,
+        ...(args.subtitle === undefined ? {} : { subtitle: args.subtitle }),
+        ...(args.color === undefined ? {} : { color: args.color }),
+        ...(args.accentColor === undefined ? {} : { accentColor: args.accentColor }),
+        ...(args.fontSize === undefined ? {} : { fontSize: args.fontSize }),
+        ...(args.align === undefined ? {} : { align: args.align }),
+        ...(args.background === undefined ? {} : { background: args.background }),
+      };
+      const result = await applyOperations([
+        {
+          type: 'add-motion',
+          startFrame: args.startFrame,
+          durationFrames: args.durationFrames,
+          motion,
+          ...(args.trackId === undefined ? {} : { trackId: args.trackId }),
+        },
+      ]);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
     },
   );
 

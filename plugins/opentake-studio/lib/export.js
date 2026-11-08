@@ -64,12 +64,14 @@
  *     keyed by that voice bus (asplit into one copy per ducking track plus one
  *     for the final mix). Without a voice/ducking pair the legacy flat amix is
  *     preserved exactly.
- *   - lottie: browser-rendered PNG frame sequences are read from
+ *   - lottie / motion: browser-rendered PNG frame sequences are read from
  *     `<projectRoot>/lottie/<clipId>/%05d.png` (`-framerate <project fps>
- *     -start_number 0`). The sequence must cover every clip frame; missing
- *     frames throw an ExportError with code `lottie-unrendered`. The layer
- *     keeps RGBA alpha (transparent ProRes 4444 output preserves it); lottie
- *     clips never use blend modes or true xfade and carry no audio.
+ *     -start_number 0`), for lottie clips and Phase-17 motion-template clips.
+ *     The sequence must cover every clip frame; missing frames throw an
+ *     ExportError with code `lottie-unrendered` / `motion-unrendered`. The
+ *     layer keeps RGBA alpha (transparent ProRes 4444 output preserves it);
+ *     lottie/motion clips never use blend modes or true xfade and carry no
+ *     audio; hidden tracks skip the frame requirement.
  *   - rotation: static `transform.rotation` is applied with `rotate` on an
  *     expanded transparent canvas and then fitted back inside the transform
  *     box (letterboxed, centered). Rotation keyframes are NOT supported in
@@ -566,8 +568,9 @@ function maskFilterFor(mask, box, rotation) {
 function blendModeForClip(clip, { rotation, cropFilter, maskFilter }) {
   const mode = blendFilterMode(clip.blendMode);
   if (mode === null) return null;
-  // Lottie sequences carry alpha; blend converts to yuv and would flatten them.
-  if (clip.type === 'lottie') return null;
+  // Lottie/motion sequences carry alpha; blend converts to yuv and would
+  // flatten them.
+  if (clip.type === 'lottie' || clip.type === 'motion') return null;
   if (rotation !== null || cropFilter !== null || maskFilter !== null) return null;
   if (!transformIsFullFrame(clip.transform)) return null;
   if (clipHasVisualKeyframes(clip)) return null;
@@ -1291,22 +1294,26 @@ function cropFilterFor(crop) {
 }
 
 /**
- * Resolve the browser-rendered PNG sequence for a lottie clip.
+ * Resolve the browser-rendered PNG sequence for a lottie or motion clip.
  *
  * Host writes one PNG per clip-local frame at
- * `<projectRoot>/lottie/<clipId>/<index padded to 5>.png`. The sequence must
- * cover frames 0..durationFrames-1; a missing directory/first frame/gap is a
- * clear `lottie-unrendered` error instead of a partially wrong export.
+ * `<projectRoot>/lottie/<clipId>/<index padded to 5>.png` for both clip types.
+ * The sequence must cover frames 0..durationFrames-1; a missing
+ * directory/first frame/gap is a clear `lottie-unrendered` /
+ * `motion-unrendered` error instead of a partially wrong export.
  */
-function lottieSequencePattern(projectRoot, clip) {
+function renderedSequencePattern(projectRoot, clip) {
+  const isMotion = clip?.type === 'motion';
+  const label = isMotion ? 'Motion' : 'Lottie';
+  const unrenderedCode = isMotion ? 'motion-unrendered' : 'lottie-unrendered';
   const clipId = typeof clip?.id === 'string' ? clip.id : '';
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(clipId)) {
-    throw new ExportError('Lottie clip id is not a safe frame-directory name', 'invalid-input');
+    throw new ExportError(`${label} clip id is not a safe frame-directory name`, 'invalid-input');
   }
   const duration = clipDurationFrames(clip);
   if (duration > 100_000) {
     throw new ExportError(
-      `Lottie clip ${clipId} duration ${duration} exceeds the supported frame-sequence limit (100000)`,
+      `${label} clip ${clipId} duration ${duration} exceeds the supported frame-sequence limit (100000)`,
       'invalid-input',
     );
   }
@@ -1316,8 +1323,8 @@ function lottieSequencePattern(projectRoot, clip) {
     entries = readdirSync(directory, { withFileTypes: true });
   } catch (error) {
     throw new ExportError(
-      `Lottie clip ${clipId} has no rendered frames at ${directory}; render the Lottie clip before exporting`,
-      'lottie-unrendered',
+      `${label} clip ${clipId} has no rendered frames at ${directory}; render the ${label} clip before exporting`,
+      unrenderedCode,
       { cause: error },
     );
   }
@@ -1330,9 +1337,9 @@ function lottieSequencePattern(projectRoot, clip) {
   }
   if (!present.has(0)) {
     throw new ExportError(
-      `Lottie clip ${clipId} is missing its first rendered frame (00000.png) in ${directory}; ` +
-      'render the Lottie clip before exporting',
-      'lottie-unrendered',
+      `${label} clip ${clipId} is missing its first rendered frame (00000.png) in ${directory}; ` +
+      `render the ${label} clip before exporting`,
+      unrenderedCode,
     );
   }
   const missing = [];
@@ -1343,9 +1350,9 @@ function lottieSequencePattern(projectRoot, clip) {
     const sample = missing.slice(0, 5).map((index) => String(index).padStart(5, '0') + '.png');
     const suffix = missing.length > 5 ? ', …' : '';
     throw new ExportError(
-      `Lottie clip ${clipId} is missing rendered frame(s) ${sample.join(', ')}${suffix} ` +
-      `(expected ${duration} frames in ${directory}); render the Lottie clip before exporting`,
-      'lottie-unrendered',
+      `${label} clip ${clipId} is missing rendered frame(s) ${sample.join(', ')}${suffix} ` +
+      `(expected ${duration} frames in ${directory}); render the ${label} clip before exporting`,
+      unrenderedCode,
     );
   }
   return path.join(directory, '%05d.png');
@@ -1957,11 +1964,13 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
         continue;
       }
 
-      if (clip.type === 'lottie') {
+      if (clip.type === 'lottie' || clip.type === 'motion') {
         if (trackHidden) continue;
-        const media = findMedia(project, clip.mediaId);
-        if (media === null || media.kind !== 'lottie') continue;
-        const pattern = lottieSequencePattern(root, clip);
+        if (clip.type === 'lottie') {
+          const media = findMedia(project, clip.mediaId);
+          if (media === null || media.kind !== 'lottie') continue;
+        }
+        const pattern = renderedSequencePattern(root, clip);
         const durationFramesForClip = clipDurationFrames(clip);
         const index = addInput(
           [
