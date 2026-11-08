@@ -10,11 +10,17 @@ description = "RenderPlan (Timeline -> per-frame composition instructions) + wgp
 opentake-domain = { workspace = true }
 thiserror = "2"
 
-# GPU frame compositor. macOS ships Metal; we keep the backend surface lean
-# (wgsl + metal only) so the default build links no Vulkan/DX/GL stack. wgpu 23
-# is the pinned baseline — its dependency tree is already vendored in Cargo.lock,
-# so once fetched the build/test path is fully offline.
-wgpu = { version = "23", default-features = false, features = ["wgsl", "metal"] }
+# GPU frame compositor. wgpu 23 is the pinned baseline. Keep the base feature set
+# small (`wgsl`) and choose the native backend per target so macOS keeps Metal,
+# Windows can use D3D12 and Linux/Vulkan (plus GLES fallback) CI can run:
+#   - macOS:   Metal
+#   - Windows: DX12
+#   - Linux:   Vulkan (wgpu 23 exposes it as `vulkan-portability`) + GLES
+#              (`angle`, the wgpu 23 name for the wgpu-core `gles` feature)
+# wgpu 23 itself enables some of these through its own target-specific wgpu-core
+# dependencies; listing them here keeps the intent explicit and lets CI pin the
+# backend set. The default test path remains offline once Cargo.lock is warm.
+wgpu = { version = "23", default-features = false, features = ["wgsl"] }
 # POD uniforms uploaded to the GPU (mat3x2 / crop_uv / opacity / flags).
 bytemuck = { version = "1", features = ["derive"] }
 half = "2"
@@ -25,6 +31,15 @@ pollster = "0.4"
 # glyphs to coverage we composite as a premultiplied-RGBA texture. fontconfig is
 # left off so Linux/CI needs no system fontconfig lib (fontdb scans dirs itself).
 cosmic-text = { version = "0.12", default-features = false, features = ["std", "swash"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "23", default-features = false, features = ["wgsl", "metal"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "23", default-features = false, features = ["wgsl", "dx12"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+wgpu = { version = "23", default-features = false, features = ["wgsl", "vulkan-portability", "angle"] }
 
 [dev-dependencies]
 # PNG read-back round-trip checks in the GPU smoke test (offline, no assets).

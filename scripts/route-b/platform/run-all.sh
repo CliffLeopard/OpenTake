@@ -33,14 +33,18 @@ run_check() {
 }
 
 run_check "environment audit" node scripts/route-b/platform/env-audit.mjs
+run_check "wgpu platform features" node scripts/route-b/platform/check-wgpu-features.mjs
+run_check "web-build prerequisites" ./scripts/route-b/platform/build-web.sh --check
 run_check "package matrix" node scripts/route-b/platform/package-matrix.mjs --check
-run_check "N-API ABI / addon load" node scripts/route-b/platform/abi-compat.mjs
+run_check "N-API ABI (static; load covered by verify-package)" node scripts/route-b/platform/abi-compat.mjs --no-load
 run_check "native artifact inspection" node scripts/route-b/platform/inspect-native.mjs
 if [ -n "$TARBALL" ]; then
   run_check "package verification" node scripts/route-b/platform/verify-package.mjs --tarball "$TARBALL"
 else
   run_check "package verification" node scripts/route-b/platform/verify-package.mjs
 fi
+run_check "signing dry run (skips without Apple secrets)" ./scripts/route-b/platform/sign-macos.sh
+run_check "CI workflow / script validation" ./scripts/route-b/platform/validate-workflows.sh
 
 echo
 echo "=================================================================="

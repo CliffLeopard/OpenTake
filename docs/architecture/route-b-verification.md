@@ -104,10 +104,10 @@ longer falls back to the warning path.
 | Export H.264/AAC, range, alpha, audio-only | verified | current run |
 | Export H.265/10-bit | verified integrated | Host `export_video bitDepth=10` produced Main10 `yuv420p10le` BT.709 |
 | Export ducking | verified integrated | linked A/V voice vs standalone music; RMS 0.1245 -> 0.0908 with `duckMusic` |
-| HDR source handling | verified (SDR delivery) | PQ/HLG source imports, composites and exports 10-bit BT.709; HDR10 passthrough not implemented |
+| HDR source handling | verified (SDR delivery) | PQ/HLG source imports and tone-maps to BT.709 10-bit; isolated true-HDR10 linear writer verified separately |
 | Interchange and subtitles | verified | XMEML/EDL/OTIO/FCPXML/SRT |
 | ASR/captions | verified against mock | real provider not called |
-| Search | text fallback only; Host status now honest | SigLIP assets/backend missing; `opentake-search` capability crate exists |
+| Search | real SigLIP2 on macOS arm64 | Model SHA-verified; Host searchConfigure/index/query returns `red` moment score 0.1607; x64 addon has no ORT and falls back |
 | Generation image/speech/video | verified against mocks | real providers not called |
 | Motion CRUD/preview/publish | verified incl. template path | Host template preview/publish integrated; raw code path still not exposed |
 | Settings storage | verified | other settings/account/updater missing |

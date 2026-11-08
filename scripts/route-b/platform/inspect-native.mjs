@@ -83,9 +83,15 @@ function codeSignature(filePath) {
 }
 
 function napiRegistrationSymbol(filePath) {
-  const strings = run('strings', ['-a', filePath]);
-  if (strings.status !== 0) return null;
-  return /napi_register_module_v1/.test(strings.stdout) ? 'napi_register_module_v1' : 'missing';
+  // Direct byte scan: spawning `strings` on the 43 MiB v38 addon can exhaust
+  // memory. The marker is an ASCII symbol name in the binary.
+  try {
+    return fs.readFileSync(filePath).includes(Buffer.from('napi_register_module_v1'))
+      ? 'napi_register_module_v1'
+      : 'missing';
+  } catch {
+    return null;
+  }
 }
 
 const records = files.map((filePath) => {

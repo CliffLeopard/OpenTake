@@ -520,3 +520,113 @@ now (CI coverage) or after the addon integration stabilizes.
 - New files in this workstream: `crates/opentake-search/**`,
   `scripts/route-b/search/**`, this document. Nothing else was modified or
   committed.
+
+---
+
+## 13. Real ORT integration (task-66)
+
+The user approved the ~1.43 GiB SigLIP2 download, so the slice was wired to real
+inference in the Route B addon.
+
+### 13.1 Enabled feature / build profile
+
+- `crates/opentake-node/Cargo.toml`: `opentake-media = { workspace = true, features = ["ort-backend"] }`.
+  This turns on the existing pinned ORT backend (`ort = 2.0.0-rc.11`,
+  `download-binaries`/`copy-dylibs`; Windows uses `ort-tract` + `tract-onnx`),
+  and no new crate is added to the workspace.
+- The crate-level `opentake-search` contract/fallback stays independent; the
+  addon uses `opentake-media::search` directly for real inference.
+- Measured on macOS arm64, debug build: addon `libopentake_node.dylib` grew from
+  a ~45 MB shipped `v38` artifact baseline to **116.8 MB** including the
+  **71 MB static `libonnxruntime.a`** downloaded to
+  `~/Library/Caches/ort.pyke.io/...`. Release builds are expected to be smaller;
+  measure the shipped package before release. Windows links tract instead of the
+  native ORT dylib.
+- No weights are committed; the model directory is user/persistent data only.
+
+### 13.2 Addon search methods (additive)
+
+Added to `crates/opentake-node/src/lib.rs` (search-only edits). JS names are the
+camelCase forms:
+
+| Method | Arguments | Returns |
+|---|---|---|
+| `searchConfigure` | `modelsDir`, `cacheDir` | capability JSON; verifies pinned sizes + SHA-256 and loads both encoders (`OrtEmbedder`); `modelsDir` may be the models root or the version dir |
+| `searchModelStatus` | — | capability JSON without loading (`models_dir_not_configured` before configure) |
+| `searchIndexStatus` | `assetsJson` | `{modelInstalled,visualAvailable,indexable,indexed,reason,detail,errors}`; `indexed` means current visual `.embed` indexes |
+| `searchIndexStart` | `assetsJson` | same shape after indexing images directly and videos via sampled frames (`index_video`), idempotent, per-asset errors |
+| `searchQuery` | `query`, `assetsJson`, `fps?` | `{moments,visualAvailable,visualError,visualErrorDetail,queryKind:"text"}` |
+| `searchQueryImage` | `imageBase64`, `assetsJson`, `fps?` | same with `queryKind:"image"` |
+
+`assetsJson` is an array of `{id, path, kind: "image"|"video", durationSecs?, width?, height?}`
+(`type` is accepted as an alias for `kind`). The addon never invents project
+assets: the Host passes its current media list. Files/Spoken text search remains
+the Host fallback; the addon returns only real visual Moments (or an explicit
+`visual_unavailable`/`visual_error`).
+
+Real index storage uses the existing `PALMEMB1` format under
+`<cacheDir>/Embeddings/<file-identity-key>.embed`; model verification uses the
+desktop `installed()` + `verify_installed()` (sizes and SHA-256), and loading uses
+`ort_embedder::OrtEmbedder` with the desktop `EmbedderSpec`.
+
+### 13.3 Installer / staging (no committed weights)
+
+`scripts/route-b/search/install-model.mjs`:
+
+- `--check-only`: report raw/canonical file bytes without reading hashes.
+- default: wait for exact pinned sizes, stream SHA-256 over all assets, verify,
+  then **rename** raw HF files (`onnx/vision_model.onnx`, `onnx/text_model.onnx`)
+  into the canonical layout (`image_encoder.onnx`, `text_encoder.onnx`,
+  `tokenizer/tokenizer.json`) and write `manifest.json` + `spec.json` receipts.
+  Idempotent; a checksum mismatch is reported, never staged.
+- `--download` (user-approved): resume/fetch missing pinned assets from the
+  pinned Hugging Face URLs, then verify/stage. During task-66 the Lead took over
+  the single-file resume after parallel-range fetching conflicted; no downloader
+  remains part of the automated test path.
+
+### 13.4 Real-inference proof
+
+```console
+# prereqs: staged canonical assets + cargo build -p opentake-node
+$ node --test --test-timeout=600000 scripts/route-b/search/real-inference.test.mjs
+```
+
+The test loads the N-API addon, generates deterministic red/blue/green PNG
+fixtures, configures real ORT, indexes them, then:
+1. text query `"a solid red square"` must return non-empty Moments from the real
+   SigLIP2 text encoder;
+2. base64 image query of the red fixture must return the red asset first with
+   self-similarity > 0.9;
+3. an unconfigured addon and an empty model dir must report
+   `visual_unavailable` (`models_dir_not_configured` / `model_not_installed`)
+   rather than fake success.
+
+Observed after the approved download was staged (2026-11-08, macOS arm64, debug
+addon, `OrtEmbedder` via `ort 2.0.0-rc.11` / CoreML with CPU fallback):
+
+```console
+$ node scripts/route-b/search/install-model.mjs --models-dir ~/.dsh/opentake/models/siglip2-base-patch16-256-v2
+verified=true installed=true staged=true
+  image_encoder.onnx: 371992072/371992072 sha256=ok
+  text_encoder.onnx: 1129469657/1129469657 sha256=ok
+  tokenizer/tokenizer.json: 34363039/34363039 sha256=ok
+
+$ node --test --test-timeout=900000 scripts/route-b/search/real-inference.test.mjs
+✔ addon loads and reports an honest unconfigured capability
+✔ missing/corrupt model dir is capability-gated (no fake success)
+✔ corrupt (wrong-byte, right-size) assets report checksum_mismatch
+real text query moments: [{"mediaId":"red","frame":0,"startSec":0,"endSec":0,"score":0.15864377,"isImage":true}]
+real image query top moment: {"mediaId":"red","frame":0,"startSec":0,"endSec":0,"score":1.0000215,"isImage":true}
+real video index/query moments: [{"mediaId":"red",...,"score":1.0000215,"isImage":true},{"mediaId":"red-video","frame":0,"startSec":0,"endSec":2,"score":0.9938898,"isImage":false},...]
+✔ real SigLIP2 inference: text + image query into Moments (74532ms)
+ℹ tests 4  ℹ pass 4  ℹ fail 0
+```
+
+Interpretation: the real text encoder matched `"a solid red square"` to the red
+fixture (only red cleared the 0.05 floor / 0.85 relative cutoff among the three
+solid colours); the real image encoder returned the same red fixture as the top
+self-match at ≈1.0 cosine. Model load + 3-image indexing + both queries took
+~74 s in this debug build; the loaded model is the dominant RAM cost (§5).
+
+(Earlier deterministic fallback coverage: 26 Rust unit + 2 integration tests and
+8 Node contract tests; see §9.)

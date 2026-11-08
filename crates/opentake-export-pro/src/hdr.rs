@@ -337,7 +337,7 @@ pub fn decide(
         // HDR-capable compositor.
         if policy.allow_hdr_passthrough {
             notes.push(
-                "HDR10 passthrough selected: 10-bit BT.2020/PQ with mastering metadata. This requires the future HDR compositor; the current engine cannot supply it."
+                "HDR10 delivery selected: the isolated opentake-render HDR linear compositor supplies linear RGBA16F frames, and opentake-export-pro writes PQ/BT.2020 Main10 with mastering metadata. The production wgpu compositor and shared encoder are not migrated yet."
                     .to_string(),
             );
             finalize(
@@ -562,7 +562,8 @@ mod tests {
 
     #[test]
     fn filter_listing_probe_prefers_videotoolbox_on_macos() {
-        let listing = " .S. scale_vt V->V Scale Videotoolbox frames\n .SC zscale V->V Apply resizing";
+        let listing =
+            " .S. scale_vt V->V Scale Videotoolbox frames\n .SC zscale V->V Apply resizing";
         let selected = ToneMapBackend::parse_filter_listing(listing);
         if cfg!(target_os = "macos") {
             assert_eq!(selected, ToneMapBackend::VideoToolbox);

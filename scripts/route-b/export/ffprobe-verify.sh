@@ -48,10 +48,32 @@ for stream in data.get("streams", []):
                     print(f"  {key}: {value}")
 ')
   if [ -n "$side_data" ]; then
-    echo "  side-data:" 
+    echo "  stream side-data:"
     echo "$side_data" | sed 's/^/    /'
   else
-    echo "  side-data: none"
+    echo "  stream side-data: none"
+  fi
+  # MP4/HEVC mastering-display and content-light SEI metadata are exposed on the
+  # first frame by ffprobe, not on the stream side-data.
+  frame_side=$("$FFPROBE" -v error -select_streams v:0 -show_frames \
+    -read_intervals "%+#1" -show_entries frame=side_data_list -of json "$file" \
+    | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+for frame in data.get("frames", []):
+    for item in frame.get("side_data_list", []):
+        kind=item.get("side_data_type") or "side-data"
+        if "Mastering" in kind or "Content light" in kind:
+            print(kind)
+            for key, value in item.items():
+                if key != "side_data_type":
+                    print(f"  {key}: {value}")
+')
+  if [ -n "$frame_side" ]; then
+    echo "  frame HDR side-data:"
+    echo "$frame_side" | sed 's/^/    /'
+  else
+    echo "  frame HDR side-data: none"
   fi
   echo
 done

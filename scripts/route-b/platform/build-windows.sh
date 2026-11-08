@@ -65,9 +65,12 @@ case "$TARGET" in
     ;;
 esac
 
-# The render crate currently enables only the Metal wgpu backend.
-if grep -q 'features = \["wgsl", "metal"\]' crates/opentake-render/Cargo.toml 2>/dev/null; then
-  fail "opentake-render enables wgpu Metal only; Windows needs a dx12 backend feature (source change outside this task)"
+# The render crate chooses the wgpu backend per target (media-dev); reuse the
+# same preflight as CI instead of grepping a specific Cargo line.
+if node scripts/route-b/platform/check-wgpu-features.mjs --platform windows >/dev/null 2>&1; then
+  pass "wgpu windows backend features present"
+else
+  fail "wgpu windows backend features missing (run: node scripts/route-b/platform/check-wgpu-features.mjs --platform windows)"
 fi
 
 # Authenticode.

@@ -27,6 +27,7 @@
 pub mod codec;
 pub mod ducking;
 pub mod hdr;
+pub mod hdr10;
 pub mod wav;
 
 use std::fmt;

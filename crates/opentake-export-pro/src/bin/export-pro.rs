@@ -17,10 +17,16 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 
-use opentake_export_pro::codec::{encode_rgba8_frames, synthetic_test_frames, BitDepth, ColorTags, EncodeSpec, ProCodec};
+use opentake_export_pro::codec::{
+    encode_rgba8_frames, synthetic_test_frames, BitDepth, ColorTags, EncodeSpec, ProCodec,
+};
 use opentake_export_pro::ducking::{demo_layers, mix_layers, mix_with_ducking, DuckingConfig};
 use opentake_export_pro::hdr::{
     decide, CompositorCapability, HdrPolicy, SourceColorMetadata, ToneMapBackend, ToneMapStage,
+};
+use opentake_export_pro::hdr10::{
+    encode_hdr10_frames, linear_frame_to_sdr_rgba8, synthetic_hdr10_frames, Hdr10Metadata,
+    Hdr10Spec, MasteringDisplay,
 };
 use opentake_export_pro::wav::write_wav_f32_mono;
 use opentake_export_pro::{ffmpeg_bin, ffprobe_bin};
@@ -100,9 +106,11 @@ fn main() {
         "probe" => cmd_probe(&args),
         "hdr-policy" => cmd_hdr_policy(&args),
         "tone-map" => cmd_tone_map(&args),
+        "hdr10-encode" => cmd_hdr10_encode(&args),
+        "sdr-fallback-encode" => cmd_sdr_fallback_encode(&args),
         "ducking" => cmd_ducking(&args),
         other => fail(format!(
-            "unknown subcommand {other}; expected encode|probe|hdr-policy|tone-map|ducking"
+            "unknown subcommand {other}; expected encode|probe|hdr-policy|tone-map|ducking|hdr10-encode|sdr-fallback-encode"
         )),
     };
     match result {
@@ -140,7 +148,9 @@ fn cmd_encode(args: &Args) -> opentake_export_pro::Result<Value> {
     let started = Instant::now();
     let stderr = encode_rgba8_frames(&spec, synthetic_test_frames(width, height, frames))?;
     let elapsed_ms = started.elapsed().as_millis();
-    let size = std::fs::metadata(&spec.out).map(|meta| meta.len()).unwrap_or(0);
+    let size = std::fs::metadata(&spec.out)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
     Ok(json!({
         "out": spec.out,
         "codec": spec.codec,
@@ -153,6 +163,99 @@ fn cmd_encode(args: &Args) -> opentake_export_pro::Result<Value> {
         "frames": frames,
         "color": spec.color,
         "x265Params": spec.x265_params(),
+        "bytes": size,
+        "elapsedMs": elapsed_ms,
+        "ffmpegStderr": stderr.trim(),
+    }))
+}
+
+fn cmd_hdr10_encode(args: &Args) -> opentake_export_pro::Result<Value> {
+    let width: u32 = args.number("width", 640u32);
+    let height: u32 = args.number("height", 360u32);
+    let fps: i32 = args.number("fps", 30i32);
+    let frames: usize = args.number("frames", 60usize);
+    let max_cll: u32 = args.number("max-cll", 1000u32);
+    let max_fall: u32 = args.number("max-fall", 400u32);
+    let metadata = Hdr10Metadata::new(MasteringDisplay::bt2020_1000nit(), max_cll, max_fall)?;
+    let spec = Hdr10Spec {
+        out: args.required("out").to_string(),
+        width,
+        height,
+        fps,
+        crf: args.number("crf", 20u8),
+        preset: args.get("preset").unwrap_or("medium").to_string(),
+        metadata,
+    };
+    let started = Instant::now();
+    let linear_frames = synthetic_hdr10_frames(width, height, frames);
+    let stderr = encode_hdr10_frames(&spec, linear_frames)?;
+    let elapsed_ms = started.elapsed().as_millis();
+    let size = std::fs::metadata(&spec.out)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    Ok(json!({
+        "out": spec.out,
+        "mode": "true-hdr10-linear-rgba16f",
+        "codec": "libx265",
+        "profile": "main10",
+        "pixelFormat": "yuv420p10le",
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "frames": frames,
+        "crf": spec.crf,
+        "preset": spec.preset,
+        "metadata": spec.metadata,
+        "x265Params": spec.metadata.x265_params(),
+        "bytes": size,
+        "elapsedMs": elapsed_ms,
+        "ffmpegStderr": stderr.trim(),
+    }))
+}
+
+fn cmd_sdr_fallback_encode(args: &Args) -> opentake_export_pro::Result<Value> {
+    let width: u32 = args.number("width", 640u32);
+    let height: u32 = args.number("height", 360u32);
+    let fps: i32 = args.number("fps", 30i32);
+    let frames: usize = args.number("frames", 60usize);
+    let spec = EncodeSpec {
+        out: args.required("out").to_string(),
+        width,
+        height,
+        fps,
+        codec: ProCodec::H265,
+        bit_depth: BitDepth::Ten,
+        crf: Some(args.number("crf", 20u8)),
+        preset: Some(args.get("preset").unwrap_or("medium").to_string()),
+        color: ColorTags::bt709(),
+        mastering_display: None,
+        max_cll: None,
+        max_fall: None,
+    };
+    let linear = synthetic_hdr10_frames(width, height, frames);
+    let rgba_frames = linear
+        .iter()
+        .map(linear_frame_to_sdr_rgba8)
+        .collect::<Vec<_>>();
+    let started = Instant::now();
+    let stderr = encode_rgba8_frames(&spec, rgba_frames)?;
+    let elapsed_ms = started.elapsed().as_millis();
+    let size = std::fs::metadata(&spec.out)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    Ok(json!({
+        "out": spec.out,
+        "mode": "sdr-fallback-clipped-bt709",
+        "source": "same synthetic linear frames (1000/4000 cd/m² bars), clipped at 203 cd/m²",
+        "trueHdr": false,
+        "codec": "libx265",
+        "profile": "main10",
+        "pixelFormat": spec.pixel_format(),
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "frames": frames,
+        "color": spec.color,
         "bytes": size,
         "elapsedMs": elapsed_ms,
         "ffmpegStderr": stderr.trim(),
@@ -238,7 +341,9 @@ fn probe_source_color(path: &str) -> opentake_export_pro::Result<SourceColorMeta
             path,
         ])
         .output()
-        .map_err(|error| opentake_export_pro::ExportProError::Analysis(format!("ffprobe: {error}")))?;
+        .map_err(|error| {
+            opentake_export_pro::ExportProError::Analysis(format!("ffprobe: {error}"))
+        })?;
     if !output.status.success() {
         return Err(opentake_export_pro::ExportProError::Analysis(format!(
             "ffprobe exited {}",
@@ -252,12 +357,7 @@ fn probe_source_color(path: &str) -> opentake_export_pro::Result<SourceColorMeta
         .and_then(|streams| streams.get(0))
         .cloned()
         .unwrap_or(Value::Null);
-    let field = |name: &str| {
-        stream
-            .get(name)
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    };
+    let field = |name: &str| stream.get(name).and_then(Value::as_str).map(str::to_string);
     Ok(SourceColorMetadata {
         primaries: field("color_primaries"),
         transfer: field("color_transfer"),
@@ -314,9 +414,9 @@ fn cmd_tone_map(args: &Args) -> opentake_export_pro::Result<Value> {
         "-y",
         out,
     ]);
-    let output = command
-        .output()
-        .map_err(|error| opentake_export_pro::ExportProError::Encode(format!("spawn ffmpeg: {error}")))?;
+    let output = command.output().map_err(|error| {
+        opentake_export_pro::ExportProError::Encode(format!("spawn ffmpeg: {error}"))
+    })?;
     if !output.status.success() {
         return Err(opentake_export_pro::ExportProError::Encode(format!(
             "tone-map ffmpeg exited {}: {}",

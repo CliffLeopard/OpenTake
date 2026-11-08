@@ -32,6 +32,11 @@ use opentake_media::analysis::{analyze_loudness, analyze_stabilization, denoise_
 use opentake_media::MediaCancelToken;
 use opentake_media::library::{FavoriteRequest, LibraryStore};
 use opentake_media::decode::pcm::{PcmBuffer, PcmFormat, PcmSpec};
+use opentake_media::frame::RgbaFrame;
+use opentake_media::search::{
+    config as search_config, embed_store, embedder::Embedder, indexer::{index_image, index_video, needs_index, CancelToken}, model_download, ort_embedder::OrtEmbedder, ranker, SamplerOptions,
+};
+use std::path::{Path as FsPath, PathBuf};
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|error| Error::from_reason(error.to_string()))
@@ -668,12 +673,160 @@ struct ExportSession {
     audio: Option<PcmBuffer>,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchCapabilityDto {
+    model: String,
+    version: i32,
+    expected_bytes: i64,
+    models_dir: Option<String>,
+    installed: bool,
+    backend: String,
+    visual_available: bool,
+    reason: Option<String>,
+    detail: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchIndexStatusDto {
+    model_installed: bool,
+    visual_available: bool,
+    indexable: usize,
+    indexed: usize,
+    reason: Option<String>,
+    detail: Option<String>,
+    errors: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchMomentDto {
+    media_id: String,
+    frame: i64,
+    start_sec: f64,
+    end_sec: f64,
+    score: f32,
+    is_image: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchQueryResultDto {
+    moments: Vec<SearchMomentDto>,
+    visual_available: bool,
+    visual_error: Option<String>,
+    visual_error_detail: Option<String>,
+    query_kind: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchAssetDto {
+    id: String,
+    path: String,
+    #[serde(alias = "type")]
+    kind: String,
+    #[serde(default)]
+    duration_secs: Option<f64>,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+}
+
+struct SearchState {
+    cache_dir: PathBuf,
+    embedder: OrtEmbedder,
+    capability: SearchCapabilityDto,
+}
+
+fn search_backend_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "ort-tract"
+    }
+    #[cfg(not(windows))]
+    {
+        "ort-native"
+    }
+}
+
+fn search_manifest_total_bytes(manifest: &model_download::Manifest) -> i64 {
+    manifest.image_encoder.bytes + manifest.text_encoder.bytes + manifest.tokenizer.bytes
+}
+
+/// Accept either the models root (`<root>`, containing the version dir) or the
+/// version dir itself (`<root>/siglip2-base-patch16-256-v2`), so the Host can
+/// pass whatever it configured. Verification always runs against the root.
+fn resolve_search_models_root(models_dir: &FsPath, manifest: &model_download::Manifest) -> PathBuf {
+    let version_name = format!("{}-v{}", manifest.model, manifest.version);
+    let is_version_dir = models_dir.file_name().and_then(|name| name.to_str()) == Some(version_name.as_str());
+    if is_version_dir {
+        models_dir.parent().map(FsPath::to_path_buf).unwrap_or_else(|| models_dir.to_path_buf())
+    } else {
+        models_dir.to_path_buf()
+    }
+}
+
+fn search_capability_unavailable(manifest: &model_download::Manifest, models_dir: Option<&str>, detail: &str) -> SearchCapabilityDto {
+    SearchCapabilityDto {
+        model: manifest.model.clone(),
+        version: manifest.version,
+        expected_bytes: search_manifest_total_bytes(manifest),
+        models_dir: models_dir.map(str::to_string),
+        installed: false,
+        backend: search_backend_name().to_string(),
+        visual_available: false,
+        reason: Some("visual_unavailable".to_string()),
+        detail: Some(detail.to_string()),
+        message: None,
+    }
+}
+
+fn parse_search_assets(assets_json: &str) -> Result<Vec<SearchAssetDto>> {
+    serde_json::from_str(assets_json)
+        .map_err(|error| Error::from_reason(format!("invalid search assets JSON: {error}")))
+}
+
+fn is_visual_search_asset(asset: &SearchAssetDto) -> bool {
+    matches!(asset.kind.as_str(), "image" | "video")
+}
+
+fn decode_rgba_bytes(bytes: &[u8]) -> Result<RgbaFrame> {
+    let image = image::load_from_memory(bytes)
+        .map_err(|error| Error::from_reason(format!("decode search image: {error}")))?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(RgbaFrame::new(width, height, rgba.into_raw()))
+}
+
+fn decode_rgba_path(path: &FsPath) -> Result<RgbaFrame> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| Error::from_reason(format!("read search image {}: {error}", path.display())))?;
+    decode_rgba_bytes(&bytes)
+}
+
+fn moment_dto(hit: ranker::Hit, fps: i32) -> SearchMomentDto {
+    let fps = fps.max(1) as f64;
+    SearchMomentDto {
+        media_id: hit.asset_id,
+        frame: (hit.shot_start * fps).round() as i64,
+        start_sec: hit.shot_start,
+        end_sec: hit.shot_end,
+        score: hit.score,
+        is_image: hit.shot_end <= hit.shot_start,
+    }
+}
+
 #[napi]
 pub struct Engine {
     core: opentake_core::AppCore,
     export: RefCell<Option<ExportSession>>,
     playback: RefCell<Option<NativePlayback>>,
     library: Option<LibraryStore>,
+    search: RefCell<Option<SearchState>>,
 }
 
 #[napi]
@@ -685,6 +838,7 @@ impl Engine {
             export: RefCell::new(None),
             playback: RefCell::new(None),
             library: LibraryStore::open_default().ok(),
+            search: RefCell::new(None),
         }
     }
 
@@ -1872,6 +2026,294 @@ impl Engine {
             .map_err(|error| Error::from_reason(error.to_string()))?;
         json(&TimelineSnapshotDto::from(handle_get_timeline(&self.core)))
     }
+
+    // ------------------------------------------------------------------
+    // Route B visual search (SigLIP2). Additive surface: configure the
+    // persistent models/cache dirs, verify pinned assets, index project
+    // video/image assets, and rank text or image queries into Moments.
+    // Deterministic text Files/Spoken search stays in the Host JS fallback.
+    // ------------------------------------------------------------------
+
+    /// Configure SigLIP2: verify the pinned assets (size + SHA-256), load the
+    /// ONNX encoders, and return the capability JSON.
+    #[napi]
+    pub fn search_configure(&self, models_dir: String, cache_dir: String) -> Result<String> {
+        let manifest = search_config::manifest();
+        let models = resolve_search_models_root(FsPath::new(&models_dir), &manifest);
+        let cache = PathBuf::from(&cache_dir);
+        std::fs::create_dir_all(&cache)
+            .map_err(|error| Error::from_reason(format!("create search cache dir: {error}")))?;
+
+        let installed = match model_download::verify_installed(&models, &manifest) {
+            Ok(installed) => installed,
+            Err(error) => {
+                let text = error.to_string();
+                let detail = if text.to_ascii_lowercase().contains("checksum") || text.to_ascii_lowercase().contains("sha") {
+                    "checksum_mismatch"
+                } else if text.to_ascii_lowercase().contains("missing") || text.to_ascii_lowercase().contains("incomplete") {
+                    "model_not_installed"
+                } else {
+                    "model_incomplete"
+                };
+                *self.search.borrow_mut() = None;
+                return json(&search_capability_unavailable(&manifest, Some(&models_dir), detail));
+            }
+        };
+
+        let tokenizer_json = installed.tokenizer_folder.join("tokenizer.json");
+        let embedder = match OrtEmbedder::new(&installed.image_encoder, &installed.text_encoder, &tokenizer_json, manifest.spec()) {
+            Ok(embedder) => embedder,
+            Err(error) => {
+                let mut capability = search_capability_unavailable(&manifest, Some(&models_dir), "backend_error");
+                capability.installed = true;
+                capability.message = Some(error.to_string());
+                *self.search.borrow_mut() = None;
+                return json(&capability);
+            }
+        };
+        let capability = SearchCapabilityDto {
+            model: manifest.model.clone(),
+            version: manifest.version,
+            expected_bytes: search_manifest_total_bytes(&manifest),
+            models_dir: Some(models_dir),
+            installed: true,
+            backend: search_backend_name().to_string(),
+            visual_available: true,
+            reason: None,
+            detail: None,
+            message: None,
+        };
+        *self.search.borrow_mut() = Some(SearchState { cache_dir: cache, embedder, capability: capability.clone() });
+        json(&capability)
+    }
+
+    /// Capability JSON without loading the model (configure first for assets).
+    #[napi]
+    pub fn search_model_status(&self) -> Result<String> {
+        let state = self.search.borrow();
+        if let Some(state) = state.as_ref() {
+            return json(&state.capability);
+        }
+        let manifest = search_config::manifest();
+        json(&search_capability_unavailable(&manifest, None, "models_dir_not_configured"))
+    }
+
+    /// Visual-index coverage over the caller's project asset list.
+    #[napi]
+    pub fn search_index_status(&self, assets_json: String) -> Result<String> {
+        let assets = parse_search_assets(&assets_json)?;
+        let visual: Vec<&SearchAssetDto> = assets.iter().filter(|asset| is_visual_search_asset(asset)).collect();
+        let state = self.search.borrow();
+        let Some(state) = state.as_ref() else {
+            return json(&SearchIndexStatusDto {
+                model_installed: false,
+                visual_available: false,
+                indexable: visual.len(),
+                indexed: 0,
+                reason: Some("visual_unavailable".to_string()),
+                detail: Some("models_dir_not_configured".to_string()),
+                errors: Vec::new(),
+            });
+        };
+        let spec = search_config::embedder_spec();
+        let indexed = visual
+            .iter()
+            .filter(|asset| {
+                let path = FsPath::new(&asset.path);
+                path.is_file() && !needs_index(&state.cache_dir, path, &spec)
+            })
+            .count();
+        json(&SearchIndexStatusDto {
+            model_installed: true,
+            visual_available: true,
+            indexable: visual.len(),
+            indexed,
+            reason: None,
+            detail: None,
+            errors: Vec::new(),
+        })
+    }
+
+    /// Index the caller's visual assets (images directly; videos via sampled
+    /// frames). Idempotent: already-current indexes are skipped.
+    #[napi]
+    pub fn search_index_start(&self, assets_json: String) -> Result<String> {
+        let assets = parse_search_assets(&assets_json)?;
+        let visual: Vec<&SearchAssetDto> = assets.iter().filter(|asset| is_visual_search_asset(asset)).collect();
+        let state = self.search.borrow();
+        let Some(state) = state.as_ref() else {
+            return json(&SearchIndexStatusDto {
+                model_installed: false,
+                visual_available: false,
+                indexable: visual.len(),
+                indexed: 0,
+                reason: Some("visual_unavailable".to_string()),
+                detail: Some("models_dir_not_configured".to_string()),
+                errors: Vec::new(),
+            });
+        };
+        let cancel = CancelToken::new();
+        let mut errors = Vec::new();
+        for asset in &visual {
+            let path = FsPath::new(&asset.path);
+            if !path.is_file() {
+                errors.push(format!("{}: file not found", asset.id));
+                continue;
+            }
+            let result = if asset.kind == "image" {
+                decode_rgba_path(path).and_then(|frame| {
+                    index_image(&state.cache_dir, path, &frame, &state.embedder, &cancel).map_err(|error| Error::from_reason(error.to_string()))
+                })
+            } else {
+                let probed = opentake_media::probe(path).ok();
+                let duration = asset.duration_secs.or_else(|| probed.as_ref().map(|probe| probe.duration_secs)).unwrap_or(0.0);
+                let width = asset.width.or_else(|| probed.as_ref().and_then(|probe| probe.width)).unwrap_or(1920);
+                let height = asset.height.or_else(|| probed.as_ref().and_then(|probe| probe.height)).unwrap_or(1080);
+                index_video(
+                    &state.cache_dir,
+                    path,
+                    duration,
+                    width,
+                    height,
+                    &state.embedder,
+                    &SamplerOptions::default(),
+                    &cancel,
+                    None,
+                )
+                .map_err(|error| Error::from_reason(error.to_string()))
+            };
+            if let Err(error) = result {
+                errors.push(format!("{}: {}", asset.id, error));
+            }
+        }
+        let spec = search_config::embedder_spec();
+        let indexed = visual
+            .iter()
+            .filter(|asset| {
+                let path = FsPath::new(&asset.path);
+                path.is_file() && !needs_index(&state.cache_dir, path, &spec)
+            })
+            .count();
+        json(&SearchIndexStatusDto {
+            model_installed: true,
+            visual_available: true,
+            indexable: visual.len(),
+            indexed,
+            reason: None,
+            detail: None,
+            errors,
+        })
+    }
+
+    /// Rank a text query against the caller's indexed visual assets.
+    #[napi]
+    pub fn search_query(&self, query: String, assets_json: String, fps: Option<i32>) -> Result<String> {
+        let assets = parse_search_assets(&assets_json)?;
+        let state = self.search.borrow();
+        let Some(state) = state.as_ref() else {
+            return json(&SearchQueryResultDto {
+                moments: Vec::new(),
+                visual_available: false,
+                visual_error: Some("visual_unavailable".to_string()),
+                visual_error_detail: Some("models_dir_not_configured".to_string()),
+                query_kind: "text".to_string(),
+            });
+        };
+        if query.trim().is_empty() {
+            return json(&SearchQueryResultDto {
+                moments: Vec::new(),
+                visual_available: true,
+                visual_error: None,
+                visual_error_detail: None,
+                query_kind: "text".to_string(),
+            });
+        }
+        let vector = match state.embedder.encode_text(&query) {
+            Ok(vector) => vector,
+            Err(error) => {
+                return json(&SearchQueryResultDto {
+                    moments: Vec::new(),
+                    visual_available: true,
+                    visual_error: Some("visual_error".to_string()),
+                    visual_error_detail: Some(error.to_string()),
+                    query_kind: "text".to_string(),
+                });
+            }
+        };
+        let moments = search_rank(&state.cache_dir, &vector, &assets, fps.unwrap_or(30));
+        json(&SearchQueryResultDto {
+            moments,
+            visual_available: true,
+            visual_error: None,
+            visual_error_detail: None,
+            query_kind: "text".to_string(),
+        })
+    }
+
+    /// Rank an image query (base64 PNG/JPEG) against the caller's indexed
+    /// visual assets.
+    #[napi]
+    pub fn search_query_image(&self, image_base64: String, assets_json: String, fps: Option<i32>) -> Result<String> {
+        let assets = parse_search_assets(&assets_json)?;
+        let state = self.search.borrow();
+        let Some(state) = state.as_ref() else {
+            return json(&SearchQueryResultDto {
+                moments: Vec::new(),
+                visual_available: false,
+                visual_error: Some("visual_unavailable".to_string()),
+                visual_error_detail: Some("models_dir_not_configured".to_string()),
+                query_kind: "image".to_string(),
+            });
+        };
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(image_base64.as_bytes())
+            .map_err(|error| Error::from_reason(format!("invalid base64 image: {error}")))?;
+        let frame = decode_rgba_bytes(&bytes)?;
+        let vector = match state.embedder.encode_image(&frame) {
+            Ok(vector) => vector,
+            Err(error) => {
+                return json(&SearchQueryResultDto {
+                    moments: Vec::new(),
+                    visual_available: true,
+                    visual_error: Some("visual_error".to_string()),
+                    visual_error_detail: Some(error.to_string()),
+                    query_kind: "image".to_string(),
+                });
+            }
+        };
+        let moments = search_rank(&state.cache_dir, &vector, &assets, fps.unwrap_or(30));
+        json(&SearchQueryResultDto {
+            moments,
+            visual_available: true,
+            visual_error: None,
+            visual_error_detail: None,
+            query_kind: "image".to_string(),
+        })
+    }
+}
+
+/// Load each indexed visual asset's `PALMEMB1` index and rank the query vector
+/// with the desktop ranker (best-per-shot, floor, limit, relative cutoff).
+fn search_rank(cache_dir: &FsPath, query: &[f32], assets: &[SearchAssetDto], fps: i32) -> Vec<SearchMomentDto> {
+    let mut indexes = Vec::new();
+    for asset in assets.iter().filter(|asset| is_visual_search_asset(asset)) {
+        let path = FsPath::new(&asset.path);
+        let Some(key) = embed_store::key(path) else { continue };
+        if let Ok(index) = embed_store::load(cache_dir, &key) {
+            indexes.push((asset.id.clone(), index));
+        }
+    }
+    ranker::search(
+        query,
+        &indexes,
+        search_config::SEARCH_LIMIT,
+        search_config::RELATIVE_CUTOFF,
+        Some(search_config::VISUAL_MATCH_COSINE_FLOOR),
+    )
+    .into_iter()
+    .map(|hit| moment_dto(hit, fps))
+    .collect()
 }
 
 impl Default for Engine {

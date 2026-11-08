@@ -43,7 +43,12 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/route-b-revalidate-XXXXXX")"
 LOG="$WORK/revalidate.log"
 DSH_HOME_TMP="$WORK/dsh-home"
 PROFILE="routeb-verify-$$"
-ADDON="$WORK/opentake_engine_v28.node"
+ADDON_NAME="$(sed -n 's/.*\(opentake_engine_v[0-9][0-9]*\.node\).*/\1/p' plugins/opentake-studio-route-b/index.js | head -1)"
+if [ -z "${ADDON_NAME:-}" ]; then
+  echo "cannot detect opentake_engine_v*.node name from plugins/opentake-studio-route-b/index.js" >&2
+  exit 2
+fi
+ADDON="$WORK/$ADDON_NAME"
 EXTRACT="$WORK/extracted"
 PASS=0
 FAIL=0
@@ -90,6 +95,12 @@ if [ -x "$DSH_APP" ]; then
 fi
 record PASS "environment" "HEAD $(git rev-parse --short HEAD) branch $(git rev-parse --abbrev-ref HEAD); $(uname -sm); node $NODE_V napi $NAPI_V; DSH node $ELECTRON_V"
 
+if node -e "require(process.argv[1])" "$ROOT/plugins/opentake-studio-route-b/native/darwin-arm64/$ADDON_NAME" >/dev/null 2>&1; then
+  record PASS "addon loads from repo path"
+else
+  record WARN "addon dlopen from the repo path is killed in this shell" "SIGKILL reproduced in Node 24/26; temp copies under \$TMPDIR/\$HOME load, so functional probes use a copy"
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Independent addon build
 # ---------------------------------------------------------------------------
@@ -109,13 +120,13 @@ else
 fi
 cp target/release/libopentake_node.dylib "$ADDON"
 ADDON_SHA="$(shasum -a 256 "$ADDON" | cut -d' ' -f1)"
-REPO_SHA="$(shasum -a 256 plugins/opentake-studio-route-b/native/darwin-arm64/opentake_engine_v28.node 2>/dev/null | cut -d' ' -f1)"
+REPO_SHA="$(shasum -a 256 "plugins/opentake-studio-route-b/native/darwin-arm64/$ADDON_NAME" 2>/dev/null | cut -d' ' -f1)"
 if [ "$ADDON_SHA" = "$REPO_SHA" ]; then
   record PASS "built addon matches checked-in arm64 artifact" "$ADDON_SHA"
 else
   record SKIP "built addon matches checked-in arm64 artifact" "hashes differ (built $ADDON_SHA, repo ${REPO_SHA:-missing}); compare Mach-O UUID before claiming drift"
 fi
-record PASS "addon binary identity" "$(file -b "$ADDON" | cut -c1-80); $(shasum -a 256 "$ADDON" | cut -c1-16)…"
+record PASS "addon binary identity" "$ADDON_NAME · $(file -b "$ADDON" | cut -c1-80); $(shasum -a 256 "$ADDON" | cut -c1-16)…"
 
 # ---------------------------------------------------------------------------
 # 2. Addon smoke + contract probe (system Node and DSH Electron Node)
@@ -200,7 +211,7 @@ if [ -f "${TARBALL:-}" ] && command -v dsh >/dev/null 2>&1; then
   else
     record FAIL "dsh --dump-config mounts @opentake/studio-route-b" "see $WORK/dump-config.log"
   fi
-  INSTALLED_ADDON="$(find "$PROFILE_DIR/node_modules" -path '*darwin-arm64*opentake_engine_v28.node' 2>/dev/null | head -1)"
+  INSTALLED_ADDON="$(find "$PROFILE_DIR/node_modules" -path "*darwin-arm64*/$ADDON_NAME" 2>/dev/null | head -1)"
   if [ -n "$INSTALLED_ADDON" ]; then
     if node -e "const { Engine } = require(process.argv[1]); const e = new Engine(); const s = JSON.parse(e.newProject()); if (s.version !== 0) throw new Error('bad version'); console.log('installed addon ok')" "$INSTALLED_ADDON" >"$WORK/installed-addon.log" 2>&1; then
       record PASS "installed profile addon loads" "$INSTALLED_ADDON"
@@ -219,7 +230,12 @@ fi
 # 5. Host API probe (repo plugin and extracted package)
 # ---------------------------------------------------------------------------
 if [ "$HOST_API" = 1 ]; then
-  run_check "Host API probe (repo plugin)" host-api node scripts/route-b/verify/verify-host-api.mjs
+  # This shell environment SIGKILLs a process that dlopens the repo-path addon
+  # (Node 24 and 26 alike); copies under \$TMPDIR/\$HOME load without changes.
+  # Probe from a temp copy so the functional checks still run.
+  rm -rf "$WORK/plugin-copy"
+  cp -R plugins/opentake-studio-route-b "$WORK/plugin-copy"
+  run_check "Host API probe (repo plugin, temp copy)" host-api node scripts/route-b/verify/verify-host-api.mjs --plugin "$WORK/plugin-copy"
   if [ -d "$EXTRACT/package" ]; then
     run_check "Host API probe (extracted package)" host-api-pkg node scripts/route-b/verify/verify-host-api.mjs --plugin "$EXTRACT/package"
   fi

@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-import { NATIVE_TARGETS, REPO_ROOT, humanBytes, readBinaryInfo, run } from './lib.mjs';
+import { NATIVE_TARGETS, REPO_ROOT, humanBytes, readBinaryInfo } from './lib.mjs';
 
 const require = createRequire(import.meta.url);
 const args = process.argv.slice(2);
@@ -32,6 +32,7 @@ const option = (name) => {
 };
 const flag = (name) => args.includes(name);
 const jsonOnly = flag('--json');
+const noLoad = flag('--no-load');
 const minNapi = Number(option('--min-napi') ?? 8);
 
 function defaultAddon(pluginDir = path.join(REPO_ROOT, 'plugins/opentake-studio-route-b')) {
@@ -74,16 +75,18 @@ if (architectureMatches) record('addon architecture', 'PASS', `${info.format}/${
 else if (expected === null) record('addon architecture', 'WARN', `unknown host directory ${hostDir}; cannot confirm`);
 else record('addon architecture', 'SKIP', `addon is ${info.format}/${info.arch}; host is ${expected.format}/${expected.arch} (load skipped)`);
 
-const registration = run('strings', ['-a', addonPath]);
-if (registration.status === 0) {
-  if (/napi_register_module_v1/.test(registration.stdout)) record('N-API registration symbol', 'PASS', 'napi_register_module_v1 present');
-  else record('N-API registration symbol', 'FAIL', 'napi_register_module_v1 not found');
-}
+// Scan the binary bytes directly instead of spawning `strings` on a large
+// addon (the v38 binary is ~43 MiB and its strings stream can exhaust Node).
+const registration = fs.readFileSync(addonPath).includes(Buffer.from('napi_register_module_v1'));
+if (registration) record('N-API registration symbol', 'PASS', 'napi_register_module_v1 present');
+else record('N-API registration symbol', 'FAIL', 'napi_register_module_v1 not found');
 
 if (info.installName) record('install name', 'INFO', info.installName);
 
 let loaded = false;
-if (architectureMatches) {
+if (noLoad) {
+  record('Engine contract', 'SKIP', 'skipped by --no-load (verify-package.mjs covers the load check)');
+} else if (architectureMatches) {
   try {
     const addon = require(addonPath);
     if (typeof addon.Engine !== 'function') throw new Error('module does not export Engine');

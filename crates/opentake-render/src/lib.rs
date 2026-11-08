@@ -4,6 +4,7 @@
 //! + wgpu frame compositor + ffmpeg codec backends (preview + export share one plan).
 
 pub mod gpu;
+pub mod hdr;
 pub mod plan;
 pub mod size;
 pub mod source;
@@ -20,6 +21,12 @@ pub use plan::{
 };
 pub use size::{even, export_render_size, ExportResolution};
 pub use source::{DecodedFrame, FrameProvider, SourceMetrics};
+
+pub use hdr::{
+    bt2020_to_bt709, bt709_oetf, pq_eotf, pq_inverse_eotf, Hdr10Metadata, HdrError,
+    LinearCompositor, LinearFrame, LinearLayer, LinearPrimaries, LinearSourceMetadata,
+    LinearTransfer, MasteringDisplay, SdrFallback, SdrFallbackMode,
+};
 
 pub use gpu::{
     Compositor, CosmicTextRasterizer, GpuLutTexture, GpuTexture, NullTextRasterizer, RenderDevice,

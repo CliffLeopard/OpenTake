@@ -281,8 +281,8 @@ pub fn ducking_gains(layers: &[AudioLayer], config: &DuckingConfig) -> Result<(V
                 open_start = Some(index);
             }
             hold_remaining = hold_samples;
-        } else if hold_remaining > 0 {
-            hold_remaining -= 1;
+        } else {
+            hold_remaining = hold_remaining.saturating_sub(1);
         }
         let target = if gate_open || hold_remaining > 0 {
             1.0

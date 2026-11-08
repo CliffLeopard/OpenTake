@@ -1,0 +1,400 @@
+name: Route B platform
+
+# Build and verify the Route B native addon on macOS arm64/x64, Windows x64 and
+# Linux x64, optionally signing when repository secrets are present. Windows and
+# Linux jobs stay skipped until the wgpu platform features in
+# crates/opentake-render/Cargo.toml are present (owned by media-dev); the
+# cross-platform-pending job records that explicitly instead of pretending a
+# green cross-platform build.
+#
+# Signing is opt-in: workflow_dispatch with `sign: true` and the corresponding
+# repository secrets. Pull requests never receive signing secrets.
+on:
+  pull_request:
+    paths:
+      - 'plugins/opentake-studio-route-b/**'
+      - 'crates/opentake-node/**'
+      - 'crates/opentake-render/**'
+      - 'scripts/build-route-b-addon.sh'
+      - 'scripts/package-route-b.sh'
+      - 'scripts/route-b/platform/**'
+      - '.github/workflows/route-b-platform.yml'
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: 'Sign/notarize artifacts with repository secrets when present'
+        required: false
+        type: boolean
+        default: false
+      enforce_cross_platform:
+        description: 'Fail when Windows/Linux wgpu readiness is pending (otherwise annotate)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: route-b-platform-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: Preflight (wgpu backends, scripts)
+    runs-on: ubuntu-latest
+    outputs:
+      macos_ready: ${{ steps.wgpu.outputs.macos_ready }}
+      windows_ready: ${{ steps.wgpu.outputs.windows_ready }}
+      linux_ready: ${{ steps.wgpu.outputs.linux_ready }}
+      pending: ${{ steps.wgpu.outputs.pending }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b
+        with:
+          ruby-version: '3.3'
+      - name: Platform backend preflight
+        id: wgpu
+        run: node scripts/route-b/platform/check-wgpu-features.mjs --github-output
+      - name: Validate CI YAML and platform scripts
+        run: ./scripts/route-b/platform/validate-workflows.sh
+      - name: Readiness summary
+        shell: bash
+        run: |
+          {
+            echo "### Route B platform readiness"
+            echo
+            echo "| platform | wgpu backends |"
+            echo "|---|---|"
+            echo "| macOS | ${{ steps.wgpu.outputs.macos_ready }} |"
+            echo "| Windows | ${{ steps.wgpu.outputs.windows_ready }} |"
+            echo "| Linux | ${{ steps.wgpu.outputs.linux_ready }} |"
+            if [ -n "${{ steps.wgpu.outputs.pending }}" ]; then
+              echo
+              echo "Pending platforms: ${{ steps.wgpu.outputs.pending }} (media-dev owns the render-crate feature change)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  macos-arm64:
+    name: macOS arm64
+    needs: preflight
+    if: needs.preflight.outputs.macos_ready == 'true'
+    runs-on: macos-14
+    env:
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_P12_PASSWORD }}
+      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+      APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-route-b-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-route-b-
+      - name: Build web app
+        run: ./scripts/route-b/platform/build-web.sh
+      - name: Build arm64 addon
+        run: ./scripts/build-route-b-addon.sh
+      - name: Verify platform backends
+        run: node scripts/route-b/platform/check-wgpu-features.mjs --platform macos
+      - name: Sign and notarize (optional)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign == true && env.APPLE_CERTIFICATE_P12_BASE64 != ''
+        run: ./scripts/route-b/platform/sign-macos.sh --require --notarize
+      - name: Package arm64 tarball
+        run: ./scripts/route-b/platform/package-from-native.sh
+      - name: Package verification
+        run: |
+          mkdir -p reports
+          node scripts/route-b/platform/verify-package.mjs --json > reports/verify-package.json
+          node scripts/route-b/platform/verify-package.mjs
+          node scripts/route-b/platform/inspect-native.mjs --json > reports/inspect-native.json
+          node scripts/route-b/platform/abi-compat.mjs --no-load --json > reports/abi-compat.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: route-b-macos-arm64
+          path: |
+            dist/*.tgz
+            reports/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: route-b-addon-darwin-arm64
+          path: plugins/opentake-studio-route-b/native/darwin-arm64/*.node
+          if-no-files-found: error
+
+  macos-x64:
+    name: macOS x64 (runtime)
+    needs: preflight
+    if: needs.preflight.outputs.macos_ready == 'true'
+    runs-on: macos-13
+    env:
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_P12_PASSWORD }}
+      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+      APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-route-b-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-route-b-
+      - name: Build web app
+        run: ./scripts/route-b/platform/build-web.sh
+      - name: Build x64 addon
+        run: ./scripts/build-route-b-addon.sh
+      - name: Verify platform backends
+        run: node scripts/route-b/platform/check-wgpu-features.mjs --platform macos
+      - name: Sign (optional)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign == true && env.APPLE_CERTIFICATE_P12_BASE64 != ''
+        run: ./scripts/route-b/platform/sign-macos.sh --require
+      - name: Package x64 tarball
+        run: ./scripts/route-b/platform/package-from-native.sh
+      - name: Package verification and runtime smoke
+        run: |
+          mkdir -p reports
+          node scripts/route-b/platform/verify-package.mjs
+          node scripts/route-b/platform/verify-package.mjs --json > reports/verify-package.json
+          node scripts/route-b/platform/inspect-native.mjs --json > reports/inspect-native.json
+          node scripts/route-b/platform/abi-compat.mjs --no-load --json > reports/abi-compat.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: route-b-macos-x64
+          path: |
+            dist/*.tgz
+            reports/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: route-b-addon-darwin-x64
+          path: plugins/opentake-studio-route-b/native/darwin-x64/*.node
+          if-no-files-found: error
+
+  macos-universal:
+    name: macOS universal package
+    needs: [preflight, macos-arm64, macos-x64]
+    if: needs.preflight.outputs.macos_ready == 'true'
+    runs-on: macos-14
+    env:
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_P12_PASSWORD }}
+      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+      APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Download arm64 addon
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: route-b-addon-darwin-arm64
+          path: plugins/opentake-studio-route-b/native/darwin-arm64
+      - name: Download x64 addon
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: route-b-addon-darwin-x64
+          path: plugins/opentake-studio-route-b/native/darwin-x64
+      - name: Build web app
+        run: ./scripts/route-b/platform/build-web.sh
+      - name: Verify platform backends
+        run: node scripts/route-b/platform/check-wgpu-features.mjs --platform macos
+      - name: Sign and notarize (optional)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign == true && env.APPLE_CERTIFICATE_P12_BASE64 != ''
+        run: ./scripts/route-b/platform/sign-macos.sh --require --notarize
+      - name: Package universal tarball
+        run: ./scripts/route-b/platform/package-from-native.sh
+      - name: Package verification
+        run: |
+          mkdir -p reports
+          node scripts/route-b/platform/verify-package.mjs
+          node scripts/route-b/platform/verify-package.mjs --json > reports/verify-package.json
+          node scripts/route-b/platform/inspect-native.mjs --json > reports/inspect-native.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: route-b-macos-universal
+          path: |
+            dist/*.tgz
+            dist/*.pkg
+            reports/
+          if-no-files-found: error
+
+  windows-x64:
+    name: Windows x64
+    needs: preflight
+    if: needs.preflight.outputs.windows_ready == 'true'
+    runs-on: windows-2022
+    env:
+      WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-route-b-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-route-b-
+      - name: Install MSVC target
+        run: rustup target add x86_64-pc-windows-msvc
+      - name: Build web app
+        run: ./scripts/route-b/platform/build-web.sh
+      - name: Build addon
+        run: ./scripts/build-route-b-addon.sh
+      - name: Verify platform backends
+        run: node scripts/route-b/platform/check-wgpu-features.mjs --platform windows
+      - name: Sign (optional)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign == true && env.WINDOWS_CERTIFICATE_PFX_BASE64 != ''
+        shell: pwsh
+        run: ./scripts/route-b/platform/sign-windows.ps1 -Require
+      - name: Package tarball
+        run: ./scripts/route-b/platform/package-from-native.sh
+      - name: Package verification
+        run: |
+          mkdir -p reports
+          node scripts/route-b/platform/verify-package.mjs
+          node scripts/route-b/platform/verify-package.mjs --json > reports/verify-package.json
+          node scripts/route-b/platform/inspect-native.mjs --json > reports/inspect-native.json
+          node scripts/route-b/platform/abi-compat.mjs --no-load --json > reports/abi-compat.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: route-b-windows-x64
+          path: |
+            dist/*.tgz
+            reports/
+          if-no-files-found: error
+
+  linux-x64:
+    name: Linux x64
+    needs: preflight
+    if: needs.preflight.outputs.linux_ready == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-route-b-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-route-b-
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config ffmpeg fonts-dejavu-core \
+            libvulkan1 mesa-vulkan-drivers
+      - name: Build web app
+        run: ./scripts/route-b/platform/build-web.sh
+      - name: Build addon
+        run: ./scripts/build-route-b-addon.sh
+      - name: Verify platform backends
+        run: node scripts/route-b/platform/check-wgpu-features.mjs --platform linux
+      - name: Package tarball
+        run: ./scripts/route-b/platform/package-from-native.sh
+      - name: Package verification
+        run: |
+          mkdir -p reports
+          node scripts/route-b/platform/verify-package.mjs
+          node scripts/route-b/platform/verify-package.mjs --json > reports/verify-package.json
+          node scripts/route-b/platform/inspect-native.mjs --json > reports/inspect-native.json
+          node scripts/route-b/platform/abi-compat.mjs --no-load --json > reports/abi-compat.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: route-b-linux-x64
+          path: |
+            dist/*.tgz
+            reports/
+          if-no-files-found: error
+
+  cross-platform-pending:
+    name: Windows/Linux readiness
+    needs: preflight
+    if: always() && (needs.preflight.outputs.windows_ready != 'true' || needs.preflight.outputs.linux_ready != 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report pending platforms
+        shell: bash
+        run: |
+          echo "Windows ready: ${{ needs.preflight.outputs.windows_ready }}"
+          echo "Linux ready: ${{ needs.preflight.outputs.linux_ready }}"
+          echo "Pending: ${{ needs.preflight.outputs.pending }}"
+          {
+            echo "### Windows/Linux builds are pending"
+            echo
+            echo "Pending platforms: ${{ needs.preflight.outputs.pending }}"
+            echo "The render crate must expose the wgpu platform backends before these jobs can run."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.enforce_cross_platform }}" = "true" ]; then
+            echo "enforce_cross_platform=true: failing because cross-platform builds are pending." >&2
+            exit 1
+          fi

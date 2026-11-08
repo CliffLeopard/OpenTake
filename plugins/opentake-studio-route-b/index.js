@@ -31,7 +31,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v38.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v39.node');
 }
 
 function loadAddon() {
@@ -126,7 +126,10 @@ export function apply(ctx) {
       key: process.env.OPENAI_API_KEY ?? null,
       model: process.env.OPENTAKE_TTS_MODEL ?? 'gpt-4o-mini-tts',
     },
+    searchCapability: null,
+    searchAttempted: false,
   };
+  const SEARCH_MODELS_DIR = process.env.OPENTAKE_MODELS_DIR ?? path.join(os.homedir(), '.dsh', 'opentake', 'models');
 
   try {
     state.Engine = loadAddon();
@@ -398,6 +401,68 @@ export function apply(ctx) {
       if (error instanceof ProviderError) throw new Error(error.message);
       throw error;
     }
+  }
+
+  function searchAssetsJson() {
+    const items = JSON.parse(state.engine.mediaList()).items
+      .filter((item) => item.type === 'video' || item.type === 'image')
+      .map((item) => ({
+        id: item.id,
+        path: item.path ?? '',
+        kind: item.type,
+        durationSecs: item.duration ?? null,
+        width: item.width ?? null,
+        height: item.height ?? null,
+      }));
+    return JSON.stringify(items);
+  }
+
+  function ensureSearch(force = false) {
+    if (state.searchCapability?.visualAvailable === true && !force) return state.searchCapability;
+    if (state.searchAttempted && !force) return state.searchCapability;
+    state.searchAttempted = true;
+    try {
+      state.searchCapability = JSON.parse(state.engine.searchConfigure(
+        SEARCH_MODELS_DIR,
+        path.join(CACHE_ROOT, 'search-index'),
+      ));
+    } catch (error) {
+      state.searchCapability = {
+        installed: false,
+        model: 'siglip2-base-patch16-256',
+        version: 2,
+        expectedBytes: 1535824768,
+        installedBytes: 0,
+        modelsDir: SEARCH_MODELS_DIR,
+        backend: null,
+        visualAvailable: false,
+        reason: 'visual_unavailable',
+        detail: 'backend_error',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    return state.searchCapability;
+  }
+
+  function visualSearch(query, queryImageBase64, fps) {
+    const capability = ensureSearch();
+    if (capability.visualAvailable !== true) {
+      return { ...textSearch(query ?? ''), visualAvailable: false, visualErrorDetail: capability.detail ?? 'model_not_installed' };
+    }
+    const assets = searchAssetsJson();
+    const visual = queryImageBase64
+      ? JSON.parse(state.engine.searchQueryImage(queryImageBase64, assets, fps ?? 30))
+      : JSON.parse(state.engine.searchQuery(String(query ?? ''), assets, fps ?? 30));
+    const text = queryImageBase64 ? { spoken: [], files: [] } : textSearch(query);
+    return {
+      moments: visual.moments ?? [],
+      spoken: text.spoken ?? [],
+      files: text.files ?? [],
+      visualAvailable: visual.visualAvailable === true,
+      visualError: visual.visual_error ?? visual.visualError ?? null,
+      visualErrorDetail: visual.visual_error_detail ?? visual.visualErrorDetail ?? null,
+      queryKind: visual.query_kind ?? (queryImageBase64 ? 'image' : 'text'),
+    };
   }
 
   function textSearch(query) {
@@ -1013,26 +1078,24 @@ export function apply(ctx) {
       case 'cancel_stabilization_analysis':
         return false;
       case 'search_model_status':
-        return {
-          installed: false,
-          model: 'siglip2-base-patch16-256',
-          version: 2,
-          bytes: 0,
-          expectedBytes: 1535824768,
-          backend: null,
-          visualAvailable: false,
-          visualErrorDetail: 'model_not_installed',
-        };
-      case 'download_search_model':
-        throw new Error('SigLIP2 assets are not installed; downloading ~1.43 GiB requires explicit approval');
-      case 'search_index_status': {
-        const items = JSON.parse(state.engine.mediaList()).items.filter((item) => item.type === 'video' || item.type === 'image');
-        return { modelInstalled: false, visualAvailable: false, indexable: items.length, indexed: 0, reason: 'visual_unavailable', detail: 'model_not_installed' };
+        return ensureSearch();
+      case 'download_search_model': {
+        const capability = ensureSearch(true);
+        if (capability.visualAvailable !== true) {
+          throw new Error(`SigLIP2 assets are not installed (${capability.detail ?? 'model_not_installed'}); use scripts/route-b/search/install-model.mjs`);
+        }
+        return capability;
       }
+      case 'search_index_status':
+        ensureSearch();
+        return JSON.parse(state.engine.searchIndexStatus(searchAssetsJson()));
       case 'search_index_start':
-        throw new Error('visual indexing requires installed SigLIP2 assets and an ONNX backend');
+        ensureSearch();
+        return JSON.parse(state.engine.searchIndexStart(searchAssetsJson()));
       case 'search_query':
-        return { ...textSearch(args.query), visualAvailable: false, visualErrorDetail: 'model_not_installed' };
+        return visualSearch(args.query, null, typeof args.fps === 'number' ? args.fps : undefined);
+      case 'search_query_image':
+        return visualSearch('', String(args.imageBase64 ?? ''), typeof args.fps === 'number' ? args.fps : undefined);
       case 'storage_usage':
         return storageUsage();
       case 'storage_clear':
@@ -1847,10 +1910,10 @@ export function apply(ctx) {
 
   registerTool(
     'opentake_route_b_search',
-    'Text-only project search over media names and cached transcripts (no visual embeddings).',
-    { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
+    'Project search over media names/cached transcripts and indexed SigLIP2 visual moments.',
+    { type: 'object', properties: { query: { type: 'string' }, imageBase64: { type: 'string' } }, additionalProperties: false },
     async (args) => {
-      const value = textSearch(args.query);
+      const value = visualSearch(args.query ?? '', args.imageBase64 ?? null);
       return { text: JSON.stringify(value), data: value };
     },
   );

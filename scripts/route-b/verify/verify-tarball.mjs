@@ -64,24 +64,26 @@ try {
   for (const entry of fs.readdirSync(packageDir, { recursive: true, withFileTypes: true })) {
     if (entry.isFile()) files.push(path.relative(packageDir, path.join(entry.parentPath ?? entry.path, entry.name)));
   }
+  const nativeFiles = files.filter((file) => /^native\/[^/]+\/opentake_engine_v\d+\.node$/.test(file));
+  const addonVersions = [...new Set(nativeFiles.map((file) => file.match(/opentake_engine_v(\d+)\.node/)[1]))];
+  const ADDON_NAME = addonVersions.length === 1 ? `opentake_engine_v${addonVersions[0]}.node` : null;
   check('package contains the expected file set', () => {
-    const expected = [
-      'README.md', 'client.js', 'cordis.patch.yml', 'index.js', 'package.json',
-      'native/darwin-arm64/opentake_engine_v28.node',
-      'native/darwin-x64/opentake_engine_v28.node',
-      'web/index.html', 'web/tauri-shim.js',
-    ];
-    for (const file of expected) assert.ok(files.includes(file), `missing ${file}`);
-    // Host-side modules (motion-templates, providers, ...) are packed via
-    // `lib/*.js`; they are additive to the original 17-file bundle layout.
-    const library = files.filter((file) => /^lib\/[A-Za-z0-9._-]+\.js$/.test(file));
-    const unexpected = files.filter(
-      (file) => !expected.includes(file) && !library.includes(file) && !file.startsWith('web/'),
-    );
+    const required = ['README.md', 'client.js', 'cordis.patch.yml', 'index.js', 'package.json', 'web/index.html', 'web/tauri-shim.js', 'ui/client.js'];
+    for (const file of required) assert.ok(files.includes(file), `missing ${file}`);
+    assert.equal(addonVersions.length, 1, `mixed/missing addon versions: ${addonVersions.join(',')}`);
+    assert.ok(nativeFiles.some((file) => file.startsWith('native/darwin-arm64/')), 'missing arm64 addon');
+    assert.ok(nativeFiles.some((file) => file.startsWith('native/darwin-x64/')), 'missing x64 addon');
+    // Additive workstream files: lib/*.js, ui/**, web/** and native slices.
+    const unexpected = files.filter((file) => {
+      if (required.includes(file)) return false;
+      if (file === 'README.md' || file === 'client.js' || file === 'cordis.patch.yml' || file === 'index.js' || file === 'package.json') return false;
+      if (file.startsWith('web/') || file.startsWith('ui/') || file.startsWith('native/')) return false;
+      if (/^lib\/[A-Za-z0-9._-]+\.js$/.test(file)) return false;
+      return true;
+    });
     assert.deepEqual(unexpected, [], `unexpected package entries: ${unexpected.join(',')}`);
-    assert.equal(files.length, 17 + library.length, `file count: ${files.length}`);
     assert.ok(files.every((file) => !file.startsWith('node_modules/') && !file.endsWith('.map')));
-    return `${files.length} files${library.length > 0 ? ` (modules: ${library.join(', ')})` : ''}`;
+    return `${files.length} files; addon ${ADDON_NAME}`;
   });
 
   const pkg = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'));
@@ -91,7 +93,10 @@ try {
     assert.equal(pkg.dependencies, undefined);
     assert.equal(pkg.dsh.client.platform, 'web');
     assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml');
-    assert.deepEqual(pkg.exports, { '.': './index.js', './client': './client.js' });
+    assert.deepEqual(pkg.exports, { '.': './index.js', './client': './ui/client.js' });
+    assert.ok(pkg.files.includes('ui/**'), 'package files must ship ui/** for the native shell');
+    assert.ok(pkg.files.includes('lib/motion-templates.js'));
+    assert.ok(pkg.files.includes('lib/providers.js'));
   });
   check('cordis patch mounts the bundle id', () => {
     const patch = fs.readFileSync(path.join(packageDir, 'cordis.patch.yml'), 'utf8');
@@ -100,13 +105,13 @@ try {
   });
 
   const archOf = (file) => execFileSync('file', [file], { encoding: 'utf8' });
-  const arm64 = path.join(packageDir, 'native', 'darwin-arm64', 'opentake_engine_v28.node');
-  const x64 = path.join(packageDir, 'native', 'darwin-x64', 'opentake_engine_v28.node');
+  const arm64 = path.join(packageDir, 'native', 'darwin-arm64', ADDON_NAME);
+  const x64 = path.join(packageDir, 'native', 'darwin-x64', ADDON_NAME);
   check('both macOS addon slices are present with the right architecture', () => {
     assert.match(archOf(arm64), /Mach-O 64-bit dynamically linked shared library arm64/);
     assert.match(archOf(x64), /Mach-O 64-bit executable x86_64|Mach-O 64-bit dynamically linked shared library x86_64/);
-    const repoArm = path.join('plugins/opentake-studio-route-b/native/darwin-arm64', 'opentake_engine_v28.node');
-    const repoX64 = path.join('plugins/opentake-studio-route-b/native/darwin-x64', 'opentake_engine_v28.node');
+    const repoArm = path.join('plugins/opentake-studio-route-b/native/darwin-arm64', ADDON_NAME);
+    const repoX64 = path.join('plugins/opentake-studio-route-b/native/darwin-x64', ADDON_NAME);
     for (const [packed, repo] of [[arm64, repoArm], [x64, repoX64]]) {
       if (fs.existsSync(repo)) {
         const packedBytes = fs.readFileSync(packed);
@@ -130,7 +135,7 @@ try {
     return `${assets.length} asset reference(s)`;
   });
 
-  const addonForHost = path.join(packageDir, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v28.node');
+  const addonForHost = path.join(packageDir, 'native', `${process.platform}-${process.arch}`, ADDON_NAME);
 
   // Load the packaged addon through a child Node process so this script itself
   // stays free of native module state.

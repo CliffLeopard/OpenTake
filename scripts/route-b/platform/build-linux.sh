@@ -57,9 +57,12 @@ if command -v zig >/dev/null 2>&1 && command -v cargo-zigbuild >/dev/null 2>&1; 
   pass "zig + cargo-zigbuild present (alternate linker path)"
 fi
 
-# The render crate currently enables only the Metal wgpu backend.
-if grep -q 'features = \["wgsl", "metal"\]' crates/opentake-render/Cargo.toml 2>/dev/null; then
-  fail "opentake-render enables wgpu Metal only; Linux needs a vulkan/gles backend feature (source change outside this task)"
+# The render crate chooses the wgpu backend per target (media-dev); reuse the
+# same preflight as CI instead of grepping a specific Cargo line.
+if node scripts/route-b/platform/check-wgpu-features.mjs --platform linux >/dev/null 2>&1; then
+  pass "wgpu linux backend features present"
+else
+  fail "wgpu linux backend features missing (run: node scripts/route-b/platform/check-wgpu-features.mjs --platform linux)"
 fi
 
 # Container fallback.
