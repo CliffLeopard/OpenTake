@@ -20,7 +20,8 @@ No Tauri window, no sidecar process, no MCP bridge.
   work from Host tools. Media can be imported (ffprobe metadata), shown in the
   media panel, double-clicked onto the timeline, and the direct video preview
   plays inside DSH. Media cards get generated poster thumbnails; waveform
-  buckets are available through the Host IPC/tool.
+  buckets are available through the Host IPC/tool. A basic wgpu
+  `composite_frame` path renders the timeline to a PNG data URL.
 
 ## Build
 
@@ -39,10 +40,10 @@ each platform.
 
 ## Current limits
 
-- Media import/probe/list and direct video preview work; the GPU
-  `composite_frame` / native playback bridge, thumbnails, export,
-  transcription/search/generation, motion documents and account/update
-  surfaces still need their Rust command bridges.
+- Media import/probe/list, direct video preview, thumbnails and a basic
+  video/image GPU composite work. Text/Lottie layers, streaming playback,
+  proxies/sprites, export, transcription/search/generation, motion documents
+  and account/update surfaces still need their Rust command bridges.
 - The Tauri file dialogs are stubbed to `/tmp/opentake-route-b/demo.opentake`;
   native DSH dialogs are a later milestone.
 - The iframe is a stepping stone; a native DSH React mount is the target.

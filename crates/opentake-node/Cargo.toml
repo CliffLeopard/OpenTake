@@ -16,6 +16,8 @@ opentake-core = { workspace = true }
 opentake-domain = { workspace = true }
 opentake-ops = { workspace = true }
 opentake-media = { workspace = true }
+opentake-render = { workspace = true }
+base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

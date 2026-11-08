@@ -30,6 +30,9 @@ by the DSH Host through N-API.
   video+linked-audio clips, inspector loads, and the direct video preview plays.
 - Poster thumbnails generated through `opentake-media` decode; the media card
   displays the real frame. Waveform buckets are bridged via `get_waveform`.
+- Basic `composite_frame` using `opentake-render` wgpu compositor: builds the
+  render plan, decodes video/image layers through a Route B resolver, returns a
+  PNG data URL. Text/Lottie layers and streaming playback remain.
 - Node smoke test: `node crates/opentake-node/test/smoke.mjs`.
 
 ## Known gaps
@@ -46,8 +49,9 @@ by the DSH Host through N-API.
 
 1. Engine addon + project/timeline + UI shell (done).
 2. Media import/probe/list + timeline insert + direct preview (done).
-3. Poster thumbnails and waveform buckets (done); GPU composite/playback,
-   proxies and sprite filmstrips remain.
+3. Poster thumbnails, waveform buckets and basic video/image GPU composite
+   (done); text/Lottie layers, streaming playback, proxies and sprite
+   filmstrips remain.
 4. Export pipeline.
 5. AI/transcription/search/generation and Motion.
 6. Packaging, signing, Windows/Linux, full parity verification.

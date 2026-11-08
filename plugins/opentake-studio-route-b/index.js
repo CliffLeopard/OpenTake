@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v6.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v7.node');
 }
 
 function loadAddon() {
@@ -254,6 +254,11 @@ export function apply(ctx) {
           columns: 1,
           times: [0],
         };
+      }
+      case 'composite_frame': {
+        const frame = typeof args.request?.frame === 'number' ? Math.floor(args.request.frame) : 0;
+        const maxSize = typeof args.maxSize === 'number' ? args.maxSize : undefined;
+        return JSON.parse(state.engine.compositeFrame(frame, maxSize));
       }
       case 'get_waveform':
         return state.engine.waveform(typeof args.mediaRef === 'string' ? args.mediaRef : '');

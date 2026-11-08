@@ -14,6 +14,13 @@ use edit_request::EditRequest;
 use napi_derive::napi;
 use opentake_core::dto::{handle_get_timeline, handle_project_new, handle_project_open, handle_project_save, EditResultDto, TimelineSnapshotDto};
 use opentake_core::session::ProbedMedia;
+use opentake_render::{
+    gpu::{upload_rgba, Compositor, GpuTexture, RenderDevice, TextureResolver},
+    plan::{try_build_render_plan, RenderSize, TextureSource},
+    source::{DecodedFrame, SourceMetrics},
+};
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use opentake_domain::{ClipType, MediaManifestEntry, MediaSource};
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String> {
@@ -77,6 +84,135 @@ fn media_list_json(core: &opentake_core::AppCore) -> serde_json::Value {
     serde_json::json!({ "items": items, "folders": folders, "skipped": [], "prewarm": [] })
 }
 
+struct ManifestMetrics {
+    sizes: HashMap<String, (u32, u32)>,
+    straight_alpha: HashSet<String>,
+}
+
+impl SourceMetrics for ManifestMetrics {
+    fn natural_size(&self, media_ref: &str) -> Option<(u32, u32)> {
+        self.sizes.get(media_ref).copied()
+    }
+
+    fn needs_premultiply(&self, media_ref: &str) -> bool {
+        self.straight_alpha.contains(media_ref)
+    }
+}
+
+struct BasicResolver<'a> {
+    device: &'a opentake_render::wgpu::Device,
+    queue: &'a opentake_render::wgpu::Queue,
+    engine: &'a opentake_media::MediaEngine,
+    media: &'a HashMap<String, (std::path::PathBuf, bool)>,
+    timeline_fps: i32,
+    cache: HashMap<String, Rc<GpuTexture>>,
+}
+
+impl TextureResolver for BasicResolver<'_> {
+    fn resolve(&mut self, source: &TextureSource, source_frame: i64) -> Option<Rc<GpuTexture>> {
+        let (media_ref, is_image) = match source {
+            TextureSource::Decoded { media_ref } => (media_ref, false),
+            TextureSource::Image { media_ref } => (media_ref, true),
+            // Text and Lottie are rendered by the desktop resolver; keep the
+            // Route B preview bridge focused on video/image composition first.
+            TextureSource::Text { .. } | TextureSource::Lottie { .. } => return None,
+        };
+        let (path, _) = self.media.get(media_ref)?;
+        let key = format!("{media_ref}:{source_frame}:{is_image}");
+        if let Some(texture) = self.cache.get(&key) {
+            return Some(texture.clone());
+        }
+        let decoded = if is_image {
+            opentake_media::thumbnail::image_thumbnail(path, 512).ok()?
+        } else {
+            let time_secs = source_frame as f64 / f64::from(self.timeline_fps.max(1));
+            self.engine
+                .decode_frame(
+                    path,
+                    &opentake_media::decode::FrameRequest {
+                        time_secs,
+                        max_size: (0, 0),
+                        tolerance_secs: 0.1,
+                        apply_rotation: true,
+                    },
+                )
+                .ok()?
+                .1
+        };
+        let frame = DecodedFrame::new(decoded.width, decoded.height, decoded.rgba, false);
+        let texture = Rc::new(upload_rgba(
+            self.device,
+            self.queue,
+            &frame,
+            false,
+            Some("route-b-preview"),
+        ));
+        self.cache.insert(key, texture.clone());
+        Some(texture)
+    }
+}
+
+fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Option<u32>) -> std::result::Result<serde_json::Value, String> {
+    let snapshot = core.get_timeline();
+    let timeline = &snapshot.timeline;
+    let manifest = core.media();
+    let project_dir = core.project_dir();
+    let mut sizes = HashMap::new();
+    let mut straight_alpha = HashSet::new();
+    let mut media = HashMap::new();
+    for entry in &manifest.entries {
+        if let (Some(width), Some(height)) = (entry.source_width, entry.source_height) {
+            if width > 0 && height > 0 {
+                sizes.insert(entry.id.clone(), (width as u32, height as u32));
+            }
+        }
+        if entry.carries_straight_alpha() {
+            straight_alpha.insert(entry.id.clone());
+        }
+        if let Some(path) = resolve_media_path(entry, project_dir.as_deref()) {
+            media.insert(entry.id.clone(), (path, entry.kind == ClipType::Image));
+        }
+    }
+    let longest = max_size.unwrap_or(960).max(2);
+    let scale = (longest as f64 / timeline.width.max(1) as f64)
+        .min(longest as f64 / timeline.height.max(1) as f64)
+        .min(1.0);
+    let render_size = RenderSize::new(
+        ((timeline.width as f64 * scale).round() as u32).max(2),
+        ((timeline.height as f64 * scale).round() as u32).max(2),
+    );
+    let metrics = ManifestMetrics { sizes, straight_alpha };
+    let plan = try_build_render_plan(timeline, render_size, &metrics)?;
+    let frame_plan = plan.frame(timeline, frame);
+    let device = RenderDevice::try_new().map_err(|error| error.to_string())?;
+    let compositor = Compositor::new(&device.device);
+    let cache = std::env::temp_dir().join("opentake-route-b").join("cache");
+    let media_engine = opentake_media::MediaEngine::new(&cache, cache.join("models"));
+    let mut resolver = BasicResolver {
+        device: &device.device,
+        queue: &device.queue,
+        engine: &media_engine,
+        media: &media,
+        timeline_fps: timeline.fps,
+        cache: HashMap::new(),
+    };
+    let rendered = compositor
+        .render_to_rgba(&device.device, &device.queue, render_size, &frame_plan, &mut resolver)
+        .map_err(|error| error.to_string())?;
+    let image = image::RgbaImage::from_raw(rendered.width, rendered.height, rendered.rgba)
+        .ok_or_else(|| "composite produced an invalid RGBA buffer".to_string())?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|error| error.to_string())?;
+    use base64::Engine as _;
+    let data_url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    );
+    Ok(serde_json::json!({ "width": rendered.width, "height": rendered.height, "dataUrl": data_url }))
+}
+
 #[napi]
 pub struct Engine {
     core: opentake_core::AppCore,
@@ -126,6 +262,14 @@ impl Engine {
     #[napi]
     pub fn get_timeline(&self) -> Result<String> {
         json(&handle_get_timeline(&self.core))
+    }
+
+    /// Composite the timeline at `frame` and return `{width,height,dataUrl}`.
+    #[napi]
+    pub fn composite_frame(&self, frame: i32, max_size: Option<u32>) -> Result<String> {
+        let value = composite_frame_json(&self.core, frame, max_size)
+            .map_err(|message| Error::from_reason(message))?;
+        json(&value)
     }
 
     /// Current media catalog in the React UI's `MediaList` JSON shape.

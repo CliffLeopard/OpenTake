@@ -3900,6 +3900,7 @@ dependencies = [
 name = "opentake-node"
 version = "1.0.0-beta.6"
 dependencies = [
+ "base64 0.22.1",
  "image",
  "napi",
  "napi-build",
@@ -3908,6 +3909,7 @@ dependencies = [
  "opentake-domain",
  "opentake-media",
  "opentake-ops",
+ "opentake-render",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
