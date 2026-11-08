@@ -26,6 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = "2"
+cpal = "0.15.3"
 
 [build-dependencies]
 napi-build = "2"

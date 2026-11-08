@@ -31,7 +31,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v31.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v32.node');
 }
 
 function loadAddon() {
@@ -235,7 +235,19 @@ export function apply(ctx) {
     const snapshot = JSON.parse(state.engine.getTimeline());
     const total = Math.max(1, snapshot.timeline.tracks.reduce((max, track) => Math.max(max, ...track.clips.map((clip) => clip.startFrame + clip.durationFrames)), 0));
     let frame = job.frame;
-    if (!job.paused && job.audioFrame !== null && Date.now() - job.audioAt < 750) {
+    if (job.nativeAudio === true) {
+      try {
+        const native = JSON.parse(state.engine.playbackAudioStatus());
+        if (native.active === true && typeof native.frame === 'number') {
+          frame = Math.max(0, native.frame);
+          if (frame >= total) {
+            frame = Math.max(0, total - 1);
+            job.active = false;
+            job.terminal = true;
+          }
+        }
+      } catch { /* fall back to wall clock */ }
+    } else if (!job.paused && job.audioFrame !== null && Date.now() - job.audioAt < 750) {
       frame = Math.max(0, Math.round(job.audioFrame));
     } else if (!job.paused) {
       frame = job.startFrame + Math.floor(((Date.now() - job.startedAt) / 1000) * job.fps);
@@ -865,27 +877,40 @@ export function apply(ctx) {
           sequence: 0,
           audioFrame: null,
           audioAt: 0,
+          nativeAudio: false,
           identity: playbackIdentity(cmd, args),
         };
+        try {
+          const native = JSON.parse(state.engine.playbackAudioStart(state.playback.startFrame));
+          state.playback.nativeAudio = native.nativeAudio === true;
+        } catch { state.playback.nativeAudio = false; }
         return null;
       }
       case 'playback_pause':
         if (state.playback !== null) {
           state.playback.paused = true;
+          try { state.engine.playbackAudioPause(); } catch { /* no native audio */ }
           state.playback.frame = typeof args.frame === 'number' ? args.frame : state.playback.frame;
         }
         return null;
       case 'playback_stop':
+        try { state.engine.playbackAudioStop(); } catch { /* no native audio */ }
         state.playback = null;
         return null;
       case 'playback_seek':
         if (state.playback !== null) {
+          try { state.engine.playbackAudioStop(); } catch { /* no native audio */ }
           state.playback.startFrame = typeof args.frame === 'number' ? args.frame : 0;
           state.playback.frame = state.playback.startFrame;
           state.playback.startedAt = Date.now();
           state.playback.sequence = 0;
           state.playback.audioFrame = null;
           state.playback.audioAt = 0;
+          state.playback.nativeAudio = false;
+          try {
+            const native = JSON.parse(state.engine.playbackAudioStart(state.playback.startFrame));
+            state.playback.nativeAudio = native.nativeAudio === true;
+          } catch { state.playback.nativeAudio = false; }
         }
         return null;
       case 'transcribe_model_status':
@@ -1330,6 +1355,10 @@ export function apply(ctx) {
         return;
       }
       if (sub === '/engine/playback/audio' && req.method === 'GET') {
+        if (state.playback?.nativeAudio === true) {
+          sendJson(res, 409, { error: { code: 'native-audio', message: 'native audio clock is active' } });
+          return;
+        }
         try {
           const file = state.engine.audioMixWav();
           const bytes = await readFile(file);

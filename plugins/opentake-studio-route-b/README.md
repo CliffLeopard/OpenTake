@@ -77,3 +77,6 @@ not runtime-tested on this machine.
 
 - The default client entry is the DSH-native shell (`ui/client.js`); the editor
   body is still the existing iframe build.
+
+- Host playback now starts the addon cpal audio master clock; the mixed WAV
+  route is withheld while native audio is active.

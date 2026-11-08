@@ -3901,6 +3901,7 @@ name = "opentake-node"
 version = "1.0.0-beta.6"
 dependencies = [
  "base64 0.22.1",
+ "cpal",
  "image",
  "napi",
  "napi-build",

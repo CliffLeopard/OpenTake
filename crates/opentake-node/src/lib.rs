@@ -21,6 +21,9 @@ use opentake_render::{
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use opentake_domain::{ClipType, MediaManifestEntry, MediaSource};
@@ -443,6 +446,34 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
     Ok(serde_json::json!({ "width": rendered.width, "height": rendered.height, "dataUrl": data_url }))
 }
 
+fn fill_audio<T: Copy>(
+    data: &mut [T],
+    channels: usize,
+    device_rate: u32,
+    source_rate: f64,
+    start_sample: usize,
+    sample_len: usize,
+    samples: &[f32],
+    position: &AtomicU64,
+    convert: impl Fn(f32) -> T + Copy,
+) {
+    let frames = data.len() / channels.max(1);
+    let played = position.fetch_add(frames as u64, Ordering::AcqRel);
+    for frame in 0..frames {
+        let absolute = played as f64 + frame as f64;
+        let source_index = start_sample as f64 + (absolute * source_rate / device_rate as f64);
+        let sample = if source_index >= 0.0 && (source_index as usize) < sample_len {
+            samples[source_index as usize]
+        } else {
+            0.0
+        };
+        let value = convert(sample);
+        for channel in 0..channels {
+            data[frame * channels + channel] = value;
+        }
+    }
+}
+
 fn collect_audio_clips(
     timeline: &opentake_domain::Timeline,
     frame_offset: i32,
@@ -521,6 +552,15 @@ fn collect_audio_clips(
     }
 }
 
+struct NativePlayback {
+    stream: cpal::Stream,
+    position: Arc<AtomicU64>,
+    sample_rate: u32,
+    fps: i32,
+    start_frame: i32,
+    paused: bool,
+}
+
 struct ExportSession {
     encoder: opentake_media::VideoEncoder,
     transparent: bool,
@@ -539,6 +579,7 @@ struct ExportSession {
 pub struct Engine {
     core: opentake_core::AppCore,
     export: RefCell<Option<ExportSession>>,
+    playback: RefCell<Option<NativePlayback>>,
     library: Option<LibraryStore>,
 }
 
@@ -549,6 +590,7 @@ impl Engine {
         Self {
             core: opentake_core::AppCore::new(),
             export: RefCell::new(None),
+            playback: RefCell::new(None),
             library: LibraryStore::open_default().ok(),
         }
     }
@@ -625,6 +667,131 @@ impl Engine {
             spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 },
             samples_f32: mixed,
         })
+    }
+
+    /// Start native cpal playback of the timeline mix at `start_frame`.
+    #[napi]
+    pub fn playback_audio_start(&self, start_frame: i32) -> Result<String> {
+        self.playback_audio_stop_inner();
+        let timeline = self.core.get_timeline().timeline;
+        let fps = timeline.fps.max(1);
+        let source = self.mix_timeline_audio(&timeline);
+        let samples = source.map(|pcm| pcm.samples_f32).unwrap_or_default();
+        let source_rate = MIX_SAMPLE_RATE as f64;
+        let sample_len = samples.len();
+        let samples = Arc::new(samples);
+        let start = start_frame.max(0);
+        let start_sample = ((start as f64 / fps as f64) * source_rate).round() as usize;
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| Error::from_reason("no default audio output device"))?;
+        let supported = device
+            .default_output_config()
+            .map_err(|error| Error::from_reason(format!("audio output config: {error}")))?;
+        let sample_format = supported.sample_format();
+        let config: cpal::StreamConfig = supported.into();
+        let channels = config.channels as usize;
+        let sample_rate = config.sample_rate.0;
+        if channels == 0 || sample_rate == 0 {
+            return Err(Error::from_reason("invalid audio output configuration"));
+        }
+        let position = Arc::new(AtomicU64::new(0));
+        let position_cb = Arc::clone(&position);
+        let samples_cb = Arc::clone(&samples);
+        let error_callback = |error| eprintln!("[opentake-route-b] audio output error: {error}");
+        let stream = match sample_format {
+            cpal::SampleFormat::F32 => device.build_output_stream(
+                &config,
+                move |data: &mut [f32], _| {
+                    fill_audio(data, channels, sample_rate, source_rate, start_sample, sample_len, &samples_cb, &position_cb, |sample| sample);
+                },
+                error_callback,
+                None,
+            ),
+            cpal::SampleFormat::I16 => device.build_output_stream(
+                &config,
+                move |data: &mut [i16], _| {
+                    fill_audio(data, channels, sample_rate, source_rate, start_sample, sample_len, &samples_cb, &position_cb, |sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+                },
+                error_callback,
+                None,
+            ),
+            cpal::SampleFormat::U16 => device.build_output_stream(
+                &config,
+                move |data: &mut [u16], _| {
+                    fill_audio(data, channels, sample_rate, source_rate, start_sample, sample_len, &samples_cb, &position_cb, |sample| ((sample.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16);
+                },
+                error_callback,
+                None,
+            ),
+            other => return Err(Error::from_reason(format!("unsupported audio sample format: {other:?}"))),
+        }
+        .map_err(|error| Error::from_reason(format!("build audio output: {error}")))?;
+        stream.play().map_err(|error| Error::from_reason(format!("start audio output: {error}")))?;
+        *self.playback.borrow_mut() = Some(NativePlayback {
+            stream,
+            position,
+            sample_rate,
+            fps,
+            start_frame: start,
+            paused: false,
+        });
+        json(&serde_json::json!({
+            "active": true,
+            "nativeAudio": true,
+            "sampleRate": sample_rate,
+            "fps": fps,
+            "startFrame": start,
+        }))
+    }
+
+    /// Current native audio-clock position; `{active:false}` when no session.
+    #[napi]
+    pub fn playback_audio_status(&self) -> Result<String> {
+        let guard = self.playback.borrow();
+        let Some(playback) = guard.as_ref() else {
+            return json(&serde_json::json!({ "active": false, "nativeAudio": true }));
+        };
+        let played = playback.position.load(Ordering::Acquire);
+        let frame = playback.start_frame as f64
+            + (played as f64 / playback.sample_rate as f64) * playback.fps as f64;
+        json(&serde_json::json!({
+            "active": !playback.paused,
+            "paused": playback.paused,
+            "nativeAudio": true,
+            "frame": frame.floor() as i32,
+            "samplePosition": played,
+            "fps": playback.fps,
+        }))
+    }
+
+    #[napi]
+    pub fn playback_audio_pause(&self) -> Result<bool> {
+        let guard = self.playback.borrow();
+        let Some(playback) = guard.as_ref() else { return Ok(false); };
+        playback.stream.pause().map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(true)
+    }
+
+    #[napi]
+    pub fn playback_audio_resume(&self) -> Result<bool> {
+        let guard = self.playback.borrow();
+        let Some(playback) = guard.as_ref() else { return Ok(false); };
+        playback.stream.play().map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(true)
+    }
+
+    #[napi]
+    pub fn playback_audio_stop(&self) -> Result<bool> {
+        self.playback_audio_stop_inner();
+        Ok(true)
+    }
+
+    fn playback_audio_stop_inner(&self) {
+        if let Some(playback) = self.playback.borrow_mut().take() {
+            let _ = playback.stream.pause();
+        }
     }
 
     /// Analyze one ordinary video clip into a source-bound stabilization track.
