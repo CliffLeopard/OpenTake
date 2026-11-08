@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v20.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v21.node');
 }
 
 function loadAddon() {
@@ -240,6 +240,11 @@ export function apply(ctx) {
         const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
         return importMedia(paths);
       }
+      case 'export_subtitles':
+        return JSON.parse(state.engine.exportSubtitles(
+          String(args.path ?? ''),
+          typeof args.format === 'string' ? args.format : 'srt',
+        ));
       case 'library_import_to_project':
         return JSON.parse(state.engine.libraryImportToProject(String(args.id ?? '')));
       case 'library_list':
@@ -696,6 +701,21 @@ export function apply(ctx) {
     { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false },
     async (args) => {
       const value = JSON.parse(ensureEngine().libraryImportToProject(args.id));
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_export_subtitles',
+    'Write timeline caption cues to an SRT or VTT file.',
+    {
+      type: 'object',
+      properties: { path: { type: 'string' }, format: { type: 'string', enum: ['srt', 'vtt'] } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().exportSubtitles(args.path, args.format ?? 'srt'));
       return { text: JSON.stringify(value), data: value };
     },
   );

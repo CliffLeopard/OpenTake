@@ -862,6 +862,20 @@ impl Engine {
         result
     }
 
+    /// Write the timeline's caption cues as SRT or VTT; returns `{outPath,cueCount}`.
+    #[napi]
+    pub fn export_subtitles(&self, path: String, format: String) -> Result<String> {
+        let timeline = self.core.get_timeline().timeline;
+        let cue_count = opentake_domain::collect_caption_cues(&timeline).len();
+        let body = if format.eq_ignore_ascii_case("vtt") {
+            opentake_domain::export_vtt(&timeline)
+        } else {
+            opentake_domain::export_srt(&timeline)
+        };
+        std::fs::write(&path, body).map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&serde_json::json!({ "outPath": path, "cueCount": cue_count }))
+    }
+
     /// Global library entries (optionally filtered; empty string = all).
     #[napi]
     pub fn library_list(&self, category: Option<String>) -> Result<String> {
