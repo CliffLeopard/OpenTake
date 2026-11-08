@@ -68,6 +68,8 @@ const RECT_EPSILON = 1e-9;
 
 const MASK_SHAPES = ['rect', 'ellipse'];
 const TRACK_ROLES = ['voice', 'music', 'sfx', 'other'];
+
+const DEFAULT_GROUP_COLOR = '#4f8cff';
 const BLEND_MODES = [
   'normal',
   'screen',
@@ -646,6 +648,30 @@ function normalizeTransition(value, code = 'invalid-transition') {
   return { id, trackId, fromClipId, toClipId, type: value.type, durationFrames };
 }
 
+/** Normalize a clip group (DESIGN Phase 19). */
+function normalizeGroup(value, code = 'invalid-group') {
+  assertObject(value, code, 'group');
+  const id = requireId(value.id, code, 'group.id');
+  const name =
+    value.name === undefined ? 'Group' : requireNonEmptyString(value.name, code, 'group.name');
+  const color =
+    value.color === undefined
+      ? DEFAULT_GROUP_COLOR
+      : requireNonEmptyString(value.color, code, 'group.color');
+  if (!HEX_COLOR_RE.test(color)) fail(code, 'group.color must be a #rrggbb color');
+  const clipIdsValue = value.clipIds === undefined ? [] : value.clipIds;
+  if (!Array.isArray(clipIdsValue)) fail(code, 'group.clipIds must be an array');
+  const seen = new Set();
+  const clipIds = [];
+  for (const clipId of clipIdsValue) {
+    requireId(clipId, code, 'group.clipIds[]');
+    if (seen.has(clipId)) fail(code, `group ${id} has duplicate clip id: ${clipId}`);
+    seen.add(clipId);
+    clipIds.push(clipId);
+  }
+  return { id, name, color, clipIds };
+}
+
 /**
  * Clips that may participate in transitions (DESIGN §11.1). Text-like and
  * Lottie clips are excluded until export can handle them.
@@ -757,6 +783,22 @@ function normalizeMotion(value, code) {
     fail(code, `motion.align must be one of ${MOTION_ALIGNS.join('/')}`);
   }
   return motion;
+}
+
+/**
+ * Drop group memberships for clips that no longer exist (removed, overwritten
+ * or split-away). Groups themselves are kept even when they become empty.
+ */
+function pruneGroups(project) {
+  const clipIds = allClipIds(project);
+  const assigned = new Set();
+  for (const group of project.groups) {
+    group.clipIds = group.clipIds.filter((clipId) => {
+      if (!clipIds.has(clipId) || assigned.has(clipId)) return false;
+      assigned.add(clipId);
+      return true;
+    });
+  }
 }
 
 function normalizeMedia(value, projectFps) {
@@ -1018,6 +1060,7 @@ function validateProject(project) {
   if (!Array.isArray(project.transitions)) {
     fail('invalid-project', 'project.transitions must be an array');
   }
+  if (!Array.isArray(project.groups)) fail('invalid-project', 'project.groups must be an array');
 
   const mediaById = new Map();
   for (const media of project.media) {
@@ -1147,6 +1190,34 @@ function validateProject(project) {
     }
     adjacency.add(key);
   }
+
+  // Clip groups -------------------------------------------------------------
+  const groupIds = new Set();
+  const groupedClips = new Set();
+  for (const group of project.groups) {
+    if (groupIds.has(group.id)) fail('duplicate-id', `duplicate group id: ${group.id}`);
+    groupIds.add(group.id);
+    if (typeof group.name !== 'string' || group.name.length === 0) {
+      fail('invalid-group', `group ${group.id} needs a non-empty name`);
+    }
+    if (!HEX_COLOR_RE.test(group.color)) {
+      fail('invalid-group', `group ${group.id} color must be a #rrggbb color`);
+    }
+    const members = new Set();
+    for (const clipId of group.clipIds) {
+      if (members.has(clipId)) {
+        fail('invalid-group', `group ${group.id} has duplicate clip id: ${clipId}`);
+      }
+      members.add(clipId);
+      if (!clipIds.has(clipId)) {
+        fail('invalid-group', `group ${group.id} references missing clip ${clipId}`);
+      }
+      if (groupedClips.has(clipId)) {
+        fail('invalid-group', `clip ${clipId} belongs to more than one group`);
+      }
+      groupedClips.add(clipId);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1172,6 +1243,7 @@ export function createProject(options = {}) {
     tracks: [],
     markers: [],
     transitions: [],
+    groups: [],
   });
 }
 
@@ -1222,6 +1294,9 @@ export function normalizeProject(value) {
   if (value.transitions !== undefined && !Array.isArray(value.transitions)) {
     fail('invalid-project', 'project.transitions must be an array');
   }
+  if (value.groups !== undefined && !Array.isArray(value.groups)) {
+    fail('invalid-project', 'project.groups must be an array');
+  }
 
   const media = (value.media === undefined ? [] : value.media).map((item) => normalizeMedia(item, fps));
   const tracks = (value.tracks === undefined ? [] : value.tracks).map((item) => normalizeTrack(item));
@@ -1230,6 +1305,7 @@ export function normalizeProject(value) {
   const transitions = (value.transitions === undefined ? [] : value.transitions).map((item) =>
     normalizeTransition(item),
   );
+  const groups = (value.groups === undefined ? [] : value.groups).map((item) => normalizeGroup(item));
 
   const project = {
     version: PROJECT_VERSION,
@@ -1243,6 +1319,7 @@ export function normalizeProject(value) {
     tracks,
     markers,
     transitions,
+    groups,
   };
   validateProject(project);
   sortTransitions(project);
@@ -2695,6 +2772,113 @@ function updateCaptionOperation(project, operation) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Internal: Phase 19 clip-group operations
+// ---------------------------------------------------------------------------
+
+function findGroupIndex(project, groupId) {
+  return project.groups.findIndex((group) => group.id === groupId);
+}
+
+function groupContainingClip(project, clipId) {
+  return project.groups.find((group) => group.clipIds.includes(clipId)) ?? null;
+}
+
+function createGroupOperation(project, operation) {
+  const groupId = requireId(operation.groupId, 'invalid-input', 'groupId');
+  if (findGroupIndex(project, groupId) >= 0) {
+    fail('duplicate-id', `group id already exists: ${groupId}`);
+  }
+  if (!Array.isArray(operation.clipIds) || operation.clipIds.length === 0) {
+    fail('invalid-input', 'create-group requires a non-empty clipIds array');
+  }
+  const clipIds = [];
+  const seen = new Set();
+  for (const raw of operation.clipIds) {
+    const clipId = requireId(raw, 'invalid-input', 'clipIds[]');
+    if (seen.has(clipId)) continue;
+    seen.add(clipId);
+    if (!findClip(project, clipId)) fail('clip-not-found', `clip not found: ${clipId}`);
+    const existing = groupContainingClip(project, clipId);
+    if (existing !== null) {
+      fail('invalid-group', `clip ${clipId} is already in group ${existing.id}`);
+    }
+    clipIds.push(clipId);
+  }
+  const name =
+    operation.name === undefined
+      ? `Group ${project.groups.length + 1}`
+      : requireNonEmptyString(operation.name, 'invalid-input', 'name');
+  const color =
+    operation.color === undefined
+      ? DEFAULT_GROUP_COLOR
+      : requireNonEmptyString(operation.color, 'invalid-input', 'color');
+  project.groups.push(normalizeGroup({ id: groupId, name, color, clipIds }, 'invalid-input'));
+}
+
+function updateGroupOperation(project, operation) {
+  const groupId = requireId(operation.groupId, 'invalid-input', 'groupId');
+  const index = findGroupIndex(project, groupId);
+  if (index < 0) fail('group-not-found', `group not found: ${groupId}`);
+  const current = project.groups[index];
+  const hasName = operation.name !== undefined;
+  const hasColor = operation.color !== undefined;
+  if (!hasName && !hasColor) {
+    fail('invalid-input', 'update-group requires name and/or color');
+  }
+  const name = hasName
+    ? requireNonEmptyString(operation.name, 'invalid-input', 'name')
+    : current.name;
+  const color = hasColor
+    ? requireNonEmptyString(operation.color, 'invalid-input', 'color')
+    : current.color;
+  project.groups[index] = normalizeGroup(
+    { id: current.id, name, color, clipIds: current.clipIds },
+    'invalid-input',
+  );
+}
+
+function deleteGroupOperation(project, operation) {
+  const groupId = requireId(operation.groupId, 'invalid-input', 'groupId');
+  const index = findGroupIndex(project, groupId);
+  if (index < 0) fail('group-not-found', `group not found: ${groupId}`);
+  project.groups.splice(index, 1);
+}
+
+function addToGroupOperation(project, operation) {
+  const groupId = requireId(operation.groupId, 'invalid-input', 'groupId');
+  const index = findGroupIndex(project, groupId);
+  if (index < 0) fail('group-not-found', `group not found: ${groupId}`);
+  const group = project.groups[index];
+  const clipIds = requireIdSet(operation.clipIds, 'invalid-input', 'clipIds');
+  // Validate everything before mutating so the operation is atomic.
+  for (const clipId of clipIds) {
+    if (!findClip(project, clipId)) fail('clip-not-found', `clip not found: ${clipId}`);
+    if (group.clipIds.includes(clipId)) {
+      fail('invalid-group', `clip ${clipId} is already in group ${group.id}`);
+    }
+    const existing = groupContainingClip(project, clipId);
+    if (existing !== null) {
+      fail('invalid-group', `clip ${clipId} is already in group ${existing.id}`);
+    }
+  }
+  group.clipIds.push(...clipIds);
+}
+
+function removeFromGroupOperation(project, operation) {
+  const groupId = requireId(operation.groupId, 'invalid-input', 'groupId');
+  const index = findGroupIndex(project, groupId);
+  if (index < 0) fail('group-not-found', `group not found: ${groupId}`);
+  const group = project.groups[index];
+  const clipIds = requireIdSet(operation.clipIds, 'invalid-input', 'clipIds');
+  for (const clipId of clipIds) {
+    if (!group.clipIds.includes(clipId)) {
+      fail('invalid-group', `clip ${clipId} is not in group ${group.id}`);
+    }
+  }
+  group.clipIds = group.clipIds.filter((clipId) => !clipIds.has(clipId));
+}
+
 const OPERATIONS = Object.freeze({
   'add-track': addTrackOperation,
   'update-track': updateTrackOperation,
@@ -2703,6 +2887,12 @@ const OPERATIONS = Object.freeze({
   'add-media': addMediaOperation,
   'remove-media': removeMediaOperation,
   'relink-media': relinkMediaOperation,
+  // Phase 19 clip groups
+  'create-group': createGroupOperation,
+  'update-group': updateGroupOperation,
+  'delete-group': deleteGroupOperation,
+  'add-to-group': addToGroupOperation,
+  'remove-from-group': removeFromGroupOperation,
   'add-clip': addClipOperation,
   'move-clip': moveClipOperation,
   'trim-clip': trimClipOperation,
@@ -2739,8 +2929,9 @@ const OPERATIONS = Object.freeze({
  * Apply one operation and return a brand new Project.
  *
  * Pure: the input project and operation are never mutated. Transitions whose
- * clip edge no longer exists/adjacent are pruned, `updatedAt` is stamped with
- * `Date.now()` and every invariant is re-validated before return.
+ * clip edge no longer exists/adjacent are pruned, removed clips are dropped
+ * from clip groups, `updatedAt` is stamped with `Date.now()` and every
+ * invariant is re-validated before return.
  */
 export function applyOperation(project, operation) {
   const next = normalizeProject(project);
@@ -2753,6 +2944,7 @@ export function applyOperation(project, operation) {
   }
   OPERATIONS[operation.type](next, operation);
   pruneTransitions(next);
+  pruneGroups(next);
   next.updatedAt = Date.now();
   return normalizeProject(next);
 }

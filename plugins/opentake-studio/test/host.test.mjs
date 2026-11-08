@@ -90,6 +90,8 @@ const EXPECTED_TOOLS = [
   'opentake_studio_remove_clips',
   'opentake_studio_set_clip_properties',
   'opentake_studio_add_text',
+  'opentake_studio_create_group',
+  'opentake_studio_delete_group',
   'opentake_studio_add_motion',
   'opentake_studio_undo',
   'opentake_studio_redo',

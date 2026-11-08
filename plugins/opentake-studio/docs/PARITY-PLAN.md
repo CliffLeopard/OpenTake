@@ -1,6 +1,6 @@
 # OpenTake Studio：完整功能复刻差距与路线
 
-状态：Phase 1–18 已实现，剩余项见 §3 · 2026-11-08 · 分支 `feat/dsh-native-studio`
+状态：Phase 1–19 已实现，剩余项见 §3 · 2026-11-08 · 分支 `feat/dsh-native-studio`
 
 当前 `plugins/opentake-studio` 是**纯 DSH 原生编辑器 MVP**（工程、媒体、时间线、预览、文本、基础导出、15 个 Agent 工具），
 不是 Rust/Tauri 版 OpenTake 的完整功能复刻。本文是“完整功能”的验收清单与路线，避免把 MVP 当成完成。
@@ -29,8 +29,8 @@ Rust/Tauri 版包含：
 | 预览 | Canvas 合成、视频/图片/文本、播放/暂停/seek/音量/循环（近似） |
 | 检查器 | 音量、不透明度、位置/大小/旋转、文本样式 |
 | 导出 | H.264/AAC MP4、异步进度/取消、文本由浏览器 PNG 叠加、单工程单导出 |
-| Agent | 42 个原生工具，与 UI 共用服务 |
-| 测试 | 407 项（model/project/media/export/captions/library/transcribe/generate/vision/lottie/motion/host） |
+| Agent | 44 个原生工具，与 UI 共用服务 |
+| 测试 | 418 项（model/project/media/export/captions/library/transcribe/generate/vision/lottie/motion/groups/host） |
 | Phase 2 | 真 dissolve/wipe（静态不透明同轨）、静态旋转导出、H.265/ProRes/VP9 预设、轨道静音/隐藏/重命名/删除 |
 | Phase 3 | 全局媒体库（搜索/收藏/分类/标签/加入工程） |
 | Phase 4–5 | Whisper 兼容转写 + 字幕生成 + 工程检索；OpenAI 兼容图片/语音生成 |
@@ -43,6 +43,7 @@ Rust/Tauri 版包含：
 | Phase 14–15 | Lottie JSON/.lottie 容器导入/探测、客户端 lottie-web 预览、逐帧 PNG 预渲染 + ffmpeg 合成导出；vendored MIT 播放器 |
 | Phase 16–17 | 最近工程、当前帧 PNG；Canvas Motion 模板（title/lowerThird/callout）编辑/预览/逐帧导出 |
 | Phase 18 | 时间线范围导出；纯音频 M4A/MP3 导出 |
+| Phase 19 | 片段分组（create/update/delete/add/remove、选择扩展、徽标/轮廓、检查器编辑） |
 | Phase 16 | 最近工程列表/打开/清除；导出当前帧 PNG |
 
 ## 3. 未完成清单（按验收域；Phase 1 项已划掉）

@@ -5647,3 +5647,331 @@ describe('motion clips', () => {
     assert.equal(clipById(next, 'm1').motion.fontSize, 64);
   });
 });
+
+// ===========================================================================
+// Phase 19: clip groups (Project.groups + group operations).
+// ===========================================================================
+
+function groupFixture() {
+  let project = fixture();
+  project = addClip(project, { clipId: 'c1', startFrame: 0, durationFrames: 50 });
+  project = addClip(project, { clipId: 'c2', startFrame: 100, durationFrames: 50 });
+  project = addClip(project, {
+    clipId: 'c3',
+    mediaId: 'm-audio',
+    trackId: 't-audio',
+    startFrame: 0,
+    durationFrames: 50,
+  });
+  return project;
+}
+
+function createGroup(project, options = {}) {
+  const operation = {
+    type: 'create-group',
+    groupId: options.groupId ?? 'g1',
+    clipIds: options.clipIds ?? ['c1', 'c2'],
+  };
+  if (options.name !== undefined) operation.name = options.name;
+  if (options.color !== undefined) operation.color = options.color;
+  return applyOperation(project, operation);
+}
+
+function rawGroupProject() {
+  return {
+    version: 1,
+    name: 'groups',
+    fps: 30,
+    media: [{ id: 'm', kind: 'video', fileName: 'm.mp4', durationFrames: 300 }],
+    tracks: [
+      {
+        id: 't',
+        type: 'video',
+        clips: [
+          { id: 'a', type: 'video', mediaId: 'm', startFrame: 0, durationFrames: 50 },
+          { id: 'b', type: 'video', mediaId: 'm', startFrame: 100, durationFrames: 50 },
+        ],
+      },
+    ],
+    groups: [{ id: 'g', name: 'G', color: '#112233', clipIds: ['a', 'b'] }],
+  };
+}
+
+describe('clip groups', () => {
+  it('defaults Project.groups to [] and migrates old projects', () => {
+    assert.deepEqual(createProject().groups, []);
+    assert.deepEqual(normalizeProject(rawProject()).groups, []);
+  });
+
+  it('creates a group with defaults, explicit metadata and clips across tracks', () => {
+    let project = createGroup(groupFixture());
+    assert.deepEqual(project.groups, [
+      { id: 'g1', name: 'Group 1', color: '#4f8cff', clipIds: ['c1', 'c2'] },
+    ]);
+    project = createGroup(project, {
+      groupId: 'g2',
+      clipIds: ['c3'],
+      name: 'Audio',
+      color: '#abcdef',
+    });
+    assert.deepEqual(project.groups[1], {
+      id: 'g2',
+      name: 'Audio',
+      color: '#abcdef',
+      clipIds: ['c3'],
+    });
+    // Input duplicates collapse instead of creating duplicate membership.
+    const deduped = createGroup(groupFixture(), { clipIds: ['c1', 'c1'] });
+    assert.deepEqual(deduped.groups[0].clipIds, ['c1']);
+  });
+
+  it('rejects invalid create-group calls', () => {
+    const project = groupFixture();
+    expectModelError(
+      () => createGroup(project, { clipIds: ['ghost'] }),
+      'clip-not-found',
+    );
+    expectModelError(
+      () => createGroup(project, { clipIds: [] }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'create-group', clipIds: ['c1'] }),
+      'invalid-input',
+    );
+    expectModelError(() => createGroup(project, { color: 'red' }), 'invalid-input');
+    expectModelError(() => createGroup(project, { name: '' }), 'invalid-input');
+    let withGroup = createGroup(project);
+    expectModelError(() => createGroup(withGroup), 'duplicate-id');
+    expectModelError(() => createGroup(withGroup, { groupId: 'g2', clipIds: ['c1'] }), 'invalid-group');
+    expectModelError(() => createGroup(withGroup, { groupId: 'g2', clipIds: ['c2'] }), 'invalid-group');
+  });
+
+  it('updates group name/color partially and preserves clip membership', () => {
+    let project = createGroup(groupFixture(), { name: 'Old', color: '#111111' });
+    project = applyOperation(project, { type: 'update-group', groupId: 'g1', name: 'New' });
+    assert.deepEqual(project.groups[0], {
+      id: 'g1',
+      name: 'New',
+      color: '#111111',
+      clipIds: ['c1', 'c2'],
+    });
+    project = applyOperation(project, { type: 'update-group', groupId: 'g1', color: '#222222' });
+    assert.equal(project.groups[0].color, '#222222');
+    assert.equal(project.groups[0].name, 'New');
+
+    expectModelError(
+      () => applyOperation(project, { type: 'update-group', groupId: 'ghost', name: 'X' }),
+      'group-not-found',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-group', groupId: 'g1' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-group', groupId: 'g1', name: '' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-group', groupId: 'g1', color: 'blue' }),
+      'invalid-input',
+    );
+  });
+
+  it('deletes a group without deleting its clips', () => {
+    let project = createGroup(groupFixture());
+    project = applyOperation(project, { type: 'delete-group', groupId: 'g1' });
+    assert.deepEqual(project.groups, []);
+    assert.ok(findClip(project, 'c1'));
+    assert.ok(findClip(project, 'c2'));
+    expectModelError(
+      () => applyOperation(project, { type: 'delete-group', groupId: 'g1' }),
+      'group-not-found',
+    );
+  });
+
+  it('adds and removes clips from a group', () => {
+    let project = createGroup(groupFixture(), { clipIds: ['c1'] });
+    project = applyOperation(project, { type: 'add-to-group', groupId: 'g1', clipIds: ['c2', 'c3'] });
+    assert.deepEqual(project.groups[0].clipIds, ['c1', 'c2', 'c3']);
+
+    expectModelError(
+      () => applyOperation(project, { type: 'add-to-group', groupId: 'g1', clipIds: ['c2'] }),
+      'invalid-group',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'add-to-group', groupId: 'g1', clipIds: ['ghost'] }),
+      'clip-not-found',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'add-to-group', groupId: 'ghost', clipIds: ['c1'] }),
+      'group-not-found',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'add-to-group', groupId: 'g1', clipIds: [] }),
+      'invalid-input',
+    );
+
+    let cross = createGroup(groupFixture(), { groupId: 'g1', clipIds: ['c1'] });
+    cross = createGroup(cross, { groupId: 'g2', clipIds: ['c2'] });
+    expectModelError(
+      () => applyOperation(cross, { type: 'add-to-group', groupId: 'g1', clipIds: ['c2'] }),
+      'invalid-group',
+    );
+
+    let removed = applyOperation(cross, {
+      type: 'remove-from-group',
+      groupId: 'g2',
+      clipIds: ['c2'],
+    });
+    assert.deepEqual(removed.groups.find((group) => group.id === 'g2').clipIds, []);
+    assert.deepEqual(removed.groups.find((group) => group.id === 'g1').clipIds, ['c1']);
+    expectModelError(
+      () => applyOperation(removed, { type: 'remove-from-group', groupId: 'g2', clipIds: ['c2'] }),
+      'invalid-group',
+    );
+    expectModelError(
+      () => applyOperation(removed, { type: 'remove-from-group', groupId: 'g2', clipIds: [] }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(removed, { type: 'remove-from-group', groupId: 'ghost', clipIds: ['c1'] }),
+      'group-not-found',
+    );
+  });
+
+  it('prunes memberships when clips are removed by remove-clips/media/track/overwrite', () => {
+    let project = createGroup(groupFixture(), { clipIds: ['c1', 'c2', 'c3'] });
+
+    let removed = applyOperation(project, { type: 'remove-clips', clipIds: ['c1'] });
+    assert.deepEqual(removed.groups[0].clipIds, ['c2', 'c3']);
+
+    removed = applyOperation(project, { type: 'remove-media', mediaId: 'm-video' });
+    assert.deepEqual(removed.groups[0].clipIds, ['c3']);
+
+    removed = applyOperation(project, { type: 'remove-track', trackId: 't-video' });
+    assert.deepEqual(removed.groups[0].clipIds, ['c3']);
+
+    // Fully covering a grouped clip removes it and its membership.
+    let overwritten = groupFixture();
+    overwritten = createGroup(overwritten, { clipIds: ['c2'] });
+    overwritten = applyOperation(overwritten, {
+      type: 'move-clip',
+      clipId: 'c1',
+      startFrame: 100,
+      durationFrames: 200,
+    });
+    assert.equal(findClip(overwritten, 'c2'), null);
+    assert.deepEqual(overwritten.groups[0].clipIds, []);
+
+    // A group left with no clips is kept.
+    assert.ok(overwritten.groups.find((group) => group.id === 'g1'));
+  });
+
+  it('keeps membership on split halves only when the old clip id survives', () => {
+    let project = groupFixture();
+    project = createGroup(project, { clipIds: ['c1'] });
+    project = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'c1',
+      atFrame: 20,
+      leftClipId: 'c1',
+      rightClipId: 'c1-right',
+    });
+    assert.deepEqual(project.groups[0].clipIds, ['c1']);
+    assert.equal(findClip(project, 'c1-right').clip.id, 'c1-right');
+
+    let replaced = groupFixture();
+    replaced = createGroup(replaced, { clipIds: ['c1'] });
+    replaced = applyOperation(replaced, {
+      type: 'split-clip',
+      clipId: 'c1',
+      atFrame: 20,
+      leftClipId: 'L',
+      rightClipId: 'R',
+    });
+    assert.deepEqual(replaced.groups[0].clipIds, []);
+
+    // Overlap split keeps the old id on the left half, so membership survives.
+    let overlap = groupFixture();
+    overlap = createGroup(overlap, { clipIds: ['c2'] });
+    overlap = addClip(overlap, {
+      clipId: 'cover',
+      startFrame: 120,
+      durationFrames: 10,
+      splitRightClipId: 'c2-right',
+    });
+    assert.deepEqual(overlap.groups[0].clipIds, ['c2']);
+    assert.ok(findClip(overlap, 'c2-right'));
+    assert.equal(findClip(overlap, 'c2-right').clip.startFrame, 130);
+  });
+
+  it('preserves groups through unrelated clip/track edits', () => {
+    let project = createGroup(groupFixture(), { clipIds: ['c1', 'c2', 'c3'] });
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'c1', durationFrames: 30 });
+    project = applyOperation(project, { type: 'move-clip', clipId: 'c2', startFrame: 150 });
+    project = applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 2 });
+    project = applyOperation(project, { type: 'update-track', trackId: 't-video', name: 'Main' });
+    project = applyOperation(project, { type: 'reorder-tracks', trackId: 't-audio', toIndex: 0 });
+    assert.deepEqual(project.groups[0].clipIds, ['c1', 'c2', 'c3']);
+    assert.deepEqual(normalizeProject(project), project);
+  });
+
+  it('normalizes raw groups, strips unknown fields and validates membership', () => {
+    const raw = rawGroupProject();
+    raw.groups[0].bogus = true;
+    const project = normalizeProject(raw);
+    assert.deepEqual(project.groups, [
+      { id: 'g', name: 'G', color: '#112233', clipIds: ['a', 'b'] },
+    ]);
+    assert.deepEqual(normalizeProject(project), project);
+
+    const invalid = (mutator) => {
+      const value = rawGroupProject();
+      mutator(value);
+      return normalizeProject(value);
+    };
+    expectModelError(
+      () => invalid((value) => { value.groups.push({ ...value.groups[0] }); }),
+      'duplicate-id',
+    );
+    expectModelError(
+      () => invalid((value) => { value.groups[0].clipIds = ['a', 'ghost']; }),
+      'invalid-group',
+    );
+    expectModelError(
+      () => invalid((value) => { value.groups.push({ id: 'g2', name: 'X', color: '#000000', clipIds: ['a'] }); }),
+      'invalid-group',
+    );
+    expectModelError(
+      () => invalid((value) => { value.groups[0].clipIds = ['a', 'a']; }),
+      'invalid-group',
+    );
+    expectModelError(
+      () => invalid((value) => { value.groups[0].color = 'red'; }),
+      'invalid-group',
+    );
+    expectModelError(
+      () => invalid((value) => { value.groups[0].name = ''; }),
+      'invalid-group',
+    );
+    expectModelError(
+      () => invalid((value) => { value.groups = 'nope'; }),
+      'invalid-project',
+    );
+  });
+
+  it('is pure and normalize-idempotent', () => {
+    const project = groupFixture();
+    const before = JSON.stringify(project);
+    const operation = { type: 'create-group', groupId: 'g1', clipIds: ['c1', 'c2'], name: 'Selection' };
+    const operationBefore = JSON.stringify(operation);
+    const next = applyOperation(project, operation);
+    assert.equal(JSON.stringify(project), before);
+    assert.equal(JSON.stringify(operation), operationBefore);
+    assert.deepEqual(normalizeProject(next), next);
+    assert.deepEqual(next.groups, [
+      { id: 'g1', name: 'Selection', color: '#4f8cff', clipIds: ['c1', 'c2'] },
+    ]);
+  });
+});

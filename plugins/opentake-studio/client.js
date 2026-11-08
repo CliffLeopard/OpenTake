@@ -1079,6 +1079,46 @@ window.__ModuleLoader__.load({
 			return rows;
 		}
 
+		const GROUP_DEFAULT_COLOR = '#4f8cff';
+
+		function projectGroups(project) {
+			return project && Array.isArray(project.groups) ? project.groups : [];
+		}
+
+		function groupColorOf(group) {
+			return group && typeof group.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(group.color)
+				? group.color
+				: GROUP_DEFAULT_COLOR;
+		}
+
+		function groupOfClip(project, clipId) {
+			for (const group of projectGroups(project)) {
+				if (!group || typeof group.id !== 'string' || !Array.isArray(group.clipIds)) continue;
+				if (group.clipIds.includes(clipId)) return group;
+			}
+			return null;
+		}
+
+		function groupsOfClips(project, clipIds) {
+			const seen = new Set();
+			const groups = [];
+			for (const clipId of Array.isArray(clipIds) ? clipIds : []) {
+				const group = groupOfClip(project, clipId);
+				if (group && !seen.has(group.id)) {
+					seen.add(group.id);
+					groups.push(group);
+				}
+			}
+			return groups;
+		}
+
+		function groupClipIdsOfSelection(project, clipId) {
+			const group = groupOfClip(project, clipId);
+			if (!group) return [clipId];
+			const ids = group.clipIds.filter((id) => typeof id === 'string');
+			return ids.includes(clipId) ? ids : [clipId];
+		}
+
 		function clipDisplayLabel(project, clip, fallback) {
 			if (clip.type === 'motion') {
 				const motion = motionOf(clip);
@@ -2122,7 +2162,12 @@ window.__ModuleLoader__.load({
 .ots-media-card[data-missing="true"]{border-color:var(--dsw-alias-state-error-primary)}
 .ots-media-offline{background:var(--dsw-alias-state-error-primary);border-radius:3px;color:var(--dsw-alias-bg-base);font-size:8px;left:4px;letter-spacing:.3px;padding:1px 4px;position:absolute;text-transform:uppercase;top:4px;z-index:3}
 .ots-clip[data-offline="true"]{border-color:var(--dsw-alias-state-error-primary);box-shadow:inset 0 0 0 1px var(--dsw-alias-state-error-primary)}
-.ots-clip-offline-badge{background:var(--dsw-alias-state-error-primary);border-radius:2px;color:var(--dsw-alias-bg-base);font-size:8px;line-height:11px;margin-right:3px;padding:0 3px;pointer-events:none}
+.ots-clip-offline-badge
+.ots-clip-group-badge{border-radius:2px;color:var(--dsw-alias-label-primary);flex:0 0 auto;font-size:7.5px;font-weight:700;line-height:11px;margin:0 2px 0 4px;padding:0 3px;pointer-events:none}
+.ots-clip[data-grouped="true"]{border-width:1.5px}
+.ots-group-actions{display:flex;gap:4px;margin-top:2px}
+.ots-group-count{color:var(--dsw-alias-label-secondary);font-size:9.5px}
+{background:var(--dsw-alias-state-error-primary);border-radius:2px;color:var(--dsw-alias-bg-base);font-size:8px;line-height:11px;margin-right:3px;padding:0 3px;pointer-events:none}
 .ots-media-warning{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-state-error-primary);border-radius:6px;color:var(--dsw-alias-state-error-primary);font-size:10.5px;line-height:1.4;margin:0 0 6px;padding:6px 7px}
 .ots-missing-overlay{align-items:center;background:var(--dsw-alias-bg-overlay);display:flex;flex-direction:column;gap:3px;inset:0;justify-content:center;padding:12px;position:absolute;text-align:center;z-index:2}
 .ots-missing-overlay-title{color:var(--dsw-alias-state-error-primary);font-size:12px;font-weight:600}
@@ -3029,6 +3074,27 @@ window.__ModuleLoader__.load({
 			'export.audioAac': 'AAC (.m4a)',
 			'export.audioMp3': 'MP3 (.mp3)',
 			'export.audioSummary': '{codec} · {duration}',
+			'timeline.group': 'Group',
+			'timeline.ungroup': 'Ungroup',
+			'timeline.groupSelect': 'Group select',
+			'timeline.groupHint': 'Group the selected clips (2+ ungrouped clips).',
+			'timeline.ungroupHint': 'Remove the selected clips from their groups.',
+			'timeline.groupSelectHint': 'Selecting a grouped clip selects all members of its group.',
+			'group.createTitle': 'Create clip group',
+			'group.name': 'Group name',
+			'group.color': 'Group color',
+			'group.createAction': 'Create group',
+			'group.created': 'Created group {name}.',
+			'group.createFailed': 'Could not create the group.',
+			'group.needSelection': 'Select at least two ungrouped clips.',
+			'group.defaultName': 'Group',
+			'group.title': 'Clip group',
+			'group.memberCount': '{count} clip(s)',
+			'group.multiple': '{count} groups selected',
+			'group.multipleHint': 'Select clips from a single group to edit its name/color.',
+			'group.removeFrom': 'Remove from group',
+			'group.delete': 'Delete group',
+			'group.removed': 'Removed from group.',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -3657,6 +3723,27 @@ window.__ModuleLoader__.load({
 			'export.audioAac': 'AAC（.m4a）',
 			'export.audioMp3': 'MP3（.mp3）',
 			'export.audioSummary': '{codec} · {duration}',
+			'timeline.group': '编组',
+			'timeline.ungroup': '取消编组',
+			'timeline.groupSelect': '组选择',
+			'timeline.groupHint': '将选中的片段编为一组（至少两个未编组片段）。',
+			'timeline.ungroupHint': '将选中的片段从所在组移除。',
+			'timeline.groupSelectHint': '选中已编组片段时会同时选中该组的全部成员。',
+			'group.createTitle': '创建片段组',
+			'group.name': '组名称',
+			'group.color': '组颜色',
+			'group.createAction': '创建组',
+			'group.created': '已创建组 {name}。',
+			'group.createFailed': '无法创建组。',
+			'group.needSelection': '请至少选择两个未编组片段。',
+			'group.defaultName': '组',
+			'group.title': '片段组',
+			'group.memberCount': '{count} 个片段',
+			'group.multiple': '已选中 {count} 个组',
+			'group.multipleHint': '请选择同一组内的片段以编辑名称/颜色。',
+			'group.removeFrom': '从组中移除',
+			'group.delete': '删除组',
+			'group.removed': '已从组中移除。',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -7393,6 +7480,87 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		function GroupEditor(props) {
+			const { t, project, selectedClipIds, onUpdateGroup, onDeleteGroup, onRemoveFromGroup } = props;
+			const groups = groupsOfClips(project, selectedClipIds);
+			if (groups.length === 0) return null;
+			const group = groups[0];
+			const signature = `${group.id}:${group.name || ''}:${group.color || ''}`;
+			const [name, setName] = React.useState(group.name || '');
+			const [color, setColor] = React.useState(groupColorOf(group));
+			React.useEffect(() => {
+				setName(group.name || '');
+				setColor(groupColorOf(group));
+			}, [signature]);
+			const commitName = () => onUpdateGroup(group.id, { name: name.trim() || t('group.defaultName'), color });
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'group' },
+				h(
+					'div',
+					{ className: 'ots-subhead' },
+					h('h3', { className: 'ots-section-title' }, t('group.title')),
+					h(
+						'span',
+						{ className: 'ots-group-count' },
+						groups.length > 1 ? t('group.multiple', { count: groups.length }) : t('group.memberCount', { count: Array.isArray(group.clipIds) ? group.clipIds.length : 0 }),
+					),
+				),
+				groups.length > 1
+					? h('p', { className: 'ots-field-hint' }, t('group.multipleHint'))
+					: h(
+							ReactFragment,
+							null,
+							h(
+								'div',
+								{ className: 'ots-field-grid' },
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('group.name')),
+									h('input', {
+										className: 'ots-input',
+										type: 'text',
+										value: name,
+										'aria-label': t('group.name'),
+										onChange: (event) => setName(event.target.value),
+										onBlur: commitName,
+									}),
+								),
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('group.color')),
+									h('input', {
+										className: 'ots-color-input',
+										type: 'color',
+										value: color,
+										'aria-label': t('group.color'),
+										onChange: (event) => {
+											setColor(event.target.value);
+											onUpdateGroup(group.id, { name: name.trim() || group.name || t('group.defaultName'), color: event.target.value });
+										},
+									}),
+								),
+							),
+							h(
+								'div',
+								{ className: 'ots-group-actions' },
+								h(
+									Btn,
+									{ variant: 'outline', onClick: () => onRemoveFromGroup(group.id, selectedClipIds) },
+									t('group.removeFrom'),
+								),
+								h(
+									Btn,
+									{ variant: 'ghost', onClick: () => onDeleteGroup(group.id) },
+									t('group.delete'),
+								),
+							),
+						),
+			);
+		}
+
 		function Inspector(props) {
 			const {
 				t,
@@ -7412,6 +7580,10 @@ window.__ModuleLoader__.load({
 				onSetBlendMode,
 				onUpdateMotion,
 				onSetMotionDuration,
+				selectedClipIds,
+				onUpdateGroup,
+				onDeleteGroup,
+				onRemoveFromGroup,
 				onAddText,
 				onSpeedChange,
 				onFadeChange,
@@ -7715,6 +7887,16 @@ window.__ModuleLoader__.load({
 					body.push(h(MaskEditor, { t, clip, onSetMask }));
 					body.push(h(BlendEditor, { t, clip, onSetBlendMode }));
 				}
+				body.push(
+					h(GroupEditor, {
+						t,
+						project,
+						selectedClipIds,
+						onUpdateGroup,
+						onDeleteGroup,
+						onRemoveFromGroup,
+					}),
+				);
 				if (isMotion) {
 					body.push(
 						h(MotionEditor, {
@@ -7972,6 +8154,12 @@ window.__ModuleLoader__.load({
 				onAddTrack,
 				onAddText,
 				onAddMotion,
+				onGroup,
+				onUngroup,
+				canGroup,
+				canUngroup,
+				groupSelection,
+				onToggleGroupSelection,
 				onUpdateTrack,
 				onRemoveTrack,
 				missingMediaIds,
@@ -8468,6 +8656,8 @@ window.__ModuleLoader__.load({
 					clip.mediaId &&
 						((missingMediaIds && missingMediaIds.has(clip.mediaId)) || mediaMissingOf(clipMedia)),
 				);
+				const clipGroup = groupOfClip(project, clip.id);
+				const groupColor = clipGroup ? groupColorOf(clipGroup) : null;
 				return h(
 					'div',
 					{
@@ -8475,9 +8665,14 @@ window.__ModuleLoader__.load({
 						className: 'ots-clip',
 						'data-kind': clip.type,
 						'data-selected': selected ? 'true' : 'false',
+						'data-grouped': clipGroup ? 'true' : 'false',
 						'data-offline': offline ? 'true' : 'false',
 						'data-dragging': dragState && dragState.clip.id === clip.id ? 'true' : 'false',
-						style: { left: Math.round(startFrame * zoom), width },
+						style: {
+							left: Math.round(startFrame * zoom),
+							width,
+							...(groupColor === null ? {} : { borderColor: groupColor }),
+						},
 						title: `${label} · ${formatTimecode(startFrame, fps)} – ${formatTimecode(startFrame + durationFrames, fps)}${offline ? ` · ${t('media.offline')}` : ''}`,
 						'aria-label': label,
 						tabIndex: 0,
@@ -8489,6 +8684,17 @@ window.__ModuleLoader__.load({
 							}
 						},
 					},
+					clipGroup
+						? h(
+								'span',
+								{
+									className: 'ots-clip-group-badge',
+									style: { backgroundColor: groupColor },
+									title: clipGroup.name || t('group.title'),
+								},
+								'G',
+							)
+						: null,
 					width > 28 ? h('span', { className: 'ots-clip-label' }, label) : null,
 					offline ? h('span', { className: 'ots-clip-offline-badge', title: t('media.offline') }, '!') : null,
 					h('span', {
@@ -8579,6 +8785,18 @@ window.__ModuleLoader__.load({
 					),
 					h(Btn, { variant: 'outline', onClick: onAddText, disabled: !project }, t('timeline.addText')),
 					h(Btn, { variant: 'outline', onClick: onAddMotion, disabled: !project }, t('timeline.addMotion')),
+					h(Btn, { variant: 'outline', onClick: onGroup, disabled: !canGroup, title: t('timeline.groupHint') }, t('timeline.group')),
+					h(Btn, { variant: 'outline', onClick: onUngroup, disabled: !canUngroup, title: t('timeline.ungroupHint') }, t('timeline.ungroup')),
+					h(
+						Btn,
+						{
+							active: groupSelection,
+							onClick: onToggleGroupSelection,
+							title: t('timeline.groupSelectHint'),
+							'aria-pressed': groupSelection ? 'true' : 'false',
+						},
+						t('timeline.groupSelect'),
+					),
 					h(Btn, { variant: 'outline', onClick: onAddMarker, disabled: !project, title: t('timeline.addMarker') }, t('timeline.addMarker')),
 					h(Btn, { variant: 'outline', onClick: onDeleteRipple, disabled: !canDelete, title: t('timeline.rippleDelete') }, t('timeline.rippleDelete')),
 					h(Btn, { onClick: onCopy, disabled: !canCopy, title: t('timeline.copy') }, t('timeline.copy')),
@@ -8693,6 +8911,63 @@ window.__ModuleLoader__.load({
 		// -------------------------------------------------------------------
 		// Dialogs
 		// -------------------------------------------------------------------
+
+		function GroupDialog(props) {
+			const { t, dialog, onChange, onClose, onSubmit } = props;
+			const busy = Boolean(dialog.busy);
+			return h(
+				'div',
+				{
+					className: 'ots-modal-backdrop ots-modal-fixed',
+					role: 'dialog',
+					'aria-modal': 'true',
+					'aria-label': t('group.createTitle'),
+					onPointerDown: (event) => {
+						if (event.target === event.currentTarget && !busy) onClose();
+					},
+				},
+				h(
+					'div',
+					{ className: 'ots-modal' },
+					h('h2', { className: 'ots-modal-title' }, t('group.createTitle')),
+					h(
+						'div',
+						{ className: 'ots-modal-body' },
+						h(
+							'label',
+							{ className: 'ots-field' },
+							h('span', { className: 'ots-field-label' }, t('group.name')),
+							h('input', {
+								className: 'ots-input',
+								type: 'text',
+								value: dialog.name,
+								'aria-label': t('group.name'),
+								onChange: (event) => onChange({ name: event.target.value }),
+							}),
+						),
+						h(
+							'label',
+							{ className: 'ots-field' },
+							h('span', { className: 'ots-field-label' }, t('group.color')),
+							h('input', {
+								className: 'ots-color-input',
+								type: 'color',
+								value: dialog.color,
+								'aria-label': t('group.color'),
+								onChange: (event) => onChange({ color: event.target.value }),
+							}),
+						),
+						dialog.error ? h('p', { className: 'ots-modal-error', role: 'alert' }, dialog.error) : null,
+					),
+					h(
+						'div',
+						{ className: 'ots-modal-actions' },
+						h(Btn, { variant: 'ghost', onClick: onClose, disabled: busy }, t('actions.cancel')),
+						h(Btn, { variant: 'primary', onClick: onSubmit, disabled: busy }, busy ? t('dialog.working') : t('group.createAction')),
+					),
+				),
+			);
+		}
 
 		function MotionDialog(props) {
 			const { t, dialog, onChange, onClose, onSubmit } = props;
@@ -9438,6 +9713,8 @@ window.__ModuleLoader__.load({
 			const [busy, setBusy] = React.useState(0);
 			const [dialog, setDialog] = React.useState(null);
 			const [motionDialog, setMotionDialog] = React.useState(null);
+			const [groupDialog, setGroupDialog] = React.useState(null);
+			const [groupSelection, setGroupSelection] = React.useState(true);
 			const [importing, setImporting] = React.useState(false);
 			const [uploading, setUploading] = React.useState(null);
 			const [inspectorDraft, setInspectorDraft] = React.useState(null);
@@ -10213,10 +10490,12 @@ window.__ModuleLoader__.load({
 			};
 			const handleSelectClip = (clipId, event) => {
 				const additive = Boolean(event && (event.shiftKey || event.metaKey || event.ctrlKey));
+				const groupIds =
+					groupSelection && projectRef.current ? groupClipIdsOfSelection(projectRef.current, clipId) : [clipId];
 				setSelectedClipIds((previous) => {
-					if (!additive) return [clipId];
-					if (previous.includes(clipId)) return previous.filter((id) => id !== clipId);
-					return previous.concat([clipId]);
+					if (!additive) return groupIds;
+					if (previous.includes(clipId)) return previous.filter((id) => !groupIds.includes(id));
+					return previous.concat(groupIds.filter((id) => !previous.includes(id)));
 				});
 			};
 			const handleSelectAll = () => {
@@ -10347,6 +10626,72 @@ window.__ModuleLoader__.load({
 				const clipId = primaryClipIdRef.current;
 				if (!clipId) return;
 				void runEdit([{ type: 'update-caption', clipId, ...patch }]);
+			};
+			const handleOpenGroupDialog = () => {
+				if (selectedClipIdsRef.current.length < 2) return;
+				setGroupDialog({ name: t('group.defaultName'), color: GROUP_DEFAULT_COLOR, error: null, busy: false });
+			};
+			const submitGroupDialog = async () => {
+				if (!groupDialog || groupDialog.busy) return;
+				const name = String(groupDialog.name || '').trim() || t('group.defaultName');
+				const color = groupDialog.color || GROUP_DEFAULT_COLOR;
+				const clipIds = selectedClipIdsRef.current.slice();
+				if (clipIds.length < 2) {
+					setGroupDialog(Object.assign({}, groupDialog, { error: t('group.needSelection') }));
+					return;
+				}
+				setGroupDialog(Object.assign({}, groupDialog, { busy: true, error: null }));
+				const payload = await runEdit([{ type: 'create-group', groupId: newId(), clipIds, name, color }]);
+				if (payload) {
+					setGroupDialog(null);
+					showNotice(t('group.created', { name }));
+				} else {
+					setGroupDialog(Object.assign({}, groupDialog, { busy: false, error: t('group.createFailed') }));
+				}
+			};
+			const handleUngroupSelection = async () => {
+				const projectValue = projectRef.current;
+				const selected = selectedClipIdsRef.current.slice();
+				if (!projectValue || selected.length === 0) return;
+				const selectedSet = new Set(selected);
+				const groups = groupsOfClips(projectValue, selected);
+				const operations = [];
+				for (const group of groups) {
+					const memberIds = Array.isArray(group.clipIds) ? group.clipIds : [];
+					const selectedMembers = memberIds.filter((id) => selectedSet.has(id));
+					if (selectedMembers.length === 0) continue;
+					if (selectedMembers.length === memberIds.length) {
+						operations.push({ type: 'delete-group', groupId: group.id });
+					} else {
+						operations.push({ type: 'remove-from-group', groupId: group.id, clipIds: selectedMembers });
+					}
+				}
+				if (operations.length === 0) return;
+				const payload = await runEdit(operations);
+				if (payload) showNotice(t('group.removed'));
+			};
+			const handleUpdateGroup = (groupId, patch) => {
+				const projectValue = projectRef.current;
+				const group = projectGroups(projectValue).find((entry) => entry && entry.id === groupId);
+				if (!group) return;
+				const next = {
+					name: typeof patch.name === 'string' && patch.name.trim().length > 0 ? patch.name.trim() : group.name,
+					color: typeof patch.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(patch.color) ? patch.color : groupColorOf(group),
+				};
+				void runEdit([{ type: 'update-group', groupId, name: next.name, color: next.color }]);
+			};
+			const handleDeleteGroup = (groupId) => {
+				void runEdit([{ type: 'delete-group', groupId }]);
+			};
+			const handleRemoveFromGroup = (groupId, clipIds) => {
+				const projectValue = projectRef.current;
+				const group = projectGroups(projectValue).find((entry) => entry && entry.id === groupId);
+				const ids = Array.isArray(clipIds) ? clipIds : [];
+				if (group && ids.length > 0 && ids.length >= (Array.isArray(group.clipIds) ? group.clipIds.length : 0)) {
+					void runEdit([{ type: 'delete-group', groupId }]);
+					return;
+				}
+				void runEdit([{ type: 'remove-from-group', groupId, clipIds: ids }]);
 			};
 			const handleOpenMotionDialog = () => {
 				setMotionDialog(defaultMotionForm(t));
@@ -10818,6 +11163,9 @@ window.__ModuleLoader__.load({
 				const frame = Math.round(currentFrame);
 				return frame > selected.startFrame && frame < selected.startFrame + selected.durationFrames;
 			})();
+			const selectedGroups = project ? groupsOfClips(project, selectedClipIds) : [];
+			const canGroup = selectedClipIds.length >= 2 && selectedGroups.length === 0;
+			const canUngroup = selectedGroups.length > 0;
 
 			const banners = [];
 			if (actionError) {
@@ -10956,6 +11304,10 @@ window.__ModuleLoader__.load({
 										draft: inspectorDraft,
 										currentFrame,
 										selectedCount: selectedClipIds.length,
+										selectedClipIds,
+										onUpdateGroup: handleUpdateGroup,
+										onDeleteGroup: handleDeleteGroup,
+										onRemoveFromGroup: handleRemoveFromGroup,
 										onPropertyChange: handlePropertyChange,
 										onPropertyCommit: handlePropertyCommit,
 										onTextChange: handleTextChange,
@@ -11067,6 +11419,12 @@ window.__ModuleLoader__.load({
 									onAddTrack: handleAddTrack,
 									onAddText: handleAddText,
 									onAddMotion: handleOpenMotionDialog,
+									onGroup: handleOpenGroupDialog,
+									onUngroup: handleUngroupSelection,
+									canGroup,
+									canUngroup,
+									groupSelection,
+									onToggleGroupSelection: () => setGroupSelection((value) => !value),
 									onUpdateTrack: handleUpdateTrack,
 									onRemoveTrack: handleRemoveTrack,
 									missingMediaIds,
@@ -11097,6 +11455,15 @@ window.__ModuleLoader__.load({
 							onChange: (patch) => setMotionDialog((current) => (current ? Object.assign({}, current, patch) : current)),
 							onClose: () => setMotionDialog(null),
 							onSubmit: submitMotionDialog,
+						})
+					: null,
+				groupDialog
+					? h(GroupDialog, {
+							t,
+							dialog: groupDialog,
+							onChange: (patch) => setGroupDialog((current) => (current ? Object.assign({}, current, patch) : current)),
+							onClose: () => setGroupDialog(null),
+							onSubmit: submitGroupDialog,
 						})
 					: null,
 			);

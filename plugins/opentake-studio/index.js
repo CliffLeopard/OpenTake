@@ -483,6 +483,11 @@ export function apply(ctx) {
             expanded.push({ type: 'add-track', trackId: op.trackId, trackType: 'video', name: 'Motion' });
           }
         }
+      } else if (op.type === 'create-group') {
+        op.groupId = typeof op.groupId === 'string' && op.groupId.length > 0 ? op.groupId : randomUUID();
+        op.clipIds = Array.isArray(op.clipIds) ? op.clipIds : [];
+        op.name = typeof op.name === 'string' && op.name.trim().length > 0 ? op.name : 'Group';
+        op.color = typeof op.color === 'string' ? op.color : '#4f8cff';
       } else if (op.type === 'move-clip') {
         op.splitRightClipId = randomUUID();
       } else if (op.type === 'split-clip') {
@@ -920,6 +925,7 @@ export function apply(ctx) {
       })),
       ...(project.markers === undefined ? {} : { markers: project.markers }),
       ...(project.transitions === undefined ? {} : { transitions: project.transitions }),
+      ...(project.groups === undefined ? {} : { groups: project.groups }),
     };
   }
 
@@ -2322,6 +2328,42 @@ export function apply(ctx) {
         },
       });
       return { text: `Added text clip ${result.clipId}`, data: { clipId: result.clipId } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_create_group',
+    'Group selected clips into one named/colored group.',
+    {
+      type: 'object',
+      properties: {
+        clipIds: { type: 'array', items: { type: 'string' } },
+        name: { type: 'string' },
+        color: { type: 'string' },
+      },
+      required: ['clipIds'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await applyOperations([
+        { type: 'create-group', clipIds: args.clipIds, name: args.name, color: args.color },
+      ]);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_delete_group',
+    'Delete a clip group and leave its clips in place.',
+    {
+      type: 'object',
+      properties: { groupId: { type: 'string' } },
+      required: ['groupId'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await applyOperations([{ type: 'delete-group', groupId: args.groupId }]);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
     },
   );
 
