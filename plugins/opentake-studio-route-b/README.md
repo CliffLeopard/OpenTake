@@ -21,7 +21,8 @@ No Tauri window, no sidecar process, no MCP bridge.
   media panel, double-clicked onto the timeline, and the direct video preview
   plays inside DSH. Media cards get generated poster thumbnails; waveform
   buckets are available through the Host IPC/tool. A basic wgpu
-  `composite_frame` path renders the timeline to a PNG data URL.
+  `composite_frame` path renders video, image and text layers to a PNG data
+  URL.
 
 ## Build
 
@@ -41,7 +42,7 @@ each platform.
 ## Current limits
 
 - Media import/probe/list, direct video preview, thumbnails and a basic
-  video/image GPU composite work. Text/Lottie layers, streaming playback,
+  video/image/text GPU composite work. Lottie layers, streaming playback,
   proxies/sprites, export, transcription/search/generation, motion documents
   and account/update surfaces still need their Rust command bridges.
 - The Tauri file dialogs are stubbed to `/tmp/opentake-route-b/demo.opentake`;

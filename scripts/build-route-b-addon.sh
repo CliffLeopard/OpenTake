@@ -29,5 +29,5 @@ esac
 
 DEST="plugins/opentake-studio-route-b/native/${OS}-${ARCH}"
 mkdir -p "$DEST"
-cp "$LIB" "$DEST/opentake_engine_v7.node"
-echo "Wrote $DEST/opentake_engine_v7.node"
+cp "$LIB" "$DEST/opentake_engine_v8.node"
+echo "Wrote $DEST/opentake_engine_v8.node"

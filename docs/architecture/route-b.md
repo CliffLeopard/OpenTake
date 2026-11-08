@@ -31,8 +31,9 @@ by the DSH Host through N-API.
 - Poster thumbnails generated through `opentake-media` decode; the media card
   displays the real frame. Waveform buckets are bridged via `get_waveform`.
 - Basic `composite_frame` using `opentake-render` wgpu compositor: builds the
-  render plan, decodes video/image layers through a Route B resolver, returns a
-  PNG data URL. Text/Lottie layers and streaming playback remain.
+  render plan, decodes video/image layers and rasterizes text through a Route B
+  resolver, returns a PNG data URL. Verified with a text overlay over video.
+  Lottie layers and streaming playback remain.
 - Node smoke test: `node crates/opentake-node/test/smoke.mjs`.
 
 ## Known gaps

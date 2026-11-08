@@ -15,7 +15,7 @@ use napi_derive::napi;
 use opentake_core::dto::{handle_get_timeline, handle_project_new, handle_project_open, handle_project_save, EditResultDto, TimelineSnapshotDto};
 use opentake_core::session::ProbedMedia;
 use opentake_render::{
-    gpu::{upload_rgba, Compositor, GpuTexture, RenderDevice, TextureResolver},
+    gpu::{upload_rgba, Compositor, CosmicTextRasterizer, GpuTexture, RenderDevice, TextRasterRequest, TextRasterizer, TextureResolver},
     plan::{try_build_render_plan, RenderSize, TextureSource},
     source::{DecodedFrame, SourceMetrics},
 };
@@ -99,10 +99,19 @@ impl SourceMetrics for ManifestMetrics {
     }
 }
 
+struct TextInfo {
+    content: String,
+    style: opentake_domain::TextStyle,
+    box_norm: (f64, f64, f64, f64),
+}
+
 struct BasicResolver<'a> {
     device: &'a opentake_render::wgpu::Device,
     queue: &'a opentake_render::wgpu::Queue,
     engine: &'a opentake_media::MediaEngine,
+    text: &'a HashMap<String, TextInfo>,
+    text_rasterizer: &'a CosmicTextRasterizer,
+    canvas: (u32, u32),
     media: &'a HashMap<String, (std::path::PathBuf, bool)>,
     timeline_fps: i32,
     cache: HashMap<String, Rc<GpuTexture>>,
@@ -113,9 +122,30 @@ impl TextureResolver for BasicResolver<'_> {
         let (media_ref, is_image) = match source {
             TextureSource::Decoded { media_ref } => (media_ref, false),
             TextureSource::Image { media_ref } => (media_ref, true),
-            // Text and Lottie are rendered by the desktop resolver; keep the
-            // Route B preview bridge focused on video/image composition first.
-            TextureSource::Text { .. } | TextureSource::Lottie { .. } => return None,
+            TextureSource::Text { clip_id } => {
+                let info = self.text.get(clip_id)?;
+                let key = format!("t:{clip_id}");
+                if let Some(texture) = self.cache.get(&key) {
+                    return Some(texture.clone());
+                }
+                let frame = self.text_rasterizer.rasterize(&TextRasterRequest {
+                    clip_id,
+                    content: &info.content,
+                    style: &info.style,
+                    box_norm: info.box_norm,
+                    canvas: self.canvas,
+                })?;
+                let texture = Rc::new(upload_rgba(
+                    self.device,
+                    self.queue,
+                    &frame,
+                    false,
+                    Some("route-b-text"),
+                ));
+                self.cache.insert(key, texture.clone());
+                return Some(texture);
+            }
+            TextureSource::Lottie { .. } => return None,
         };
         let (path, _) = self.media.get(media_ref)?;
         let key = format!("{media_ref}:{source_frame}:{is_image}");
@@ -181,6 +211,26 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
         ((timeline.width as f64 * scale).round() as u32).max(2),
         ((timeline.height as f64 * scale).round() as u32).max(2),
     );
+    let mut text = HashMap::new();
+    for track in &timeline.tracks {
+        for clip in &track.clips {
+            if clip.media_type != ClipType::Text {
+                continue;
+            }
+            let (Some(content), Some(style)) = (&clip.text_content, &clip.text_style) else {
+                continue;
+            };
+            let top_left = clip.transform.top_left();
+            text.insert(
+                clip.id.clone(),
+                TextInfo {
+                    content: content.clone(),
+                    style: style.clone(),
+                    box_norm: (top_left.x, top_left.y, clip.transform.width, clip.transform.height),
+                },
+            );
+        }
+    }
     let metrics = ManifestMetrics { sizes, straight_alpha };
     let plan = try_build_render_plan(timeline, render_size, &metrics)?;
     let frame_plan = plan.frame(timeline, frame);
@@ -188,10 +238,14 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
     let compositor = Compositor::new(&device.device);
     let cache = std::env::temp_dir().join("opentake-route-b").join("cache");
     let media_engine = opentake_media::MediaEngine::new(&cache, cache.join("models"));
+    let text_rasterizer = CosmicTextRasterizer::new();
     let mut resolver = BasicResolver {
         device: &device.device,
         queue: &device.queue,
         engine: &media_engine,
+        text: &text,
+        text_rasterizer: &text_rasterizer,
+        canvas: (render_size.width, render_size.height),
         media: &media,
         timeline_fps: timeline.fps,
         cache: HashMap::new(),
