@@ -135,6 +135,7 @@ export function ExportDialog() {
   const [quality, setQuality] = useState<ExportQuality>("1080p");
   const [tenBit, setTenBit] = useState(false);
   const [duckMusic, setDuckMusic] = useState(false);
+  const [hdr10, setHdr10] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -308,6 +309,7 @@ export function ExportDialog() {
           quality,
           ...(codec === "h265" && tenBit ? { bitDepth: 10 as const } : {}),
           ...(duckMusic ? { duckMusic: true } : {}),
+          ...(codec === "h265" && hdr10 ? { hdr10: true } : {}),
         },
         operationId,
       );
@@ -560,6 +562,20 @@ export function ExportDialog() {
                   {t("export.duckMusic")}
                 </label>
               </Row>
+
+              {codec === "h265" && (
+                <Row label={t("export.hdr10")} hint={t("export.hdr10Hint")}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "var(--fs-sm)" }}>
+                    <input
+                      type="checkbox"
+                      checked={hdr10}
+                      onChange={(event) => setHdr10(event.target.checked)}
+                      aria-label={t("export.hdr10")}
+                    />
+                    {t("export.hdr10")}
+                  </label>
+                </Row>
+              )}
 
               {codec === "h265" && (
                 <Row label={t("export.tenBit")} hint={t("export.tenBitHint")}>

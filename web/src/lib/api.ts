@@ -571,6 +571,8 @@ export interface ExportRequest {
   bitDepth?: 10;
   /** Lower standalone audio against linked A/V voice. */
   duckMusic?: boolean;
+  /** True HDR10 passthrough for supported HDR-only timelines. */
+  hdr10?: boolean;
 }
 
 /** Summary of a completed export (mirror of Rust `ExportSummary`). */
