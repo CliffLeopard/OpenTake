@@ -732,6 +732,14 @@ try {
     return assetMatch[0];
   });
 
+  await checkAsync('Host serves the packaged native-editor bundle as a same-origin ESM asset', async () => {
+    const response = await request('GET', `${PREFIX}/app/native-editor/native-editor.js`);
+    assert.equal(response.status, 200, response.text.slice(0, 200));
+    assert.match(response.headers['content-type'] ?? '', /javascript|ecmascript/i);
+    assert.ok(response.bytes.length > 100_000, `bundle too small: ${response.bytes.length}`);
+    return `${response.bytes.length} bytes bundle`;
+  });
+
   await checkAsync('storage_usage reports cache categories', async () => {
     const response = await invoke('storage_usage');
     assert.equal(response.status, 200, response.text);

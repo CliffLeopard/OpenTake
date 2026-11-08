@@ -1,195 +1,168 @@
-# Route B — independent verification of the authorized phases
+# Route B — final integration verification
 
 | | |
 |---|---|
-| Status | **Independent verification of the current working tree; per-item status below, not a full-parity claim** |
-| Branch / commit | `feat/dsh-rust-engine` @ `7e95554` + an uncommitted authorized-phase worktree (see snapshot) |
-| Snapshot | 2026-11-08 22:38 local |
-| Addon | `opentake_engine_v38.node`; arm64 sha256 `4870f85409d09ec5b4c58c6915b9df7173b39e0e5a8737cc1e1827ded78c7a8a` (43.2 MiB, ORT), x64 `21f2fd2a…` (17.8 MiB, **no ORT**) |
-| Package | `dist/…darwin-universal.tgz` 21,515,725 B, 21 files; both packaged addons byte-equal the repo files; `verify-tarball` 10/11 |
-| Environment | macOS 27.2 arm64 · Node 26.13.0 (N-API 10) · DSH Electron Node 24.21.0 (N-API 10) · rustc 1.99.1 · ffmpeg 9.0.2 · Chrome · no Rosetta, 0 codesigning identities, no `pwsh` |
-| Model | `~/.dsh/opentake/models/siglip2-base-patch16-256-v2` — **complete and pinned-SHA verified** (see §2.2) |
-| Worktree | dirty: `crates/opentake-node/*` (search APIs, `ort-backend`), `crates/opentake-render/*` (HDR reference path, wgpu features), `crates/opentake-export-pro/*` (HDR10), `.github/workflows/route-b-platform.yml`, `plugins/opentake-studio-route-b/native-editor/**`, `web/src/native/**`, new platform/signing scripts, `docs/architecture/route-b-hdr.md` |
-| Verifier scripts | `scripts/route-b/verify/{revalidate-v28.sh,verify-tarball.mjs,verify-host-api.mjs,verify-search-model.mjs,verify-real-search.mjs,verify-hdr10.mjs,verify-native-ui.mjs,verify-ci-signing.mjs}` |
+| Status | **Final integration verification of the v40 working tree; per-item status below** |
+| Branch / commit | `feat/dsh-rust-engine` @ `92c8780` (`feat(route-b-ui): HDR10 export checkbox and native editor bundle`); worktree clean except `?? .codegraph/` |
+| Snapshot | 2026-11-08 23:40 local |
+| Addon | `opentake_engine_v40.node` — arm64 sha256 `77b9de3dd282ba33d12a4c792cd375212fc1d8249bd573702758c3be938a8372` (46.2 MiB, ORT); x64 `7fe8eab97442e938e3e8557d8d617b7a1e1b317599c62c650b64298bbb2fb5d3` (44.3 MiB, **tract** search backend, no ORT linkage) |
+| Final package | `dist/opentake-studio-route-b-0.1.0-darwin-universal.tgz` — sha256 `815b8920d18a98de270beb773d4ef3815fa0129c3f71a7052d5815b9ade14dc5`, 27,717,235 B, 24 files, both v40 slices, `lib/search/*`, `web/native-editor/native-editor.js` |
+| Model | `~/.dsh/opentake/models/siglip2-base-patch16-256-v2` — canonical layout + receipts; all three files match pinned SHA-256 |
+| Environment | macOS 27.2 arm64 · Node 26.13.0 (N-API 10) · DSH Electron Node 24.21.0 (N-API 10) · rustc 1.99.1 · ffmpeg/ffprobe 9.0.2 · Chrome · no Rosetta, 0 codesigning identities, no `pwsh` |
 
-Method: commands below were run against the working tree above; statuses cite
-results or file:line evidence, never docs alone. No implementation file was
-edited and nothing was committed.
+Method: every item was re-run after the `92c8780` build; implementation was not
+edited and nothing was committed by the verifier. Existing docs are not accepted
+as proof; stale statements are listed in §5.
 
-## 1. Authorized-phase matrix
+## 1. Final matrix
 
 | # | Item | Status | Evidence |
 |---|---|---|---|
-| 1 | v38 addon build / ABI / load | **Verified (functional)** / **Partial (byte-repro)** | smoke OK; `verify-addon --workers` **22 passed, 2 warnings, 0 failed** in Node 26 and DSH Node 24; N-API 8 chain, no libnode. Clean build produced `e1cf52f0…` vs checked-in `4870f854…` (worktree was being rebuilt concurrently; re-compare after freeze). Consolidated run: **18 passed, 0 failed, 1 skipped (hash drift), 1 warning (repo-path dlopen)**. |
-| 2 | Package + DSH profile install | **Verified**, one feature-parity blocker | `verify-tarball` 10/11; fresh `npm pack` 21 files; temp-`DSH_HOME` `dsh plugin add` + `--dump-config` + installed addon load PASS; packaged plugin Host half loads **31 tools**. Blocker: x64 addon lacks ORT (see §3.2). |
-| 3 | Host API (v38, current tree) | **Verified**, one warning | `verify-host-api.mjs --plugin <temp copy>`: **29 passed, 1 warning, 0 failed (31 checks)** — native cpal playback + multipart PNG stream, JPEG preview, denoise/loudness/stabilization bridges, 10-bit H.265 with correct SDR tags, ducking RMS drop, Motion template publish, static `/app/`. Warning: Host search gate is stale after the model install. |
-| 4 | SigLIP2 visual search | **Verified at the addon level** / **Partial in the Host** | Model complete: all three canonical files match pinned SHA-256 and receipts parse (`verify-search-model` exit 0). Workstream real-inference test **4/4** and my independent `verify-real-search` **PASS**: text `red` → `red-video:0.1321`, image red frame → `red-video:0.9999` > `blue-video:0.9559` via `ort-native`. The Host plugin still returns `installed:false/model_not_installed` (hardcoded gate, `index.js:1015-1035`) — stale integration, reported as a warning. x64 addon has no ORT. |
-| 5 | HDR10 linear compositor + export | **Verified isolated path only** | `hdr10-evidence.sh` PASS; true output HEVC **Main 10 / yuv420p10le / BT.2020 / SMPTE2084 / bt2020nc** with **mastering-display + content-light** side data; SDR fallback BT.709 without HDR metadata; a 10-bit SDR file re-tagged PQ **without mastering metadata** is classified `false-hdr` and rejected. Production wgpu compositor/addon export remain SDR (`crates/opentake-render/src/hdr.rs`, `route-b-hdr.md`). HDR hardware display Unknown. |
-| 6 | Native React editor body | **Partial** | Prototype + Node tests **9/9**, shell stub tests **11/11**, Chrome harness mounts a real React body (56,727-byte screenshot; needs `--allow-file-access-from-files`). Not wired into the default client (`ui/client.js` still hosts the iframe editor); live DSH Client mount **Unknown**. |
-| 7 | Windows/Linux CI + signing prep | **Partial / Unknown** | Workflow has 5 platform jobs; YAML + pinned action SHAs + scripts validate; wgpu readiness macOS/Windows/Linux **READY**; signing gated on dispatch+secrets. Locally: `sign-macos.sh` **SKIP** (0 identities), Linux/Windows preflights **exit 78**, no `pwsh` for `sign-windows.ps1`. No CI run, no Windows/Linux binary, no signing/notarization. |
-| 8 | Native playback integration | **Verified on macOS arm64** | Host API: cpal clock active (`/engine/playback/audio` → 409 `native-audio`), multipart PNG stream works, pause/stop; cpal hardware probe advances the clock. Other platforms untested. |
-| 9 | 10-bit export / ducking / media bridges | **Verified on macOS arm64** | H.265 `bitDepth 10` → Main 10/yuv420p10le; SDR tags (not HDR, no mastering side data); ducking export RMS `0.1214 → 0.0906`; JPEG preview; denoise/loudness/stabilization JSON; ASR/captions; Motion doc+template publish. |
-| 10 | Providers layer | **Partial (module+Host wiring, mocks only)** | `lib/providers.js` imported by Host (`index.js:19`); 21 loopback-mock tests pass; Host API provider mocks import assets. No real provider call (no keys/network); real behavior Unknown. |
+| 1 | Addon build / ABI / load | **Verified** | clean rebuild 11 s → **byte-identical to checked-in arm64 v40** (`77b9de3d…`); smoke OK; `verify-addon --workers` **22 passed, 2 warnings, 0 failed** in Node 26 and DSH Node 24; N-API 8 chain, no libnode. Consolidated run: **20 passed, 0 failed, 0 skipped, 0 warnings**. |
+| 2 | Final universal package + DSH profile install | **Verified** | `verify-tarball` on the dist universal: **12 passed, 1 warning, 0 failed** (24 files, both v40 slices byte-equal to repo, packaged addon smoke, packaged plugin loads **32 tools**); temp-`DSH_HOME` `dsh plugin add` + `--dump-config` + both slices installed; installed arm64 addon hash matches v40 and loads. Fresh `npm pack` from the tree also passes (same 13 checks). The old `dist/*arm64.tgz` is stale (v38, no native-editor bundle) — see §3. |
+| 3 | Real SigLIP2 search (index/query/text/image) | **Verified** | model complete with all pinned SHA-256; addon real search **PASS** (text `red` → red-video 0.1321; image red frame → red-video 0.9999 > blue-video 0.9559); Host API (extracted final package) real Host search **PASS**: `installed:true`, `visualAvailable:true`, `backend:ort-native`, indexed 4, text moments, image self-match; Host API **31 passed, 0 failed (32 checks)** including search, HDR, native-editor bundle route. |
+| 4 | HDR10 production path (`hdr10=true`) | **Verified (supported subset) / Partial (scope)** | `verify-hdr-production.mjs` against the installed v40 addon: `hdr10=true`, ffprobe **HEVC Main 10 / yuv420p10le / BT.2020 / SMPTE2084 / bt2020nc**, mastering + content-light metadata; SDR source request rejected (`HDR10 export requires HDR sources`); H.264 request rejected (`requires codec h265`). Host API production HDR export also PASS (same tags) and SDR request rejected. A 10-bit SDR re-tagged as PQ without mastering metadata is rejected by `verify-hdr10.mjs`. Scope limits: HDR PQ video-only, untransformed/ungraded layers, no audio in HDR mode; shared wgpu compositor remains SDR. |
+| 5 | Native editor live mount | **Partial / Unknown** | Optional native preview is wired: `ui/client.js` lazily imports `NATIVE_BUNDLE_URL` (`/app/native-editor/native-editor.js`), package ships `web/native-editor/**` (230,535 B bundle), Host API serves the bundle (`31 passed` check), native-editor tests **10/10**, shell tests **11/11**, Chrome harness renders (56,727 B screenshot). **Live DSH renderer mount is Unknown:** DSH's inspector at `127.0.0.1:9230` exposes only a `dsh://host` runtime target (domains Runtime/Debugger/Profiler, no DOM/Page/Target); client slot/theme inspect times out; `http://127.0.0.1:56474` returns 401 and no tokenized URL is recoverable. |
+| 6 | x64 search parity | **Static Verified / runtime Unknown** | x64 v40 is a tract build: `arch-capability.mjs` reports `hasTract:true, hasOrtNative:false, hasOrtLinkage:false, staticOk:true, ok:true`; `otool -L` has no ONNX Runtime/CoreML; package contains the x64 v40 slice. Cannot execute x64 on this arm64 host (no Rosetta), so runtime/quality is **Unknown**; static source/package parity is verified. |
+| 7 | HDR10 ffprobe vs SDR false-HDR | **Verified** | true HDR file passes `verify-hdr10.mjs` (main10/pq/bt2020 + mastering); SDR fallback is `sdr` (bt709, no HDR metadata); 10-bit SDR re-tagged PQ **without** mastering metadata is `false-hdr` and rejected; Host/Addon SDR-requested-HDR10 exports fail with an explicit error rather than being tagged. |
+| 8 | Playback / export / motion / providers (regression) | **Verified on macOS arm64** | Host API: native cpal playback + multipart PNG stream, JPEG preview, denoise/loudness/stabilization, 10-bit SDR H.265 (not HDR-tagged), ducking RMS drop, ASR/captions, Motion doc+template publish, static app + native bundle; provider module mocks only (real providers remain Unknown). |
+| 9 | CI / signing | **Partial / pending external** | workflow with 5 platform jobs validates (YAML, pinned action SHAs, script syntax); wgpu macOS/Windows/Linux READY; `sign-macos.sh` dry-run SKIP (0 identities); local Linux/Windows preflights exit 78; no `pwsh`; no CI run, signing/notarization, or Windows/Linux binary executed. |
 
-## 2. Evidence and exact commands
+## 2. Final evidence (commands/results)
 
-### 2.1 Consolidated run
+### 2.1 Package / DSH / addon
 ```bash
-bash scripts/route-b/verify/revalidate-v28.sh --fresh-pack
-# PASS environment — HEAD 7e95554, Node 26.13.0 napi 10, DSH 24.21.0 napi 10
-# WARN addon dlopen from the repo path is killed in this shell (SIGKILL; temp copies load)
-# PASS cargo build -p opentake-node --release --locked — 12 s
-# SKIP built addon matches checked-in arm64 artifact — built e1cf52f0…, repo 4870f854…
-# PASS smoke + verify-addon --workers — 22 passed, 2 warning(s), 0 failed (both runtimes)
-# PASS fresh npm pack — 21 entries; tarball verification 10/11; extraction 21 files
-# PASS dsh plugin add (temp DSH_HOME); dump-config; installed addon loads
-# PASS Host API probe (repo plugin, temp copy) — 29 passed, 1 warning, 0 failed (31 checks)
-# PASS Host API probe (extracted package) — 29 passed, 1 warning, 0 failed (31 checks)
-# Result: 18 passed, 0 failed, 1 skipped, 1 warning
+bash scripts/route-b/verify/revalidate-v28.sh --clean --fresh-pack
+# 20 passed, 0 failed, 0 skipped, 0 warnings
+# built addon matches checked-in arm64 — 77b9de3dd282ba33…
+# fresh npm pack 24 entries; tarball 12/13 checks; temp-DSH install; installed v40 addon loads
+node scripts/route-b/verify/verify-tarball.mjs \
+  --tarball dist/opentake-studio-route-b-0.1.0-darwin-universal.tgz
+# 12 passed, 1 warning, 0 failed — 24 files, addon v40, packaged plugin loads 32 tools
+DSH_HOME=/tmp/routeb-final dsh plugin --profile final add dist/…universal.tgz
+# both native slices installed; darwin-arm64/opentake_engine_v40.node sha256 77b9de3d…
 ```
+The stale `dist/opentake-studio-route-b-0.1.0-darwin-arm64.tgz` (22:24, v38)
+fails 5/13 checks (no native-editor bundle, stale v38 addon, old index); do not
+ship it. The universal artifact rebuilt at 23:37 is current.
 
-### 2.2 SigLIP2 model — size alone is not proof
-Pins agree between `crates/opentake-media/src/search/config.rs` and
-`scripts/route-b/search/model-assets.mjs`; full SHA-256 was recomputed:
+### 2.2 SigLIP2 model + real search
+Pins match between `crates/opentake-media/src/search/config.rs` and
+`scripts/route-b/search/model-assets.mjs`; recomputed SHA-256:
 
-| installed file | bytes | expected SHA-256 | observed |
-|---|---|---|---|
-| `image_encoder.onnx` | 371,992,072 | `f5cb1672…aa7a` | **SHA matches** |
-| `text_encoder.onnx` | 1,129,469,657 | `d3de4a6b…aaef` | **SHA matches** |
-| `tokenizer/tokenizer.json` | 34,363,039 | `cb9140fa…8322` | **SHA matches** |
-| receipts | `manifest.json`, `spec.json` | — | both present and parse; receipt hashes equal pins |
+| file | bytes | SHA-256 |
+|---|---|---|
+| `image_encoder.onnx` | 371,992,072 | `f5cb1672…aa7a` |
+| `text_encoder.onnx` | 1,129,469,657 | `d3de4a6b…aaef` |
+| `tokenizer/tokenizer.json` | 34,363,039 | `cb9140fa…8322` |
 
-`node scripts/route-b/verify/verify-search-model.mjs` → **exit 0 / complete**.
-Canonical layout (not raw `onnx/` files) and receipts are in place.
+`verify-search-model.mjs` exit 0 (complete; receipts parse). Independent real
+search on the installed package addon:
+`text "red" → red-video:0.1321`; `image red-frame → red-video:0.9999,
+blue-video:0.9559` (`ort-native`). Host API extracted final package:
+`search_model_status installed/visual true`, indexed 4, text Moments returned,
+image self-match `id-1`.
 
-Real inference:
+### 2.3 HDR10 production
 ```bash
-node --test scripts/route-b/search/real-inference.test.mjs     # 4/4 pass (~94 s)
-node scripts/route-b/verify/verify-real-search.mjs --addon <temp-copy>/opentake_engine_v38.node
-# PASS: installed=true visualAvailable=true backend=ort-native; indexed 2
-# text "red": red-video:0.1321
-# image red frame: red-video:0.9999, blue-video:0.9559
+node scripts/route-b/verify/verify-hdr-production.mjs \
+  --addon <installed>/native/darwin-arm64/opentake_engine_v40.node --json
+# pass true; exported.hdr10 true; hevc Main 10 / yuv420p10le / bt2020 / smpte2084
+# SDR source → "HDR10 export requires HDR sources; hdr10_sdr_fallback is SDR"
+# h264 + hdr10 → "HDR10 export requires codec h265 (Main10)"
+node scripts/route-b/verify/verify-hdr10.mjs production_hdr10.mp4   # hdr10 PASS
+node scripts/route-b/verify/verify-hdr10.mjs --expect not-hdr retag_false_hdr.mp4  # rejected false-hdr
 ```
-Host-level search is **not** wired yet: `search_model_status` still returns
-`installed:false, model_not_installed` in `plugins/opentake-studio-route-b/index.js:1015-1035`,
-which `verify-host-api.mjs` surfaces as the warning "Host search gate is stale after
-the model install". This is a real integration gap, not a model failure.
+Host API additionally exercised the `/engine/invoke export_video {hdr10:true}`
+pass-through on a fresh HDR project and got the same HDR tags; the same request
+on an SDR source failed with an error and did not produce a mislabelled file.
+The Host export dialog now exposes the HDR10 checkbox (`web/src/components/shell/ExportDialog.tsx:138,312,567`)
+and the built asset contains `hdr10`; HDR mode remains HDR-PQ-video-only, no
+audio, untransformed layers, and the shared wgpu compositor is still SDR.
 
-### 2.3 HDR10
+### 2.4 Native editor / CDP
 ```bash
-bash scripts/route-b/export/hdr10-evidence.sh   # PASS → /tmp/route-b-hdr10
-node scripts/route-b/verify/verify-hdr10.mjs /tmp/route-b-hdr10/hdr10_true.mp4
-# PASS hdr10 — hevc Main 10 yuv420p10le bt2020/smpte2084/bt2020nc; mastering=true contentLight=true
-node scripts/route-b/verify/verify-hdr10.mjs --expect sdr /tmp/route-b-hdr10/hdr10_sdr_fallback.mp4
-# PASS sdr — hevc Main 10 yuv420p10le bt709/bt709/bt709; mastering=false
-node scripts/route-b/verify/verify-hdr10.mjs --expect not-hdr /tmp/route-b-hdr10/retag_false_hdr.mp4
-# PASS (rejected): kind=false-hdr — HDR tags without mastering-display metadata
-```
-`ffprobe -show_frames` on the true file reports Mastering display metadata
-(BT.2020, 1000-nit peak) and Content light level metadata (1000/400); the SDR
-fallback has neither. The linear compositor is a reference RGBA16F path, not the
-shipped wgpu compositor; addon/Host export currently offer 10-bit H.265 SDR only.
-
-### 2.4 Native editor
-```bash
-node --test plugins/opentake-studio-route-b/native-editor/test/native-editor.test.mjs   # 9/9
+node --test plugins/opentake-studio-route-b/native-editor/test/native-editor.test.mjs   # 10/10
 node --test plugins/opentake-studio-route-b/test/ui-mount.test.mjs                       # 11/11
 node scripts/route-b/verify/verify-native-ui.mjs --chrome
-# PASS ... native-editor browser harness mounts in Chrome — 56727 byte screenshot
+# PASS ... optional native preview wired; bundle 230535 bytes; iframe remains default
+# PASS ... browser harness mounts in Chrome — 56727 byte screenshot
+curl 127.0.0.1:9230/json/list
+# one page target dsh://host ("Experimental cross-realm Inspector")
+# Schema.getDomains -> Runtime, Debugger, Profiler only; Runtime.evaluate has no document
+# cordis_inspect_query client Slots/Theme -> timed out after 10000ms
+# curl 127.0.0.1:56474 -> 401 "dsh web authentication required"; no tokenized URL found
 ```
-The default DSH shell still embeds the iframe editor; the prototype is additive
-(README states it is not wired) and the live DSH mount is Unknown.
+Static/served integration is verified; **live DSH renderer mount remains
+unverified** because this agent context has no authenticated browser/CDP access
+to the DSH renderer.
 
-### 2.5 CI / signing
+### 2.5 x64
 ```bash
-bash scripts/route-b/platform/validate-workflows.sh   # YAML OK + scripts OK
-node scripts/route-b/platform/check-wgpu-features.mjs  # macOS/Windows/Linux READY
-bash scripts/route-b/platform/sign-macos.sh            # SKIP (no Apple secrets)
-bash scripts/route-b/platform/build-linux.sh           # BLOCKED exit 78
-bash scripts/route-b/platform/build-windows.sh         # BLOCKED exit 78
-node scripts/route-b/verify/verify-ci-signing.mjs      # 8 PASS, 1 WARN (no pwsh)
+node scripts/route-b/search/arch-capability.mjs \
+  --addon plugins/opentake-studio-route-b/native/darwin-x64/opentake_engine_v40.node --json
+# expectedBackend tract; hasTract true; hasOrtNative false; hasOrtLinkage false; ok true
+otool -L …/darwin-x64/opentake_engine_v40.node   # no ONNX Runtime / CoreML dylib
 ```
-Jobs: macOS arm64 (macos-14), macOS x64 runtime (macos-13), macOS universal,
-Windows x64 (`windows_ready`), Linux x64 (`linux_ready`); Apple secrets wired but
-sign/notarize only for `workflow_dispatch && sign == true`.
+No Rosetta on this host → x64 runtime and inference quality **Unknown**; only
+static parity and the tract-backend build are verified.
 
-### 2.6 Host API (v38 features)
-From a temp plugin copy (see §3.3): `verify-host-api.mjs` **29 passed, 1 warning,
-0 failed (31 checks)** — project/import/sprites/media, native cpal playback + stream,
-JPEG/PNG preview, denoise/loudness/stabilization, 10-bit H.265 (not falsely HDR),
-H.264 range export, AAC + ducking export, XMEML/EDL, search text fallback (with
-stale-gate warning), ASR/captions/SRT, provider mocks, Motion document+template,
-save/reopen, static `/app/`, storage.
+### 2.6 CI / signing
+```bash
+bash scripts/route-b/platform/validate-workflows.sh      # YAML + scripts OK
+node scripts/route-b/platform/check-wgpu-features.mjs    # macOS/Windows/Linux READY
+bash scripts/route-b/platform/sign-macos.sh              # SKIP (no Apple secrets; 0 identities)
+bash scripts/route-b/platform/build-linux.sh             # BLOCKED exit 78
+bash scripts/route-b/platform/build-windows.sh           # BLOCKED exit 78
+node scripts/route-b/verify/verify-ci-signing.mjs        # 8 PASS, 1 WARN (no pwsh)
+```
+No CI run, no Windows/Linux build, no signing/notarization was performed.
 
-## 3. Findings that affect a parity claim
+## 3. Remaining blockers / unknowns
 
-### 3.1 Build reproducibility drift
-Clean build of the moving worktree → `e1cf52f0…`; checked-in arm64 → `4870f854…`.
-The phase features (ORT search, HDR modules, addon bindings) were still being
-built concurrently at snapshot time, so byte equality is only meaningful after the
-worktree freezes and the artifact is rebuilt from the final source. The script
-reports SKIP instead of claiming a match.
+1. **Live DSH native-editor mount** — cannot be observed from this context:
+   the only inspector target is the host runtime (`dsh://host`, no DOM), client
+   slot inspection times out, and the web UI requires an auth URL this session
+   does not have. The optional toggle/bundle/served route are verified statically;
+   the actual renderer state remains **Unknown**.
+2. **x64 runtime** — v40 x64 is a verified tract build but cannot execute on this
+   arm64 host (no Rosetta); search quality/perf on x64 is **Unknown**.
+3. **HDR scope** — production path is real for HDR PQ video-only, untransformed
+   layers, no audio; the shared wgpu compositor/preview remains SDR. HDR10+/
+   Dolby Vision/HLG, HDR hardware display and OS EDR are not covered.
+4. **Stale arm64-only dist tarball** — `dist/*-darwin-arm64.tgz` is the old v38
+   package; only the rebuilt universal artifact is current. Do not ship the
+   stale arm64 tarball.
+5. **CI/signing** — workflow/scripts are prepared but no runner/credentials
+   exist here; Windows/*nix runtime and Authenticode/Apple signing remain
+   unknown.
+6. **Real providers** — Host tests still use loopback mocks; no real key/network
+   call was made.
+7. **Freshness window** — HEAD moved from `ec625c3` to `92c8780` during this
+   verification; the final universal package was rebuilt at 23:37 and all
+   commands above ran against `92c8780` and that package.
 
-### 3.2 Universal package mixes ORT and non-ORT slices
-arm64 is 43.2 MiB and imports CoreML/Metal (ORT); x64 is 17.8 MiB and does not.
-The universal tarball packages both, so search capability would differ by
-architecture. x64 needs a same-feature rebuild (local cross-build or CI) before a
-universal search claim; no Rosetta here to run it.
+## 4. Docs status
+- `docs/architecture/route-b-hdr.md` now documents both the isolated and the
+  production addon/Host HDR path and its scope limits; the verification matches.
+- `docs/architecture/route-b-search.md` documents the per-target backend
+  (ort-native arm64, tract elsewhere) and real-inference evidence; matches.
+- `docs/architecture/route-b-verification.md` still contains the old v27 addon
+  names and “HDR/ducking not verified” wording — stale, should be updated or
+  retired.
+- `route-b-native-ui.md`/native-editor README correctly describe the optional
+  preview; live-renderer acceptance is still pending.
 
-### 3.3 Repo-path dlopen is SIGKILLed in this shell
-Loading the repo-path addon directly kills the process (`Killed: 9`) in Node 26 and
-DSH Node 24; copies under `$HOME`/`$TMPDIR` load, and the packaged/extracted addon
-loads. The verifier therefore probes from a temp plugin copy and records a WARN.
-This is an environment limitation of this shell, not evidence the package is
-broken; a live Host restart path that dlopens the repo file still needs checking.
-
-### 3.4 HDR / native UI / search claim boundaries
-- True HDR10 is isolated to the reference linear compositor + `export-pro` writer;
-  the production wgpu compositor, shared `ExportPreset`, addon and Host export
-  remain SDR. Do not claim HDR10 delivery yet.
-- The native editor body is a bounded prototype; the default panel still hosts the
-  iframe editor. Live DSH mount unknown.
-- SigLIP2 inference is real in the addon and model files are pinned/verified, but
-  the Host still hardcodes "model not installed"; real search is not reachable
-  through Host tools until that gate is replaced.
-
-## 4. Stale or misleading docs
-- `docs/architecture/route-b-verification.md`: still names v27 addons and “no
-  HDR/ducking contract”; superseded by v38 isolated HDR evidence and Host 10-bit/
-  ducking integration — update or retire.
-- The previous revision of this report (v28) is superseded by this snapshot.
-- `route-b-search.md` now documents the real addon capability and matches the
-  verification; the Host gate is the stale part.
-- `route-b-hdr.md`, `route-b-platform.md`, `route-b-native-ui.md`,
-  `native-editor/README.md` correctly limit their claims to what was verified.
-
-## 5. Blockers / pending
-1. **Host search integration** — replace the hardcoded `search_model_status`/
-   `search_index_*`/`search_query` gate with `searchConfigure` + addon calls, and
-   add a Host-level real text/image search test; model is ready.
-2. **x64 ORT parity** — rebuild darwin-x64 with the same features (or document
-   arm64-only search) before calling the universal package feature-complete.
-3. **Final reproducible addon artifact** — after the worktree freezes, clean
-   rebuild and compare SHA-256 with the checked-in artifact.
-4. **HDR production integration** — migrate the wgpu compositor/ExportPreset or
-   explicitly keep HDR10 out of scope; current claim is isolated-path only.
-5. **Native editor wiring** — move the prototype into the default shell, then
-   verify the live DSH Client mount.
-6. **CI/signing/runtime** — needs GitHub runners, Apple/Windows credentials and a
-   non-arm64 host; currently static/prepared only, nothing external executed.
-7. **Real providers** — still loopback mocks only; Unknown by design.
-
-## 6. Verifier scripts (owned under `scripts/route-b/verify/`)
-- `revalidate-v28.sh` — version-autodetecting end-to-end run (env, clean build,
-  smoke/verify-addon, fresh pack, tarball/extract, temp-DSH install, Host API on
-  temp plugin copy + extracted package; records the repo-path dlopen WARN).
-- `verify-tarball.mjs` — version-agnostic package/slice/host-load checks.
-- `verify-host-api.mjs` — 31-check Host API probe including v38 features.
-- `verify-search-model.mjs` — pinned sizes + full SHA-256 + canonical layout +
-  receipts; partial files never count as installed.
-- `verify-real-search.mjs` — real SigLIP2 text/image Moment ranking on a complete
-  model + addon.
-- `verify-hdr10.mjs` — independent HDR10 classifier; rejects false-HDR tags.
-- `verify-native-ui.mjs` — client/package/UI tests + optional Chrome mount.
-- `verify-ci-signing.mjs` — CI workflow static validation, wgpu readiness, signing
-  dry-runs and explicit pending external resources.
+## 5. Verifier scripts used (owned under `scripts/route-b/verify/`)
+- `revalidate-v28.sh` — version-autodetecting end-to-end run (clean rebuild,
+  hash equality, smoke/verify-addon in both runtimes, fresh pack, tarball,
+  temp-DSH install, Host API on temp copy + extracted package).
+- `verify-tarball.mjs` — package file set/addon versions/slices/plugin load.
+- `verify-host-api.mjs` — 32-check Host API probe incl. real Host search,
+  production HDR10 pass-through + SDR rejection, native-editor bundle route.
+- `verify-search-model.mjs`, `verify-real-search.mjs` — pinned checksums and
+  real text/image inference.
+- `verify-hdr10.mjs`, `verify-hdr-production.mjs` — HDR10 metadata classifier and
+  production addon export (true PQ / SDR rejection).
+- `verify-native-ui.mjs`, `verify-ci-signing.mjs` — static/browser UI and CI/
+  signing evidence with explicit limits.
