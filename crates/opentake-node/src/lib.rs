@@ -307,6 +307,7 @@ fn composite_frame_decoded(
     core: &opentake_core::AppCore,
     frame: i32,
     render_size: RenderSize,
+    transparent: bool,
 ) -> std::result::Result<DecodedFrame, String> {
     let snapshot = core.get_timeline();
     let timeline = &snapshot.timeline;
@@ -350,7 +351,10 @@ fn composite_frame_decoded(
     }
     let metrics = ManifestMetrics { sizes, straight_alpha };
     let plan = try_build_render_plan(timeline, render_size, &metrics)?;
-    let frame_plan = plan.frame(timeline, frame);
+    let mut frame_plan = plan.frame(timeline, frame);
+    if transparent {
+        frame_plan.clear_rgba = [0.0, 0.0, 0.0, 0.0];
+    }
     let device = RenderDevice::try_new().map_err(|error| error.to_string())?;
     let compositor = Compositor::new(&device.device);
     let cache = std::env::temp_dir().join("opentake-route-b").join("cache");
@@ -384,7 +388,7 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
         ((timeline.width as f64 * scale).round() as u32).max(2),
         ((timeline.height as f64 * scale).round() as u32).max(2),
     );
-    let rendered = composite_frame_decoded(core, frame, render_size)?;
+    let rendered = composite_frame_decoded(core, frame, render_size, false)?;
     let image = image::RgbaImage::from_raw(rendered.width, rendered.height, rendered.rgba)
         .ok_or_else(|| "composite produced an invalid RGBA buffer".to_string())?;
     let mut png = std::io::Cursor::new(Vec::new());
@@ -401,6 +405,7 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
 
 struct ExportSession {
     encoder: opentake_media::VideoEncoder,
+    transparent: bool,
     width: u32,
     height: u32,
     fps: i32,
@@ -508,7 +513,30 @@ impl Engine {
                     continue;
                 }
                 let start_sample = ((clip.start_frame.max(0) as f64 / f64::from(timeline.fps.max(1))) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
-                clips.push(ClipAudio::with_static_gain(start_sample, pcm.samples_f32, clip.volume as f32));
+                let sample_count = pcm.samples_f32.len();
+                let fade_in_samples = ((clip.fade_in_frames.max(0) as f64 / f64::from(timeline.fps.max(1))) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+                let fade_out_samples = ((clip.fade_out_frames.max(0) as f64 / f64::from(timeline.fps.max(1))) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+                let gains = if fade_in_samples == 0 && fade_out_samples == 0 && (clip.volume - 1.0).abs() < f64::EPSILON {
+                    Vec::new()
+                } else {
+                    (0..sample_count)
+                        .map(|index| {
+                            let fade_in = if fade_in_samples == 0 {
+                                1.0
+                            } else {
+                                (index as f64 / fade_in_samples as f64).clamp(0.0, 1.0)
+                            };
+                            let remaining = sample_count.saturating_sub(1).saturating_sub(index);
+                            let fade_out = if fade_out_samples == 0 {
+                                1.0
+                            } else {
+                                (remaining as f64 / fade_out_samples as f64).clamp(0.0, 1.0)
+                            };
+                            (clip.volume * fade_in * fade_out) as f32
+                        })
+                        .collect()
+                };
+                clips.push(ClipAudio { start_sample, samples: pcm.samples_f32, gains });
             }
         }
         let Ok(mixed) = mix_clips(&clips) else {
@@ -551,6 +579,7 @@ impl Engine {
         let total = timeline.total_frames();
         *self.export.borrow_mut() = Some(ExportSession {
             encoder,
+            transparent: matches!(video_codec, opentake_media::VideoCodec::ProRes4444),
             width: render_size.width,
             height: render_size.height,
             fps: timeline.fps,
@@ -576,7 +605,7 @@ impl Engine {
         let end = (session.next_frame + frames as i32).min(session.total);
         while session.next_frame < end {
             let frame = session.next_frame;
-            let decoded = composite_frame_decoded(&self.core, frame, size)
+            let decoded = composite_frame_decoded(&self.core, frame, size, session.transparent)
                 .map_err(|message| Error::from_reason(message))?;
             let rgba = opentake_media::RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
             session

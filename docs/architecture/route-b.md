@@ -36,9 +36,12 @@ by the DSH Host through N-API.
   a simple shape Lottie animation.
 - `export_video`: renders every timeline frame, encodes H.264/H.265/ProRes via
   `opentake-media` VideoEncoder, and muxes a linear mono audio mixdown. Verified
-  320x180 2 s source → 1280x720 H.264 + AAC, 2.0 s. Chunked export exposes
+  320x180 2 s source → 1280x720 H.264 + AAC, 2.0 s. ProRes 4444 uses a
+  transparent clear and preserves alpha (verified with a text-only timeline).
+  Audio uses linear clip volume plus fade-in/fade-out envelopes. Chunked export exposes
   `/engine/export/status` progress and cancel; the UI shim polls it and emits
-  `export://progress`. Fades/ducking envelopes remain.
+  `export://progress`; cancel removes the partial output. Ducking envelopes
+  and UI-dialog export remain unverified.
 - Node smoke test: `node crates/opentake-node/test/smoke.mjs`.
 
 ## Known gaps
