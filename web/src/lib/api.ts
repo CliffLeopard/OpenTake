@@ -567,6 +567,8 @@ export interface ExportRequest {
   outPath: string;
   codec: ExportCodec;
   quality: ExportQuality;
+  /** H.265 only: encode Main10 (10-bit); omit for 8-bit. */
+  bitDepth?: 10;
 }
 
 /** Summary of a completed export (mirror of Rust `ExportSummary`). */

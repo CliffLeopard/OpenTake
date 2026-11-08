@@ -133,6 +133,7 @@ export function ExportDialog() {
   const [mode, setMode] = useState<ExportMode>("video");
   const [codec, setCodec] = useState<ExportCodec>("h264");
   const [quality, setQuality] = useState<ExportQuality>("1080p");
+  const [tenBit, setTenBit] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -304,6 +305,7 @@ export function ExportDialog() {
           outPath: withExt(chosen, ext),
           codec,
           quality,
+          ...(codec === "h265" && tenBit ? { bitDepth: 10 as const } : {}),
         },
         operationId,
       );
@@ -544,6 +546,20 @@ export function ExportDialog() {
                   minWidth={160}
                 />
               </Row>
+
+              {codec === "h265" && (
+                <Row label={t("export.tenBit")} hint={t("export.tenBitHint")}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "var(--fs-sm)" }}>
+                    <input
+                      type="checkbox"
+                      checked={tenBit}
+                      onChange={(event) => setTenBit(event.target.checked)}
+                      aria-label={t("export.tenBit")}
+                    />
+                    {t("export.tenBit")}
+                  </label>
+                </Row>
+              )}
             </>
           ) : (
             <p
