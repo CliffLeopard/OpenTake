@@ -54,7 +54,8 @@ not runtime-tested on this machine.
   favorited/unfavorited and mirrored into it. The Settings storage pane reads
   and clears Route B's derived caches. An agent tool can generate an image via
   an OpenAI-compatible provider and import it into the project. Search is
-  text-only over names/cached transcripts; visual SigLIP search is not bridged. Caption cues export
+  text-only over names/cached transcripts; visual SigLIP search is not bridged.
+  The UI's "capture frame to media" button imports a composited still. Caption cues export
   to SRT/VTT; XMEML/EDL/OTIO/FCPXML interchange export is bridged. Provider
   ASR (OpenAI-compatible verbose JSON) can transcribe and generate captions;
   configure `OPENTAKE_ASR_URL`/`OPENAI_API_KEY`. Basic streaming playback is

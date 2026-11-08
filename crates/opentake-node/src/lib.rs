@@ -862,6 +862,76 @@ impl Engine {
         result
     }
 
+    /// Composite/decode one frame and import it as a new still image asset.
+    #[napi]
+    pub fn capture_frame_to_media(
+        &self,
+        frame: i32,
+        name_base: String,
+        source_media_id: Option<String>,
+    ) -> Result<String> {
+        let snapshot = self.core.get_timeline();
+        let project_dir = self.core.project_dir();
+        let decoded = if let Some(media_id) = source_media_id {
+            let entry = self
+                .core
+                .media()
+                .entries
+                .iter()
+                .find(|entry| entry.id == media_id)
+                .cloned()
+                .ok_or_else(|| Error::from_reason(format!("media not found: {media_id}")))?;
+            let path = resolve_media_path(&entry, project_dir.as_deref())
+                .ok_or_else(|| Error::from_reason("media path unavailable"))?;
+            let cache = std::env::temp_dir().join("opentake-route-b").join("cache");
+            let engine = opentake_media::MediaEngine::new(&cache, cache.join("models"));
+            let (_, rgba) = engine
+                .decode_frame(
+                    &path,
+                    &opentake_media::decode::FrameRequest {
+                        time_secs: frame as f64 / f64::from(snapshot.timeline.fps.max(1)),
+                        max_size: (0, 0),
+                        tolerance_secs: 0.1,
+                        apply_rotation: true,
+                    },
+                )
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+            DecodedFrame::new(rgba.width, rgba.height, rgba.rgba, false)
+        } else {
+            composite_frame_decoded(
+                &self.core,
+                frame,
+                RenderSize::new(snapshot.timeline.width.max(2) as u32, snapshot.timeline.height.max(2) as u32),
+                false,
+            )
+            .map_err(|message| Error::from_reason(message))?
+        };
+        let directory = project_dir
+            .as_ref()
+            .map(|root| root.join("media").join("captures"))
+            .unwrap_or_else(|| std::env::temp_dir().join("opentake-route-b").join("captures"));
+        std::fs::create_dir_all(&directory).map_err(|error| Error::from_reason(error.to_string()))?;
+        let file = directory.join(format!("{}.png", uuid::Uuid::new_v4()));
+        let image = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba)
+            .ok_or_else(|| Error::from_reason("invalid capture buffer"))?;
+        image
+            .save_with_format(&file, image::ImageFormat::Png)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let name = format!("{name_base} {frame}");
+        let probe = ProbedMedia {
+            duration_secs: 0.0,
+            width: Some(decoded.width as i32),
+            height: Some(decoded.height as i32),
+            fps: None,
+            has_audio: false,
+            color: None,
+        };
+        self.core
+            .import_media_file(&file, name, &probe)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&media_list_json(&self.core))
+    }
+
     /// Write the timeline as an interchange document (`xmeml`, `edl`, `otio`,
     /// `fcpxml`). Returns the written path.
     #[napi]

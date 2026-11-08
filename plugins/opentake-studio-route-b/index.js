@@ -29,7 +29,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v23.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v24.node');
 }
 
 function loadAddon() {
@@ -428,6 +428,12 @@ export function apply(ctx) {
         const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
         return importMedia(paths);
       }
+      case 'capture_frame_to_media':
+        return JSON.parse(state.engine.captureFrameToMedia(
+          typeof args.frame === 'number' ? Math.floor(args.frame) : 0,
+          typeof args.nameBase === 'string' ? args.nameBase : 'Frame',
+          typeof args.sourceMediaId === 'string' ? args.sourceMediaId : null,
+        ));
       case 'export_xmeml':
       case 'export_fcpxml':
       case 'export_edl':
@@ -1206,6 +1212,25 @@ export function apply(ctx) {
     { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
     async (args) => {
       const value = textSearch(args.query);
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_capture_frame',
+    'Composite/decode one frame and import it as a still image asset.',
+    {
+      type: 'object',
+      properties: { frame: { type: 'number' }, nameBase: { type: 'string' }, sourceMediaId: { type: 'string' } },
+      required: ['frame'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().captureFrameToMedia(
+        args.frame,
+        args.nameBase ?? 'Frame',
+        args.sourceMediaId ?? null,
+      ));
       return { text: JSON.stringify(value), data: value };
     },
   );

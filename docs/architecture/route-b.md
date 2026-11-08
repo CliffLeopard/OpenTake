@@ -62,6 +62,8 @@ by the DSH Host through N-API.
   plan, decodes video/image layers, rasterizes text and Lottie through a Route B
   resolver, returns a PNG data URL. Verified with a text overlay over video and
   a simple shape Lottie animation.
+- Capture-current-frame is bridged: composite/decode one frame, write a PNG,
+  and import it as an image asset (verified 320x180 frame and 1920x1080 black).
 - Search is text-only: `search_query` matches media names and cached
   transcripts (Spoken/Files); visual embeddings/Moments are explicitly
   unavailable. `search_model_status` reports `route-b-text-search`, not SigLIP.
