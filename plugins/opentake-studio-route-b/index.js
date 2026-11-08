@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v16.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v17.node');
 }
 
 function loadAddon() {
@@ -240,6 +240,22 @@ export function apply(ctx) {
         const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
         return importMedia(paths);
       }
+      case 'create_media_proxy': {
+        const assetId = typeof args.assetId === 'string' ? args.assetId : '';
+        return JSON.parse(state.engine.createMediaProxy(
+          assetId,
+          typeof args.maxWidth === 'number' ? args.maxWidth : 1280,
+          typeof args.maxHeight === 'number' ? args.maxHeight : 720,
+        ));
+      }
+      case 'remove_media_proxy':
+        return state.engine.removeMediaProxy(typeof args.assetId === 'string' ? args.assetId : '');
+      case 'cancel_media_proxy':
+        return false;
+      case 'get_proxy_playback_enabled':
+        return true;
+      case 'set_proxy_playback_enabled':
+        return true;
       case 'relink_media': {
         const mediaRef = typeof args.mediaRef === 'string' ? args.mediaRef : '';
         const newPath = typeof args.newPath === 'string' ? args.newPath : '';
@@ -577,6 +593,23 @@ export function apply(ctx) {
     },
     async (args) => {
       const value = JSON.parse(ensureEngine().relinkMedia(args.mediaRef, args.newPath));
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_create_proxy',
+    'Generate and persist a low-resolution playback proxy for a video asset.',
+    {
+      type: 'object',
+      properties: { mediaRef: { type: 'string' }, maxWidth: { type: 'number' }, maxHeight: { type: 'number' } },
+      required: ['mediaRef'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(
+        ensureEngine().createMediaProxy(args.mediaRef, args.maxWidth ?? 1280, args.maxHeight ?? 720),
+      );
       return { text: JSON.stringify(value), data: value };
     },
   );

@@ -100,6 +100,9 @@ fn media_list_json(core: &opentake_core::AppCore) -> serde_json::Value {
             let resolved = resolve_media_path(entry, project_dir.as_deref());
             let path = resolved.as_ref().map(|path| path.to_string_lossy().into_owned());
             let missing = resolved.as_ref().is_none_or(|path| !path.exists());
+            let proxy_path = entry.proxy.as_ref().and_then(|proxy| {
+                project_dir.as_deref().map(|root| root.join(&proxy.relative_path).to_string_lossy().into_owned())
+            });
             let kind = serde_json::to_value(entry.kind).unwrap_or(serde_json::Value::Null);
             serde_json::json!({
                 "id": entry.id,
@@ -113,9 +116,9 @@ fn media_list_json(core: &opentake_core::AppCore) -> serde_json::Value {
                 "color": entry.color,
                 "isHdr": entry.color.as_ref().is_some_and(|color| color.is_hdr()),
                 "path": path,
-                "proxyPath": null,
-                "proxyWidth": null,
-                "proxyHeight": null,
+                "proxyPath": proxy_path,
+                "proxyWidth": entry.proxy.as_ref().map(|proxy| proxy.width),
+                "proxyHeight": entry.proxy.as_ref().map(|proxy| proxy.height),
                 "thumbnail": null,
                 "folderId": entry.folder_id,
                 "fileSize": resolved.as_ref().and_then(|path| std::fs::metadata(path).ok()).map(|meta| meta.len()),
@@ -750,6 +753,78 @@ impl Engine {
             .relink_media_file(&media_id, &path, &probed)
             .map_err(|error| Error::from_reason(error.to_string()))?;
         json(&media_list_json(&self.core))
+    }
+
+    /// Generate a project-local low-resolution proxy for one video asset and
+    /// persist it in the media manifest. Returns the UI MediaProxyResult JSON.
+    #[napi]
+    pub fn create_media_proxy(&self, media_id: String, max_width: u32, max_height: u32) -> Result<String> {
+        let snapshot = self.core.get_timeline();
+        let project_dir = self
+            .core
+            .project_dir()
+            .ok_or_else(|| Error::from_reason("media_proxy_project_must_be_saved"))?;
+        let entry = snapshot
+            .timeline
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .find(|clip| clip.media_ref == media_id)
+            .and_then(|clip| self.core.media().entries.iter().find(|entry| entry.id == clip.media_ref).cloned())
+            .ok_or_else(|| Error::from_reason(format!("media not found: {media_id}")))?;
+        let source = resolve_media_path(&entry, Some(&project_dir))
+            .ok_or_else(|| Error::from_reason("media source path is unavailable"))?;
+        let proxy_dir = project_dir.join("media").join("proxies");
+        std::fs::create_dir_all(&proxy_dir).map_err(|error| Error::from_reason(error.to_string()))?;
+        let leaf = format!("{}.mp4", media_id);
+        let output = proxy_dir.join(&leaf);
+        let _ = std::fs::remove_file(&output);
+        let result = opentake_media::proxy::create_proxy(
+            opentake_media::proxy::ProxyRequest {
+                source: &source,
+                output: &output,
+                max_size: (max_width.max(2), max_height.max(2)),
+            },
+            &opentake_media::MediaCancelToken::new(),
+            None,
+        )
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+        let relative_path = format!("media/proxies/{leaf}");
+        let proxy = opentake_domain::MediaProxy {
+            relative_path,
+            source_sha256: result.source_sha256.clone(),
+            width: result.width,
+            height: result.height,
+        };
+        self.core
+            .set_media_proxy_for_project(snapshot.project_epoch, &project_dir, &media_id, Some(proxy))
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&serde_json::json!({
+            "assetId": media_id,
+            "path": result.path.to_string_lossy(),
+            "sourceSha256": result.source_sha256,
+            "width": result.width,
+            "height": result.height,
+        }))
+    }
+
+    /// Remove one asset's proxy and delete the generated file.
+    #[napi]
+    pub fn remove_media_proxy(&self, media_id: String) -> bool {
+        let Some(project_dir) = self.core.project_dir() else { return false };
+        let snapshot = self.core.get_timeline();
+        let Some(entry) = self.core.media().entries.iter().find(|entry| entry.id == media_id).cloned() else { return false };
+        let proxy_path = entry.proxy.as_ref().map(|proxy| project_dir.join(&proxy.relative_path));
+        let result = self
+            .core
+            .set_media_proxy_for_project(snapshot.project_epoch, &project_dir, &media_id, None)
+            .is_ok();
+        if result {
+            if let Some(path) = proxy_path {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        result
     }
 
     /// Generate a single-frame poster PNG for one imported asset and return

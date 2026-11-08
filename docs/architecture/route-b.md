@@ -29,7 +29,9 @@ by the DSH Host through N-API.
   (`animations/*.json` extraction); a simple zipped shape renders in the
   composite.
 - Media relink keeps the asset id and updates the source path (verified via
-  Host tool).
+  Host tool). Project-local low-resolution proxies are generated with
+  `opentake-media::proxy::create_proxy` and persisted in the manifest; create
+  and remove were verified through the Host IPC.
 - Verified in DSH: full home/editor render, new project writes a real
   `.opentake` bundle, media import returns ffprobe metadata, double-click adds
   video+linked-audio clips, inspector loads, and the direct video preview plays.
