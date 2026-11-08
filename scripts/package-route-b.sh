@@ -18,7 +18,10 @@ fi
 VERSION="$(node -p "require('$PLUGIN/package.json').version")"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
-TARBALL="$DIST/opentake-studio-route-b-${VERSION}-${OS}-${ARCH}.tgz"
+NATIVE_COUNT="$(find "$PLUGIN/native" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+PLATFORM="$OS-$ARCH"
+if [ "$NATIVE_COUNT" -gt 1 ]; then PLATFORM="$OS-universal"; fi
+TARBALL="$DIST/opentake-studio-route-b-${VERSION}-${PLATFORM}.tgz"
 rm -f "$TARBALL"
 (cd "$PLUGIN" && npm pack --pack-destination "$DIST" >/dev/null)
 PACKED="$(ls -t "$DIST"/opentake-studio-route-b-*.tgz | head -1)"
