@@ -11,12 +11,13 @@
   "files": [
     "index.js",
     "client.js",
-    "lib/*.js",
     "ui/**",
     "cordis.patch.yml",
     "web/**",
     "native/*/*.node",
-    "README.md"
+    "README.md",
+    "lib/motion-templates.js",
+    "lib/providers.js"
   ],
   "dsh": {
     "bundle": {

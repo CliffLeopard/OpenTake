@@ -727,8 +727,7 @@ export function apply(ctx) {
     }
     const files = scanImportFolder(directory, recursive === true);
     if (files.length === 0) return mediaWithThumbnails();
-    state.engine.importMedia(files);
-    return mediaWithThumbnails();
+    return importMedia(files);
   }
 
   async function timelineSprite(mediaRef, requestedFrames) {
