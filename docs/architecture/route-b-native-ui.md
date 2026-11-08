@@ -430,3 +430,12 @@ docs/architecture/route-b-native-ui.md                   (this document)
 ```
 
 No existing files were modified; nothing was committed.
+
+
+## Lead integration status (2026-11-08)
+
+The package `exports["./client"]` now points at `ui/client.js` and the mirrored
+iframe prototype registration is disabled. Live DSH verification after a plugin
+reload showed the native panel `OpenTake（原生）` with engine-ready status and the
+existing editor iframe rendered inside it; the old `OpenTake (Rust)` duplicate
+panel is no longer registered. Editor body remains iframe by design.

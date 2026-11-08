@@ -74,3 +74,6 @@ not runtime-tested on this machine.
 - The iframe is a stepping stone; a native DSH React mount is the target.
 - `EditRequest` is extracted from `src-tauri/src/commands.rs` and must be kept
   in sync until it is moved into a shared `opentake-ipc` crate.
+
+- The default client entry is the DSH-native shell (`ui/client.js`); the editor
+  body is still the existing iframe build.

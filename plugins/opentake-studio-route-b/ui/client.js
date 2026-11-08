@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
      * working panel. Set to false when merging ONLY the native pieces into the
      * existing `client.js` (which already registers the iframe panel).
      */
-    const INCLUDE_IFRAME_PROTOTYPE = true
+    const INCLUDE_IFRAME_PROTOTYPE = false
 
     // ---------------------------------------------------------------------
     // Engine status contract

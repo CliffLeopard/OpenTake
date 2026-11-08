@@ -359,15 +359,13 @@ test('apply registers native main panel and sidebar entry', () => {
     assert.ok(key in en, 'missing dictionary key ' + key)
   }
 
-  // Slot registrations: native panel first, then the mirrored iframe prototype.
-  assert.deepEqual(injections, ['sidebar.panellist', 'main', 'sidebar.panellist', 'main'])
-  assert.equal(registrations.length, 4)
-  assert.equal(harness.module.internals.INCLUDE_IFRAME_PROTOTYPE, true)
+  // Slot registrations: native panel only (the old iframe entry is not mirrored).
+  assert.deepEqual(injections, ['sidebar.panellist', 'main'])
+  assert.equal(registrations.length, 2)
+  assert.equal(harness.module.internals.INCLUDE_IFRAME_PROTOTYPE, false)
 
   const nativeSidebar = registrations[0]
   const nativeMain = registrations[1]
-  const iframeSidebar = registrations[2]
-  const iframeMain = registrations[3]
 
   assert.equal(nativeSidebar.options.name, 'sidebar.panellist')
   assert.equal(nativeSidebar.options.id, 'opentake-native')
@@ -382,19 +380,8 @@ test('apply registers native main panel and sidebar entry', () => {
   assert.equal(nativeMain.options.locale, 'opentake-native')
   assert.equal(nativeMain.component, harness.module.internals.component)
 
-  // The iframe panel mirrors ../client.js exactly (order 16, hard-coded label).
-  assert.equal(iframeSidebar.options.name, 'sidebar.panellist')
-  assert.equal(iframeSidebar.options.id, 'opentake-studio-route-b')
-  assert.equal(iframeSidebar.options.order, 16)
-  assert.equal(iframeSidebar.options.locale, 'opentake-studio-route-b')
-  assert.equal(iframeSidebar.options.label(), 'OpenTake (Rust)')
-  assert.equal(typeof iframeSidebar.component, 'function')
-  assert.equal(iframeMain.options.name, 'main')
-  assert.equal(iframeMain.options.key, 'opentake-studio-route-b')
-  assert.equal(typeof iframeMain.component, 'function')
-
-  // Effects: dictionaries, native styles, 2 native slots, iframe styles, 2 iframe slots.
-  assert.equal(effects.length, 7)
+  // Effects: dictionary, native styles, sidebar and main slots.
+  assert.equal(effects.length, 4)
   for (const effect of effects) {
     assert.equal(typeof effect.cleanup, 'function', 'effect cleanup for ' + effect.label)
     assert.ok(String(effect.label).includes('opentake-native'))
@@ -406,24 +393,18 @@ test('scoped style effects insert .otn-/ .otsb- styles and remove them on cleanu
   const { ctx, effects } = createCtx()
   harness.module.apply(ctx)
 
-  assert.equal(harness.dom.head.children.length, 2, 'native + iframe style elements')
+  assert.equal(harness.dom.head.children.length, 1, 'native style element')
   const nativeStyle = harness.dom.head.children.find(
     (element) => element.attributes['data-opentake-native'] === 'shell',
   )
-  const iframeStyle = harness.dom.head.children.find(
-    (element) => element.attributes['data-opentake-iframe'] === 'prototype',
-  )
   assert.ok(nativeStyle, 'native style element')
-  assert.ok(iframeStyle, 'iframe prototype style element')
   assert.equal(nativeStyle.tagName, 'STYLE')
   assert.ok(nativeStyle.textContent.includes('.otn-root'), 'root class')
   assert.ok(nativeStyle.textContent.includes('.otn-badge--success'), 'state classes')
-  assert.ok(iframeStyle.textContent.includes('.otsb-root'), 'iframe root class')
 
   // Scoped: every selector uses the plugin prefix; no global element/root selectors.
   for (const [css, prefix] of [
     [nativeStyle.textContent, 'otn-'],
-    [iframeStyle.textContent, 'otsb-'],
   ]) {
     assert.ok(!/:root|(^|[,{}])\s*(html|body)\s*[,{]/m.test(css), 'no global selectors')
     const selectors = [...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1])
@@ -439,14 +420,11 @@ test('scoped style effects insert .otn-/ .otsb- styles and remove them on cleanu
     }
   }
 
-  // Native style cleanup removes only the native element; all cleanups are safe.
+  // Native style cleanup removes the style; all cleanups are safe.
   const nativeStyleEffect = effects.find(
     (entry) => String(entry.label).includes('shell styles'),
   )
   nativeStyleEffect.cleanup()
-  assert.equal(harness.dom.head.children.length, 1)
-  assert.ok(harness.dom.head.children.includes(iframeStyle))
-  for (const effect of effects) effect.cleanup()
   assert.equal(harness.dom.head.children.length, 0)
 })
 
