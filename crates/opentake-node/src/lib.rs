@@ -20,6 +20,7 @@ use opentake_render::{
     source::{DecodedFrame, SourceMetrics},
 };
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 use opentake_domain::{ClipType, MediaManifestEntry, MediaSource};
 
@@ -32,6 +33,24 @@ fn resolve_media_path(entry: &MediaManifestEntry, project_dir: Option<&std::path
         MediaSource::External { absolute_path } => Some(std::path::PathBuf::from(absolute_path)),
         MediaSource::Project { relative_path } => project_dir.map(|root| root.join(relative_path)),
     }
+}
+
+fn lottie_probe(path: &std::path::Path) -> Option<ProbedMedia> {
+    let bytes = std::fs::read(path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let width = value.get("w")?.as_i64()? as i32;
+    let height = value.get("h")?.as_i64()? as i32;
+    let frame_rate = value.get("fr")?.as_f64()?.max(1.0);
+    let start = value.get("ip").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+    let end = value.get("op").and_then(serde_json::Value::as_f64).unwrap_or(frame_rate);
+    Some(ProbedMedia {
+        duration_secs: ((end - start) / frame_rate).max(0.0),
+        width: Some(width),
+        height: Some(height),
+        fps: Some(frame_rate),
+        has_audio: false,
+        color: None,
+    })
 }
 
 fn media_list_json(core: &opentake_core::AppCore) -> serde_json::Value {
@@ -99,6 +118,101 @@ impl SourceMetrics for ManifestMetrics {
     }
 }
 
+struct LottieState {
+    documents: HashMap<std::path::PathBuf, velato::Composition>,
+    scene_renderer: velato::Renderer,
+    gpu_renderer: Option<velato::vello::Renderer>,
+}
+
+impl LottieState {
+    fn new() -> Self {
+        Self {
+            documents: HashMap::new(),
+            scene_renderer: velato::Renderer::new(),
+            gpu_renderer: None,
+        }
+    }
+
+    fn resolve(
+        &mut self,
+        device: &opentake_render::wgpu::Device,
+        queue: &opentake_render::wgpu::Queue,
+        path: &std::path::Path,
+        source_frame: i64,
+        render_box: (u32, u32),
+    ) -> Option<Rc<GpuTexture>> {
+        if !self.documents.contains_key(path) {
+            let bytes = std::fs::read(path).ok()?;
+            let composition = std::panic::catch_unwind(|| velato::Composition::from_slice(&bytes))
+                .ok()?
+                .ok()?;
+            self.documents.insert(path.to_path_buf(), composition);
+        }
+        let composition = self.documents.get(path)?;
+        let frame_count = ((composition.frames.end - composition.frames.start).ceil() as i64).max(1);
+        let internal_frame = source_frame.rem_euclid(frame_count);
+        let max_width = render_box.0.max(1) as f64;
+        let max_height = render_box.1.max(1) as f64;
+        let scale = (max_width / composition.width as f64)
+            .min(max_height / composition.height as f64)
+            .min(1.0);
+        let width = ((composition.width as f64 * scale).round() as u32).max(1);
+        let height = ((composition.height as f64 * scale).round() as u32).max(1);
+        let transform = velato::vello::kurbo::Affine::scale_non_uniform(
+            width as f64 / composition.width as f64,
+            height as f64 / composition.height as f64,
+        );
+        let frame = composition.frames.start + internal_frame as f64;
+        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.scene_renderer.render(composition, frame, transform, 1.0)
+        }))
+        .ok()?;
+        if self.gpu_renderer.is_none() {
+            self.gpu_renderer = Some(
+                velato::vello::Renderer::new(
+                    device,
+                    velato::vello::RendererOptions {
+                        surface_format: None,
+                        use_cpu: false,
+                        antialiasing_support: velato::vello::AaSupport::area_only(),
+                        num_init_threads: NonZeroUsize::new(1),
+                    },
+                )
+                .ok()?,
+            );
+        }
+        let texture = device.create_texture(&opentake_render::wgpu::TextureDescriptor {
+            label: Some("route-b-lottie"),
+            size: opentake_render::wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: opentake_render::wgpu::TextureDimension::D2,
+            format: opentake_render::wgpu::TextureFormat::Rgba8Unorm,
+            usage: opentake_render::wgpu::TextureUsages::STORAGE_BINDING
+                | opentake_render::wgpu::TextureUsages::TEXTURE_BINDING
+                | opentake_render::wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&opentake_render::wgpu::TextureViewDescriptor::default());
+        self.gpu_renderer
+            .as_mut()?
+            .render_to_texture(
+                device,
+                queue,
+                &scene,
+                &view,
+                &velato::vello::RenderParams {
+                    base_color: velato::vello::peniko::color::palette::css::TRANSPARENT,
+                    width,
+                    height,
+                    antialiasing_method: velato::vello::AaConfig::Area,
+                },
+            )
+            .ok()?;
+        Some(Rc::new(GpuTexture { texture, view, width, height }))
+    }
+}
+
 struct TextInfo {
     content: String,
     style: opentake_domain::TextStyle,
@@ -111,6 +225,7 @@ struct BasicResolver<'a> {
     engine: &'a opentake_media::MediaEngine,
     text: &'a HashMap<String, TextInfo>,
     text_rasterizer: &'a CosmicTextRasterizer,
+    lottie: &'a mut LottieState,
     canvas: (u32, u32),
     media: &'a HashMap<String, (std::path::PathBuf, bool)>,
     timeline_fps: i32,
@@ -145,7 +260,10 @@ impl TextureResolver for BasicResolver<'_> {
                 self.cache.insert(key, texture.clone());
                 return Some(texture);
             }
-            TextureSource::Lottie { .. } => return None,
+            TextureSource::Lottie { media_ref } => {
+                let (path, _) = self.media.get(media_ref)?;
+                return self.lottie.resolve(self.device, self.queue, path, source_frame, self.canvas);
+            }
         };
         let (path, _) = self.media.get(media_ref)?;
         let key = format!("{media_ref}:{source_frame}:{is_image}");
@@ -239,12 +357,14 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
     let cache = std::env::temp_dir().join("opentake-route-b").join("cache");
     let media_engine = opentake_media::MediaEngine::new(&cache, cache.join("models"));
     let text_rasterizer = CosmicTextRasterizer::new();
+    let mut lottie = LottieState::new();
     let mut resolver = BasicResolver {
         device: &device.device,
         queue: &device.queue,
         engine: &media_engine,
         text: &text,
         text_rasterizer: &text_rasterizer,
+        lottie: &mut lottie,
         canvas: (render_size.width, render_size.height),
         media: &media,
         timeline_fps: timeline.fps,
@@ -343,20 +463,31 @@ impl Engine {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("media")
                 .to_string();
-            let probe = match opentake_media::probe(&path) {
-                Ok(probe) => probe,
-                Err(_) => {
-                    skipped.push(raw);
-                    continue;
+            let extension = path.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
+            let probed = if extension.as_deref() == Some("json") {
+                match lottie_probe(&path) {
+                    Some(probe) => probe,
+                    None => {
+                        skipped.push(raw);
+                        continue;
+                    }
                 }
-            };
-            let probed = ProbedMedia {
-                duration_secs: probe.duration_secs,
-                width: probe.width.map(|width| width as i32),
-                height: probe.height.map(|height| height as i32),
-                fps: probe.fps,
-                has_audio: probe.has_audio,
-                color: probe.color,
+            } else {
+                let probe = match opentake_media::probe(&path) {
+                    Ok(probe) => probe,
+                    Err(_) => {
+                        skipped.push(raw);
+                        continue;
+                    }
+                };
+                ProbedMedia {
+                    duration_secs: probe.duration_secs,
+                    width: probe.width.map(|width| width as i32),
+                    height: probe.height.map(|height| height as i32),
+                    fps: probe.fps,
+                    has_audio: probe.has_audio,
+                    color: probe.color,
+                }
             };
             if self.core.import_media_file(&path, name, &probed).is_err() {
                 skipped.push(raw);
