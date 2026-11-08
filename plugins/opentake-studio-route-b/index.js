@@ -29,7 +29,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v26.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v27.node');
 }
 
 function loadAddon() {
@@ -699,6 +699,11 @@ export function apply(ctx) {
       case 'import_media': {
         const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
         return importMedia(paths);
+      }
+      case 'export_audio': {
+        const outPath = typeof args.outPath === 'string' ? args.outPath : '';
+        if (outPath.length === 0) throw new Error('export_audio requires outPath');
+        return JSON.parse(state.engine.exportAudio(outPath, args.format === 'mp3' ? 'mp3' : 'm4a'));
       }
       case 'capture_frame_to_media':
         return JSON.parse(state.engine.captureFrameToMedia(
@@ -1656,6 +1661,21 @@ export function apply(ctx) {
     { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'], additionalProperties: false },
     async (args) => {
       const value = await generateVideo(args.prompt);
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_export_audio',
+    'Export the timeline audio mixdown to M4A(AAC) or MP3.',
+    {
+      type: 'object',
+      properties: { outPath: { type: 'string' }, format: { type: 'string', enum: ['m4a', 'mp3'] } },
+      required: ['outPath'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().exportAudio(args.outPath, args.format ?? 'm4a'));
       return { text: JSON.stringify(value), data: value };
     },
   );

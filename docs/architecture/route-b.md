@@ -98,6 +98,8 @@ by the DSH Host through N-API.
   Verified: play advanced the UI playhead, rendered a frame, the WAV served
   2.0s pcm_s16le, and an injected sync frame 42 became the status frame. A true
   cpal audio master clock is still not implemented.
+- Audio-only export writes the mixed timeline audio to M4A (AAC) or MP3 via
+  ffmpeg; verified 2.0s AAC/MP3 files.
 - Export sessions accept `rangeStartFrame`/`rangeEndFrame`: 60-frame source at
   frames 15..45 exported as a 1.0s H.264+AAC clip (verified).
 - `export_video`: renders every timeline frame, encodes H.264/H.265/ProRes via

@@ -1157,6 +1157,58 @@ impl Engine {
         json(&serde_json::json!({ "id": imported.id, "name": imported.name, "path": path.to_string_lossy() }))
     }
 
+    /// Export the whole timeline audio mixdown to M4A (AAC) or MP3.
+    #[napi]
+    pub fn export_audio(&self, out_path: String, format: String) -> Result<String> {
+        let timeline = self.core.get_timeline().timeline;
+        let pcm = self
+            .mix_timeline_audio(&timeline)
+            .ok_or_else(|| Error::from_reason("timeline has no audible audio"))?;
+        let directory = std::env::temp_dir().join("opentake-route-b").join("audio");
+        std::fs::create_dir_all(&directory).map_err(|error| Error::from_reason(error.to_string()))?;
+        let wav = directory.join(format!("{}.wav", uuid::Uuid::new_v4()));
+        let data_len = pcm.samples_f32.len() * 2;
+        let mut bytes = Vec::with_capacity(44 + data_len);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&pcm.spec.sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(pcm.spec.sample_rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in &pcm.samples_f32 {
+            let value = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(&wav, bytes).map_err(|error| Error::from_reason(error.to_string()))?;
+        let out = std::path::PathBuf::from(&out_path);
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
+        }
+        let mp3 = format.eq_ignore_ascii_case("mp3");
+        let codec = if mp3 { "libmp3lame" } else { "aac" };
+        let status = std::process::Command::new(opentake_media::ffmpeg_status::ffmpeg_path())
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&wav)
+            .args(["-c:a", codec, "-b:a", "192k"])
+            .arg(&out)
+            .status()
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        if !status.success() {
+            return Err(Error::from_reason(format!("ffmpeg audio export exited {status}")));
+        }
+        json(&serde_json::json!({
+            "outPath": out_path,
+            "format": if mp3 { "mp3" } else { "m4a" },
+            "durationSeconds": pcm.duration_secs(),
+        }))
+    }
+
     /// Mix the whole timeline audio and write a mono 16-bit WAV; returns its path.
     #[napi]
     pub fn audio_mix_wav(&self) -> Result<String> {
