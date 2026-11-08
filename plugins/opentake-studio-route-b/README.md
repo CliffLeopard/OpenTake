@@ -52,7 +52,8 @@ not runtime-tested on this machine.
   mixdown (including clip volume/fade envelopes; transparent ProRes 4444) work.
   The global asset library lists/favorites/imports entries; project media can be
   favorited/unfavorited and mirrored into it. The Settings storage pane reads
-  and clears Route B's derived caches. Caption cues export
+  and clears Route B's derived caches. An agent tool can generate an image via
+  an OpenAI-compatible provider and import it into the project. Caption cues export
   to SRT/VTT; XMEML/EDL/OTIO/FCPXML interchange export is bridged. Provider
   ASR (OpenAI-compatible verbose JSON) can transcribe and generate captions;
   configure `OPENTAKE_ASR_URL`/`OPENAI_API_KEY`. Basic streaming playback is

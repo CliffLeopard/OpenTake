@@ -62,6 +62,10 @@ by the DSH Host through N-API.
   plan, decodes video/image layers, rasterizes text and Lottie through a Route B
   resolver, returns a PNG data URL. Verified with a text overlay over video and
   a simple shape Lottie animation.
+- Provider image generation is bridged as an agent tool: POST an
+  OpenAI-compatible images payload, save the b64/URL image, import it into the
+  project. Verified against a local mock (1x1 PNG -> image asset); no real
+  provider call.
 - Settings storage usage/clear is bridged over the Route B cache root
   (thumbnail PNGs, model/search-index dirs); verified usage 13,434 B then 0.
 - Basic streaming playback is bridged in the Host: `get_preview_endpoint`

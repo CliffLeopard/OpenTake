@@ -108,6 +108,11 @@ export function apply(ctx) {
       key: process.env.OPENAI_API_KEY ?? null,
       model: process.env.OPENTAKE_ASR_MODEL ?? 'whisper-1',
     },
+    generation: {
+      url: process.env.OPENTAKE_IMAGE_URL ?? (process.env.OPENAI_API_KEY ? 'https://api.openai.com/v1/images/generations' : null),
+      key: process.env.OPENAI_API_KEY ?? null,
+      model: process.env.OPENTAKE_IMAGE_MODEL ?? 'gpt-image-1',
+    },
   };
 
   try {
@@ -302,6 +307,38 @@ export function apply(ctx) {
       rmSync(path.join(root, 'search-index'), { recursive: true, force: true });
     }
     return storageUsage();
+  }
+
+  async function generateImage(prompt, size) {
+    if (state.generation.url === null) throw new Error('image generation provider is not configured');
+    const response = await fetch(state.generation.url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(state.generation.key ? { authorization: `Bearer ${state.generation.key}` } : {}),
+      },
+      body: JSON.stringify({ model: state.generation.model, prompt, size: size ?? '1024x1024', n: 1, response_format: 'b64_json' }),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error?.message ?? `image generation failed (${response.status})`);
+    const item = Array.isArray(body?.data) ? body.data[0] : null;
+    if (!item) throw new Error('image generation returned no data');
+    let bytes;
+    if (typeof item.b64_json === 'string') {
+      bytes = Buffer.from(item.b64_json, 'base64');
+    } else if (typeof item.url === 'string') {
+      const imageResponse = await fetch(item.url);
+      if (!imageResponse.ok) throw new Error(`generated image download failed (${imageResponse.status})`);
+      bytes = Buffer.from(await imageResponse.arrayBuffer());
+    } else {
+      throw new Error('image generation returned no b64_json/url');
+    }
+    const directory = path.join(CACHE_ROOT, 'generated');
+    await mkdir(directory, { recursive: true });
+    const file = path.join(directory, `${Date.now()}-${randomUUID()}.png`);
+    await writeFile(file, bytes);
+    const catalog = importMedia([file]);
+    return { path: file, media: catalog };
   }
 
   function invokeCore(cmd, args) {
@@ -815,6 +852,14 @@ export function apply(ctx) {
         sendJson(res, 200, { ok: true, configured: state.asr.url !== null, model: state.asr.model });
         return;
       }
+      if (sub === '/engine/generation/config' && req.method === 'POST') {
+        const body = await readJson(req);
+        state.generation.url = typeof body.url === 'string' && body.url.length > 0 ? body.url : null;
+        state.generation.key = typeof body.key === 'string' && body.key.length > 0 ? body.key : null;
+        state.generation.model = typeof body.model === 'string' && body.model.length > 0 ? body.model : 'gpt-image-1';
+        sendJson(res, 200, { ok: true, configured: state.generation.url !== null, model: state.generation.model });
+        return;
+      }
       if (sub === '/engine/media' && req.method === 'GET') {
         sendJson(res, 200, mediaWithThumbnails());
         return;
@@ -1084,6 +1129,21 @@ export function apply(ctx) {
     { type: 'object', properties: {}, additionalProperties: false },
     async () => {
       const value = storageUsage();
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_generate_image',
+    'Generate an image through the configured OpenAI-compatible provider and import it into the project.',
+    {
+      type: 'object',
+      properties: { prompt: { type: 'string' }, size: { type: 'string' } },
+      required: ['prompt'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = await generateImage(args.prompt, args.size);
       return { text: JSON.stringify(value), data: value };
     },
   );
