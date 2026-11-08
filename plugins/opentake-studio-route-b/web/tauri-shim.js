@@ -18,8 +18,13 @@
   function invoke(cmd, args, options) {
     try { window.__SHIM_LOG__.push({ cmd, args }); } catch (e) {}
     if (cmd === 'plugin:dialog|save' || cmd === 'plugin:dialog|open') {
-      // Prototype: the DSH plugin has no native file dialog surface yet. Point
-      // new/save at a writable default path so the editor flow can be exercised.
+      // Prototype: the DSH plugin has no native file dialog surface yet. Pick a
+      // writable default path and honor the requested export container.
+      const filters = (args && args.options && Array.isArray(args.options.filters)) ? args.options.filters : [];
+      const extensions = filters.flatMap((filter) => Array.isArray(filter.extensions) ? filter.extensions : []);
+      if (extensions.includes('mp4')) return Promise.resolve('/tmp/opentake-route-b/export.mp4');
+      if (extensions.includes('mov')) return Promise.resolve('/tmp/opentake-route-b/export.mov');
+      if (extensions.includes('xml')) return Promise.resolve('/tmp/opentake-route-b/export.xml');
       return Promise.resolve('/tmp/opentake-route-b/demo.opentake');
     }
     if (cmd === 'plugin:dialog|message' || cmd === 'plugin:dialog|ask' || cmd === 'plugin:dialog|confirm') {

@@ -40,8 +40,9 @@ by the DSH Host through N-API.
   transparent clear and preserves alpha (verified with a text-only timeline).
   Audio uses linear clip volume plus fade-in/fade-out envelopes. Chunked export exposes
   `/engine/export/status` progress and cancel; the UI shim polls it and emits
-  `export://progress`; cancel removes the partial output. Ducking envelopes
-  and UI-dialog export remain unverified.
+  `export://progress`; cancel removes the partial output. The migrated React
+  export dialog was exercised end-to-end: it showed `导出中… 62%` and wrote a
+  1280x720 H.264+AAC file. Ducking envelopes remain unimplemented.
 - Node smoke test: `node crates/opentake-node/test/smoke.mjs`.
 
 ## Known gaps
