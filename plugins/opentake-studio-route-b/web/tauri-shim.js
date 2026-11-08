@@ -6,6 +6,7 @@
   const callbacks = new Map();
   window.__SHIM_LOG__ = [];
   const listeners = new Map();
+  let playbackPoll = null;
   let nextId = 1;
 
   function transformCallback(callback, once) {
@@ -76,6 +77,36 @@
   }
 
   function afterInvoke(cmd, args, body) {
+    if (cmd === 'playback_start') {
+      if (playbackPoll !== null) clearInterval(playbackPoll);
+      playbackPoll = setInterval(async () => {
+        try {
+          const response = await fetch(BASE + '/engine/playback/status', { credentials: 'same-origin' });
+          if (!response.ok) return;
+          const status = await response.json();
+          if (!status.active) {
+            if (playbackPoll !== null) clearInterval(playbackPoll);
+            playbackPoll = null;
+            return;
+          }
+          if (status.paused) return;
+          emitToListeners('playback_frame', {
+            projectEpoch: status.projectEpoch,
+            timelineVersion: status.timelineVersion,
+            sessionId: status.sessionId,
+            frame: status.frame,
+            sequence: status.sequence,
+            terminal: status.terminal,
+          });
+        } catch (error) { /* playback polling is best-effort */ }
+      }, 50);
+      return;
+    }
+    if (cmd === 'playback_stop' || cmd === 'playback_pause') {
+      if (playbackPoll !== null) clearInterval(playbackPoll);
+      playbackPoll = null;
+    }
+
     if (cmd === 'plugin:event|listen') {
       const set = listeners.get(args.event) || new Set();
       set.add(args.handler);

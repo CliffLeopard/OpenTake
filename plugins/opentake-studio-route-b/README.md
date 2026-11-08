@@ -47,7 +47,8 @@ each platform.
   The global asset library lists/favorites/imports entries. Caption cues export
   to SRT/VTT; XMEML/EDL/OTIO/FCPXML interchange export is bridged. Provider
   ASR (OpenAI-compatible verbose JSON) can transcribe and generate captions;
-  configure `OPENTAKE_ASR_URL`/`OPENAI_API_KEY`. Streaming playback,
+  configure `OPENTAKE_ASR_URL`/`OPENAI_API_KEY`. Basic streaming playback is
+  emulated by a wall-clock Host loop and `/engine/preview/frame`. Streaming playback,
   proxies/sprites, export progress/cancel, transcription/search/generation,
   motion documents and account/update surfaces still need their Rust command
   bridges.

@@ -60,6 +60,12 @@ by the DSH Host through N-API.
   plan, decodes video/image layers, rasterizes text and Lottie through a Route B
   resolver, returns a PNG data URL. Verified with a text overlay over video and
   a simple shape Lottie animation.
+- Basic streaming playback is bridged in the Host: `get_preview_endpoint`
+  returns `/engine/preview/frame`, `playback_start/seek/pause/stop` drive a
+  wall-clock playhead, and the shim polls `/engine/playback/status` to emit
+  `playback_frame`. The React preview renders frames as images; audio master
+  clock/cpal is not implemented. Verified: play advanced the UI playhead and
+  rendered a frame.
 - `export_video`: renders every timeline frame, encodes H.264/H.265/ProRes via
   `opentake-media` VideoEncoder, and muxes a linear mono audio mixdown. Verified
   320x180 2 s source → 1280x720 H.264 + AAC, 2.0 s. ProRes 4444 uses a

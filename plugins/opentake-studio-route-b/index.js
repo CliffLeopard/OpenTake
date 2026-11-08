@@ -102,6 +102,7 @@ export function apply(ctx) {
     loadError: null,
     thumbnails: new Map(),
     exportJob: null,
+    playback: null,
     asr: {
       url: process.env.OPENTAKE_ASR_URL ?? (process.env.OPENAI_API_KEY ? 'https://api.openai.com/v1/audio/transcriptions' : null),
       key: process.env.OPENAI_API_KEY ?? null,
@@ -200,6 +201,44 @@ export function apply(ctx) {
     return catalog;
   }
 
+  function playbackIdentity(cmd, args) {
+    const snapshot = JSON.parse(state.engine.getTimeline());
+    const identity = args.identity !== null && typeof args.identity === 'object' ? args.identity : {};
+    return {
+      projectEpoch: typeof identity.projectEpoch === 'number' ? identity.projectEpoch : snapshot.projectEpoch,
+      timelineVersion: typeof identity.timelineVersion === 'number' ? identity.timelineVersion : snapshot.version,
+      sessionId: typeof identity.sessionId === 'string' ? identity.sessionId : 'route-b-session',
+    };
+  }
+
+  function playbackStatus() {
+    const job = state.playback;
+    if (job === null || !job.active) return { active: false };
+    const snapshot = JSON.parse(state.engine.getTimeline());
+    const total = Math.max(1, snapshot.timeline.tracks.reduce((max, track) => Math.max(max, ...track.clips.map((clip) => clip.startFrame + clip.durationFrames)), 0));
+    let frame = job.frame;
+    if (!job.paused) {
+      frame = job.startFrame + Math.floor(((Date.now() - job.startedAt) / 1000) * job.fps);
+      if (frame >= total) {
+        frame = Math.max(0, total - 1);
+        job.active = false;
+        job.terminal = true;
+      }
+    }
+    job.frame = frame;
+    return {
+      active: job.active,
+      paused: job.paused,
+      frame,
+      sequence: ++job.sequence,
+      terminal: job.terminal,
+      projectEpoch: job.identity.projectEpoch,
+      timelineVersion: job.identity.timelineVersion,
+      sessionId: job.identity.sessionId,
+      fps: job.fps,
+    };
+  }
+
   function invokeCore(cmd, args) {
     if (state.engine === null) throw new Error(state.loadError ?? 'OpenTake Rust engine is unavailable');
     switch (cmd) {
@@ -265,6 +304,40 @@ export function apply(ctx) {
         const written = state.engine.exportTimeline(String(args.path ?? ''), formats[cmd]);
         return written;
       }
+      case 'get_preview_endpoint':
+        return `${PREFIX}/engine/preview/frame`;
+      case 'playback_start': {
+        const snapshot = JSON.parse(state.engine.getTimeline());
+        state.playback = {
+          active: true,
+          paused: false,
+          terminal: false,
+          frame: typeof args.fromFrame === 'number' ? args.fromFrame : 0,
+          startFrame: typeof args.fromFrame === 'number' ? args.fromFrame : 0,
+          startedAt: Date.now(),
+          fps: snapshot.timeline.fps || 30,
+          sequence: 0,
+          identity: playbackIdentity(cmd, args),
+        };
+        return null;
+      }
+      case 'playback_pause':
+        if (state.playback !== null) {
+          state.playback.paused = true;
+          state.playback.frame = typeof args.frame === 'number' ? args.frame : state.playback.frame;
+        }
+        return null;
+      case 'playback_stop':
+        state.playback = null;
+        return null;
+      case 'playback_seek':
+        if (state.playback !== null) {
+          state.playback.startFrame = typeof args.frame === 'number' ? args.frame : 0;
+          state.playback.frame = state.playback.startFrame;
+          state.playback.startedAt = Date.now();
+          state.playback.sequence = 0;
+        }
+        return null;
       case 'transcribe_model_status':
         return {
           installed: state.asr.url !== null,
@@ -371,8 +444,6 @@ export function apply(ctx) {
         return state.engine.waveform(typeof args.mediaRef === 'string' ? args.mediaRef : '');
       case 'preload_media':
         return true;
-      case 'get_preview_endpoint':
-        return null;
       case 'set_proxy_playback_enabled':
       case 'set_timeline_sprite_interactive':
         return null;
@@ -588,6 +659,25 @@ export function apply(ctx) {
         sendJson(res, 200, job === null
           ? { active: false, done: 0, total: 0, operationId: null }
           : { active: job.active, done: job.done, total: job.total, operationId: job.operationId });
+        return;
+      }
+      if (sub === '/engine/playback/status' && req.method === 'GET') {
+        sendJson(res, 200, playbackStatus());
+        return;
+      }
+      if (sub === '/engine/preview/frame' && req.method === 'GET') {
+        const requestUrl = new URL(req.url ?? '/', 'http://localhost');
+        const frame = Number.parseInt(requestUrl.searchParams.get('frame') ?? '0', 10) || 0;
+        try {
+          const payload = JSON.parse(ensureEngine().compositeFrame(frame, 1280));
+          const bytes = Buffer.from(payload.dataUrl.split(',')[1], 'base64');
+          res.statusCode = 200;
+          res.setHeader('content-type', 'image/png');
+          res.setHeader('cache-control', 'no-store');
+          res.end(bytes);
+        } catch (error) {
+          sendJson(res, 500, { error: { code: 'composite-failed', message: error instanceof Error ? error.message : String(error) } });
+        }
         return;
       }
       if (sub === '/engine/invoke' && req.method === 'POST') {
