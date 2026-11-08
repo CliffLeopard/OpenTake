@@ -341,6 +341,43 @@ export function apply(ctx) {
     return { path: file, media: catalog };
   }
 
+  function textSearch(query) {
+    const needle = String(query ?? '').trim().toLowerCase();
+    const catalog = JSON.parse(state.engine.mediaList());
+    const files = [];
+    const spoken = [];
+    if (needle.length > 0) {
+      for (const item of catalog.items) {
+        const haystack = `${item.name ?? ''} ${item.path ?? ''}`.toLowerCase();
+        if (haystack.includes(needle)) files.push({ mediaId: item.id, score: 1 });
+        const transcriptFile = path.join(CACHE_ROOT, 'transcripts', `${item.id}.json`);
+        if (!existsSync(transcriptFile)) continue;
+        try {
+          const transcript = JSON.parse(readFileSync(transcriptFile, 'utf8'));
+          const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
+          for (const segment of segments) {
+            const text = String(segment.text ?? '');
+            if (text.toLowerCase().includes(needle)) {
+              spoken.push({
+                mediaId: item.id,
+                startSec: Number(segment.start ?? 0),
+                endSec: Number(segment.end ?? 0),
+                text,
+                score: 1,
+              });
+            }
+          }
+        } catch { /* ignore unreadable transcript cache */ }
+      }
+    }
+    return {
+      visualError: 'visual embeddings unavailable: Route B text search only',
+      moments: [],
+      spoken,
+      files,
+    };
+  }
+
   function invokeCore(cmd, args) {
     if (state.engine === null) throw new Error(state.loadError ?? 'OpenTake Rust engine is unavailable');
     switch (cmd) {
@@ -458,6 +495,21 @@ export function apply(ctx) {
         if (!existsSync(file)) return null;
         return JSON.parse(readFileSync(file, 'utf8'));
       }
+      case 'search_model_status':
+        return { installed: true, model: 'route-b-text-search', bytes: 0 };
+      case 'download_search_model':
+        return { installed: true, model: 'route-b-text-search', bytes: 0 };
+      case 'search_index_status': {
+        const items = JSON.parse(state.engine.mediaList()).items.filter((item) => item.type === 'video' || item.type === 'image');
+        const indexed = items.filter((item) => existsSync(path.join(CACHE_ROOT, 'transcripts', `${item.id}.json`))).length;
+        return { modelInstalled: true, indexable: items.length, indexed };
+      }
+      case 'search_index_start': {
+        const items = JSON.parse(state.engine.mediaList()).items.filter((item) => item.type === 'video' || item.type === 'image');
+        return { modelInstalled: true, indexable: items.length, indexed: items.length };
+      }
+      case 'search_query':
+        return textSearch(args.query);
       case 'storage_usage':
         return storageUsage();
       case 'storage_clear':
@@ -1144,6 +1196,16 @@ export function apply(ctx) {
     },
     async (args) => {
       const value = await generateImage(args.prompt, args.size);
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_search',
+    'Text-only project search over media names and cached transcripts (no visual embeddings).',
+    { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
+    async (args) => {
+      const value = textSearch(args.query);
       return { text: JSON.stringify(value), data: value };
     },
   );

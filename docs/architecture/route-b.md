@@ -62,6 +62,10 @@ by the DSH Host through N-API.
   plan, decodes video/image layers, rasterizes text and Lottie through a Route B
   resolver, returns a PNG data URL. Verified with a text overlay over video and
   a simple shape Lottie animation.
+- Search is text-only: `search_query` matches media names and cached
+  transcripts (Spoken/Files); visual embeddings/Moments are explicitly
+  unavailable. `search_model_status` reports `route-b-text-search`, not SigLIP.
+  Verified query "mock" -> Spoken hit, "src" -> Files hit.
 - Provider image generation is bridged as an agent tool: POST an
   OpenAI-compatible images payload, save the b64/URL image, import it into the
   project. Verified against a local mock (1x1 PNG -> image asset); no real
