@@ -166,10 +166,12 @@ if [ "$PACKAGE" = 1 ] || [ -z "$TARBALL" ]; then
   fi
 fi
 if [ -n "${DIST_TARBALL:-}" ] && [ -f "$DIST_TARBALL" ] && [ "$FRESH_PACK" = 1 ]; then
-  if tar -xOf "$DIST_TARBALL" package/index.js 2>/dev/null | grep -q "lib/motion-templates.js"; then
-    record PASS "dist tarball contains current Host integration" "$DIST_TARBALL"
+  DIST_INDEX_SHA="$(tar -xOf "$DIST_TARBALL" package/index.js 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
+  REPO_INDEX_SHA="$(shasum -a 256 plugins/opentake-studio-route-b/index.js | cut -d' ' -f1)"
+  if [ "$DIST_INDEX_SHA" = "$REPO_INDEX_SHA" ]; then
+    record PASS "dist tarball index matches working tree" "$DIST_TARBALL ($DIST_INDEX_SHA)"
   else
-    record WARN "dist tarball is stale vs working tree" "$DIST_TARBALL (no lib/motion-templates.js import); rebuild with scripts/package-route-b.sh before shipping"
+    record WARN "dist tarball index differs from working tree" "$DIST_TARBALL (dist $DIST_INDEX_SHA vs repo $REPO_INDEX_SHA); rebuild with scripts/package-route-b.sh before shipping"
   fi
 fi
 if [ -n "${TARBALL:-}" ] && [ -f "$TARBALL" ]; then
