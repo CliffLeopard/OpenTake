@@ -31,7 +31,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v28.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v30.node');
 }
 
 function loadAddon() {
@@ -1073,6 +1073,7 @@ export function apply(ctx) {
             outPath,
             typeof req.codec === 'string' ? req.codec : 'h264',
             typeof req.quality === 'string' ? req.quality : '1080p',
+            req.bitDepth === 10 ? 10 : null,
           ),
         );
       }
@@ -1259,6 +1260,7 @@ export function apply(ctx) {
         req.quality ?? '1080p',
         typeof req.rangeStartFrame === 'number' ? req.rangeStartFrame : null,
         typeof req.rangeEndFrame === 'number' ? req.rangeEndFrame : null,
+        req.bitDepth === 10 ? 10 : null,
       ));
       job.total = start.total;
       while (job.done < job.total) {
@@ -1595,13 +1597,14 @@ export function apply(ctx) {
         outPath: { type: 'string' },
         codec: { type: 'string', enum: ['h264', 'h265', 'prores', 'prores4444'] },
         quality: { type: 'string', enum: ['720p', '1080p', '4k'] },
+        bitDepth: { type: 'number', enum: [8, 10] },
       },
       required: ['outPath'],
       additionalProperties: false,
     },
     async (args) => {
       const value = JSON.parse(
-        ensureEngine().exportVideo(args.outPath, args.codec ?? 'h264', args.quality ?? '1080p'),
+        ensureEngine().exportVideo(args.outPath, args.codec ?? 'h264', args.quality ?? '1080p', args.bitDepth === 10 ? 10 : null),
       );
       return { text: JSON.stringify(value), data: value };
     },

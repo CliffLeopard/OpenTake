@@ -634,6 +634,7 @@ impl Engine {
         quality: String,
         range_start: Option<i32>,
         range_end: Option<i32>,
+        bit_depth: Option<u32>,
     ) -> Result<String> {
         self.export_cancel_inner();
         let timeline = self.core.get_timeline().timeline;
@@ -649,7 +650,10 @@ impl Engine {
             "prores4444" => opentake_media::VideoCodec::ProRes4444,
             _ => opentake_media::VideoCodec::H264,
         };
-        let preset = opentake_media::ExportPreset::new(video_codec, opentake_media::ExportResolution::P1080);
+        let mut preset = opentake_media::ExportPreset::new(video_codec, opentake_media::ExportResolution::P1080);
+        if bit_depth == Some(10) {
+            preset = preset.with_bit_depth(10);
+        }
         let out = std::path::PathBuf::from(&out_path);
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
@@ -740,8 +744,14 @@ impl Engine {
 
     /// Blocking convenience export (used by the agent tool).
     #[napi]
-    pub fn export_video(&self, out_path: String, codec: String, quality: String) -> Result<String> {
-        self.export_begin(out_path, codec, quality, None, None)?;
+    pub fn export_video(
+        &self,
+        out_path: String,
+        codec: String,
+        quality: String,
+        bit_depth: Option<u32>,
+    ) -> Result<String> {
+        self.export_begin(out_path, codec, quality, None, None, bit_depth)?;
         loop {
             let done = {
                 let guard = self.export.borrow();

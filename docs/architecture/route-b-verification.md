@@ -99,7 +99,7 @@ longer falls back to the warning path.
 | Composite video/image/text | verified (video/effects/mask/text) | Lottie simple |
 | Playback | WebKit direct path verified; native API verified | no cpal master clock; native route not used by UI for simple stacks |
 | Export H.264/AAC, range, alpha, audio-only | verified | current run |
-| Export H.265/10-bit/HDR/ducking | isolated slices verified; not integrated | `opentake-export-pro` tests + ffprobe evidence; Host encoder unchanged |
+| Export H.265/10-bit | verified integrated | Host `export_video bitDepth=10` produced Main10 `yuv420p10le` BT.709; HDR tone-map/ducking remain isolated |
 | Interchange and subtitles | verified | XMEML/EDL/OTIO/FCPXML/SRT |
 | ASR/captions | verified against mock | real provider not called |
 | Search | text fallback only; Host status now honest | SigLIP assets/backend missing; `opentake-search` capability crate exists |

@@ -365,3 +365,11 @@ Recommended staging:
   needs a real voice-activity detector and listening tests before defaults ship.
 - Audio muxing was not part of this slice; the production encoder's AAC mux path
   is unchanged.
+
+
+## Host integration status (Lead, 2026-11-08)
+
+`ExportPreset` now carries an optional bit depth; the N-API/Host export path
+accepts `bitDepth:10` for H.265. Verified Host export produced HEVC Main10
+`yuv420p10le` at 1280x720 (0.5 s, BT.709 tags). HDR10 passthrough, tone-map
+policy and ducking remain isolated/not wired.

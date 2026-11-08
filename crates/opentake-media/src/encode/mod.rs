@@ -50,10 +50,7 @@ fn encode_args(out: &Path, w: u32, h: u32, fps: i32, preset: &ExportPreset) -> V
     args.push(preset.vcodec_arg().into());
     args.push("-pix_fmt".into());
     args.push(preset.pix_fmt_arg().into());
-    if preset.codec == VideoCodec::ProRes4444 {
-        args.push("-profile:v".into());
-        args.push("4444".into());
-    }
+    args.extend(preset.profile_args());
     args.extend(preset.color_args());
 
     args.push(out.to_string_lossy().into_owned());

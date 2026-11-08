@@ -37,11 +37,19 @@ impl ExportResolution {
 pub struct ExportPreset {
     pub codec: VideoCodec,
     pub resolution: ExportResolution,
+    /// Optional output bit depth; only H.265 currently supports 10-bit.
+    pub bit_depth: Option<u8>,
 }
 
 impl ExportPreset {
     pub fn new(codec: VideoCodec, resolution: ExportResolution) -> Self {
-        ExportPreset { codec, resolution }
+        ExportPreset { codec, resolution, bit_depth: None }
+    }
+
+    /// Request a 10-bit H.265 output. Other codecs ignore this request.
+    pub fn with_bit_depth(mut self, bit_depth: u8) -> Self {
+        self.bit_depth = Some(bit_depth);
+        self
     }
 
     /// ffmpeg `-c:v` codec token.
@@ -69,7 +77,19 @@ impl ExportPreset {
         match self.codec {
             VideoCodec::ProRes422 => "yuv422p10le",
             VideoCodec::ProRes4444 => "yuva444p10le",
+            VideoCodec::H265 if self.bit_depth == Some(10) => "yuv420p10le",
             _ => "yuv420p",
+        }
+    }
+
+    /// Additional codec profile flags (e.g. H.265 Main10).
+    pub fn profile_args(&self) -> Vec<String> {
+        if self.codec == VideoCodec::H265 && self.bit_depth == Some(10) {
+            vec!["-profile:v".into(), "main10".into()]
+        } else if self.codec == VideoCodec::ProRes4444 {
+            vec!["-profile:v".into(), "4444".into()]
+        } else {
+            Vec::new()
         }
     }
 
@@ -132,6 +152,8 @@ mod tests {
     #[test]
     fn every_delivery_codec_gets_bt709_frame_and_stream_tags() {
         let h265 = ExportPreset::new(VideoCodec::H265, ExportResolution::P720);
+        assert_eq!(h265.pix_fmt_arg(), "yuv420p");
+        assert_eq!(h265.with_bit_depth(10).pix_fmt_arg(), "yuv420p10le");
         let args = h265.color_args();
         assert!(args.windows(2).any(|w| w == ["-colorspace", "bt709"]));
         assert!(args.windows(2).any(|w| w == ["-color_primaries", "bt709"]));
