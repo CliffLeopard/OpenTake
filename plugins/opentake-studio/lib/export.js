@@ -38,16 +38,27 @@
  *     condition. Chained transitions (a clip with transitions on both sides)
  *     also fall back to fades. Audio is crossfaded with `afade` ramps over the
  *     same window, so `amix` produces a proper audio crossfade.
+ *   - crop: `clip.crop` (normalized, frame-relative, independent of transform)
+ *     is applied with `crop=iw*W:ih*H:iw*X:ih*Y` BEFORE scale/rotate, then the
+ *     cropped region is scaled into the transform box. It applies to
+ *     video/image and to browser-rendered text/caption PNGs; drawtext-only
+ *     text/caption clips ignore crop (documented limitation). Cropped clips
+ *     fall back from true xfade transitions to the fade approximation (xfade
+ *     requires full-frame opaque layers).
  *   - rotation: static `transform.rotation` is applied with `rotate` on an
  *     expanded transparent canvas and then fitted back inside the transform
  *     box (letterboxed, centered). Rotation keyframes are NOT supported in
  *     export; the static rotation is used. drawtext-only text/caption clips
  *     cannot be rotated (PNG-rendered overlays can).
  *   - export options: `buildExportArgs`/`runExport` accept
- *     `{ codec?: 'h264'|'h265', width?, height?, fps?, crf?, bitrate? }`.
- *     Output resolution is scaled from the normalized transforms; fps is an
- *     output `-r` override while timeline timing stays on project fps. Codec
- *     defaults to H.264 (libx264); libx265/videotoolbox are used when present.
+ *     `{ codec?: 'h264'|'h265'|'prores'|'vp9', container?, width?, height?,
+ *     fps?, crf?, bitrate? }`. Codecs: h264 (libx264, .mp4), h265 (libx265,
+ *     .mp4), prores (prores_ks profile 3 / yuv422p10le + pcm_s16le, .mov) and
+ *     vp9 / alias webm (libvpx-vp9 CRF `-b:v 0` or bitrate + libopus, .webm).
+ *     ProRes ignores CRF (profile/bitrate based). `defaultExtensionForCodec`
+ *     exposes the default output extension to the Host. Output resolution is
+ *     scaled from the normalized transforms; fps is an output `-r` override
+ *     while timeline timing stays on project fps. H.264 remains the default.
  *
  * Text rendering still depends on a system font (`drawtext` needs an ffmpeg
  * build with libfreetype).
@@ -83,6 +94,52 @@ const XFADE_NAMES = Object.freeze({
   wipeLeft: 'wipeleft',
   wipeRight: 'wiperight',
 });
+
+/** Codecs accepted by `options.codec`. */
+export const EXPORT_CODECS = Object.freeze(['h264', 'h265', 'prores', 'vp9']);
+
+const CODEC_ALIASES = new Map([
+  ['h264', 'h264'], ['avc', 'h264'],
+  ['h265', 'h265'], ['hevc', 'h265'],
+  ['prores', 'prores'], ['prores_ks', 'prores'],
+  ['vp9', 'vp9'], ['webm', 'vp9'], ['libvpx-vp9', 'vp9'],
+]);
+
+const DEFAULT_CONTAINER_FOR_CODEC = Object.freeze({
+  h264: 'mp4',
+  h265: 'mp4',
+  prores: 'mov',
+  vp9: 'webm',
+});
+
+const ALLOWED_CONTAINERS_FOR_CODEC = Object.freeze({
+  h264: Object.freeze(['mp4', 'mov']),
+  h265: Object.freeze(['mp4', 'mov']),
+  prores: Object.freeze(['mov']),
+  vp9: Object.freeze(['webm']),
+});
+
+function normalizeCodecName(value) {
+  const raw = value === undefined || value === null ? 'h264' : String(value).toLowerCase();
+  const codec = CODEC_ALIASES.get(raw);
+  if (codec === undefined) {
+    throw new ExportError(
+      `Unsupported export codec: ${String(value)} (expected one of ${EXPORT_CODECS.join(', ')})`,
+      'invalid-input',
+    );
+  }
+  return codec;
+}
+
+/** Default container for a codec ('mp4'|'mov'|'webm'). */
+export function defaultContainerForCodec(codec) {
+  return DEFAULT_CONTAINER_FOR_CODEC[normalizeCodecName(codec)];
+}
+
+/** Default output extension (with dot) for a codec: '.mp4', '.mov' or '.webm'. */
+export function defaultExtensionForCodec(codec) {
+  return `.${defaultContainerForCodec(codec)}`;
+}
 
 const REGULAR_FONTS = [
   '/System/Library/Fonts/Helvetica.ttc',
@@ -342,6 +399,7 @@ function canUseTrueTransition(fromEntry, toEntry) {
     if (!['video', 'image'].includes(clip.type)) return false;
     const rotation = Number(clip.transform?.rotation) || 0;
     if (Math.abs(rotation) > 1e-6) return false;
+    if (clip.crop !== null && clip.crop !== undefined) return false;
     if (!transformIsFullFrame(clip.transform)) return false;
     if (clamp01(clip.opacity ?? 1) < 1) return false;
     if (clipHasVisualKeyframes(clip)) return false;
@@ -749,8 +807,8 @@ function detectEncoders() {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       for (const line of String(stdout).split('\n')) {
-        const match = /^\s*V[A-Za-z.]*\s+(\S+)/.exec(line);
-        if (match !== null) names.add(match[1]);
+        const match = /^\s*([VA])[A-Za-z.]*\s+(\S+)/.exec(line);
+        if (match !== null) names.add(match[2]);
       }
     } catch {
       // Encoder probing is best-effort; unavailable tools are reported later.
@@ -761,6 +819,9 @@ function detectEncoders() {
     ffmpeg: tools.ffmpeg,
     h264: names.has('libx264') ? 'libx264' : names.has('h264_videotoolbox') ? 'h264_videotoolbox' : null,
     h265: names.has('libx265') ? 'libx265' : names.has('hevc_videotoolbox') ? 'hevc_videotoolbox' : null,
+    prores: names.has('prores_ks') ? 'prores_ks' : names.has('prores_videotoolbox') ? 'prores_videotoolbox' : null,
+    vp9: names.has('libvpx-vp9') ? 'libvpx-vp9' : names.has('vp9_videotoolbox') ? 'vp9_videotoolbox' : null,
+    libopus: names.has('libopus') ? 'libopus' : null,
   };
   return encoderCache;
 }
@@ -814,57 +875,153 @@ function normalizeExportOptions(project, rawOptions) {
   const projectWidth = normalizeDimension(project.width, DEFAULT_WIDTH);
   const projectHeight = normalizeDimension(project.height, DEFAULT_HEIGHT);
 
-  const rawCodec = options.codec === undefined ? 'h264' : String(options.codec).toLowerCase();
-  let codec;
-  if (rawCodec === 'h264' || rawCodec === 'avc') codec = 'h264';
-  else if (rawCodec === 'h265' || rawCodec === 'hevc') codec = 'h265';
-  else {
-    throw new ExportError(
-      `Unsupported export codec: ${String(options.codec)} (expected h264 or h265)`,
-      'invalid-input',
-    );
-  }
-
-  return {
-    codec,
-    width: options.width === undefined ? projectWidth : evenDimension(options.width, 'width'),
-    height: options.height === undefined ? projectHeight : evenDimension(options.height, 'height'),
-    fps: options.fps === undefined ? projectFps : validateExportFps(options.fps),
-    fpsProvided: options.fps !== undefined,
-    crf: options.crf === undefined ? (codec === 'h265' ? 23 : 20) : validateExportCrf(options.crf),
-    bitrate: options.bitrate === undefined ? null : normalizeExportBitrate(options.bitrate),
-  };
-}
-
-/** Video encoder argv for the normalized settings. */
-function videoEncodeArgs(settings) {
-  const encoders = detectEncoders();
-  let encoder = encoders[settings.codec];
-  if (encoder === null) {
-    if (resolveTools().ffmpeg === null) {
-      // Keep the argv buildable; runExport reports ffmpeg-unavailable.
-      encoder = settings.codec === 'h264' ? 'libx264' : 'libx265';
-    } else {
+  const codec = normalizeCodecName(options.codec);
+  const allowedContainers = ALLOWED_CONTAINERS_FOR_CODEC[codec];
+  let container = DEFAULT_CONTAINER_FOR_CODEC[codec];
+  const containerExplicit = options.container !== undefined;
+  if (containerExplicit) {
+    container = String(options.container).toLowerCase();
+    if (!allowedContainers.includes(container)) {
       throw new ExportError(
-        `No ${settings.codec === 'h264' ? 'H.264' : 'H.265'} encoder available in the installed ffmpeg`,
-        'encoder-unavailable',
+        `Container ${String(options.container)} is not supported for ${codec} ` +
+        `(expected ${allowedContainers.join(' or ')})`,
+        'invalid-input',
       );
     }
   }
 
-  const args = ['-c:v', encoder];
-  if (encoder === 'libx265') args.push('-tag:v', 'hvc1');
-  args.push('-pix_fmt', 'yuv420p');
+  const defaultCrf = codec === 'h265' ? 23 : codec === 'vp9' ? 31 : 20;
 
-  if (encoder === 'libx264' || encoder === 'libx265') {
-    args.push('-preset', 'veryfast');
-    if (settings.bitrate !== null) args.push('-b:v', settings.bitrate);
-    else args.push('-crf', formatScalar(settings.crf));
-  } else {
-    // VideoToolbox encoders do not accept -crf/-preset.
-    args.push('-b:v', settings.bitrate ?? '8M');
+  return {
+    codec,
+    container,
+    containerExplicit,
+    width: options.width === undefined ? projectWidth : evenDimension(options.width, 'width'),
+    height: options.height === undefined ? projectHeight : evenDimension(options.height, 'height'),
+    fps: options.fps === undefined ? projectFps : validateExportFps(options.fps),
+    fpsProvided: options.fps !== undefined,
+    // For prores the CRF is accepted but ignored (ProRes is profile/bitrate based).
+    crf: options.crf === undefined ? defaultCrf : validateExportCrf(options.crf),
+    bitrate: options.bitrate === undefined ? null : normalizeExportBitrate(options.bitrate),
+  };
+}
+
+const ENCODER_LABELS = Object.freeze({
+  h264: 'H.264', h265: 'H.265', prores: 'ProRes', vp9: 'VP9',
+});
+
+const ENCODER_FALLBACKS = Object.freeze({
+  h264: 'libx264',
+  h265: 'libx265',
+  prores: 'prores_ks',
+  vp9: 'libvpx-vp9',
+});
+
+function requireVideoEncoder(settings) {
+  const encoders = detectEncoders();
+  const encoder = encoders[settings.codec];
+  if (encoder !== null) return encoder;
+  if (resolveTools().ffmpeg === null) {
+    // Keep the argv buildable; runExport reports ffmpeg-unavailable.
+    return ENCODER_FALLBACKS[settings.codec];
+  }
+  throw new ExportError(
+    `No ${ENCODER_LABELS[settings.codec] ?? settings.codec} encoder available in the installed ffmpeg`,
+    'encoder-unavailable',
+  );
+}
+
+/** Video encoder argv for the normalized settings. */
+function videoEncodeArgs(settings) {
+  const encoder = requireVideoEncoder(settings);
+  const args = ['-c:v', encoder];
+
+  switch (settings.codec) {
+    case 'prores': {
+      // ProRes is profile/bitrate based; CRF is accepted but ignored.
+      args.push('-profile:v', '3', '-pix_fmt', 'yuv422p10le');
+      if (settings.bitrate !== null) args.push('-b:v', settings.bitrate);
+      break;
+    }
+    case 'vp9': {
+      args.push('-pix_fmt', 'yuv420p');
+      if (settings.bitrate !== null) {
+        // Bitrate mode: no constant-quality -crf.
+        args.push('-b:v', settings.bitrate);
+      } else {
+        // libvpx constant-quality mode.
+        args.push('-crf', formatScalar(settings.crf), '-b:v', '0');
+      }
+      break;
+    }
+    case 'h264':
+    case 'h265':
+    default: {
+      if (encoder === 'libx265') args.push('-tag:v', 'hvc1');
+      args.push('-pix_fmt', 'yuv420p');
+      if (encoder === 'libx264' || encoder === 'libx265') {
+        args.push('-preset', 'veryfast');
+        if (settings.bitrate !== null) args.push('-b:v', settings.bitrate);
+        else args.push('-crf', formatScalar(settings.crf));
+      } else {
+        // VideoToolbox encoders do not accept -crf/-preset.
+        args.push('-b:v', settings.bitrate ?? '8M');
+      }
+      break;
+    }
   }
   return args;
+}
+
+/** Audio encoder/maps for the effective container and codec. */
+function audioEncodeArgs(settings, hasAudio) {
+  if (!hasAudio) return ['-an'];
+  const args = ['-map', '[aout]'];
+  switch (settings.codec) {
+    case 'prores':
+      args.push('-c:a', 'pcm_s16le');
+      break;
+    case 'vp9': {
+      const encoders = detectEncoders();
+      if (encoders.libopus === null && resolveTools().ffmpeg !== null) {
+        throw new ExportError(
+          'No Opus (libopus) audio encoder available for WebM export',
+          'encoder-unavailable',
+        );
+      }
+      args.push('-c:a', 'libopus', '-b:a', '128k');
+      break;
+    }
+    case 'h264':
+    case 'h265':
+    default:
+      args.push('-c:a', 'aac', '-b:a', '192k');
+      break;
+  }
+  return args;
+}
+
+/**
+ * Normalized crop -> `crop` filter. The rect is relative to the source frame
+ * (or to a browser-rendered PNG for text/caption clips) and is independent of
+ * `transform`: the crop happens first, then the cropped region is scaled into
+ * the transform box (and rotated if needed).
+ *
+ * Values are clamped defensively even though model.js validates them.
+ */
+function cropFilterFor(crop) {
+  if (crop === null || typeof crop !== 'object') return null;
+  const minimum = 1e-6;
+  let x = clampScalar(crop.x, 0, 1, 0);
+  let y = clampScalar(crop.y, 0, 1, 0);
+  let width = clampScalar(crop.width, minimum, 1, 1);
+  let height = clampScalar(crop.height, minimum, 1, 1);
+  if (x + width > 1) width = Math.max(minimum, 1 - x);
+  if (y + height > 1) height = Math.max(minimum, 1 - y);
+  if (x > 1 - minimum) x = 1 - minimum;
+  if (y > 1 - minimum) y = 1 - minimum;
+  return `crop=w=iw*${formatScalar(width)}:h=ih*${formatScalar(height)}` +
+    `:x=iw*${formatScalar(x)}:y=ih*${formatScalar(y)}`;
 }
 
 /**
@@ -934,8 +1091,10 @@ function drawtextOptions({ content, style, box, startSeconds, endSeconds }) {
 /**
  * Build the complete ffmpeg argv for a project export.
  *
- * @param {{ project: object, projectRoot: string, outputPath: string }} input
- * @returns {{ args: string[], durationFrames: number }}
+ * @param {{ project: object, projectRoot: string, outputPath: string,
+ *   options?: { codec?: string, container?: string, width?: number,
+ *   height?: number, fps?: number, crf?: number, bitrate?: string|number } }} input
+ * @returns {{ args: string[], durationFrames: number, codec: string, container: string }}
  */
 export function buildExportArgs({ project, projectRoot, outputPath, options, ...inlineOptions } = {}) {
   if (project === null || typeof project !== 'object') {
@@ -1041,8 +1200,11 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     const opacity = clamp01(clip.opacity ?? 1);
     const effects = buildEffectFilters(clip.effects, root);
     const rotation = rotationPlan(box, clip.transform?.rotation);
+    const cropFilter = cropFilterFor(clip.crop);
 
-    const parts = [`scale=${box.width}:${box.height}`, 'setsar=1', `fps=${formatScalar(fps)}`];
+    const parts = [];
+    if (cropFilter !== null) parts.push(cropFilter);
+    parts.push(`scale=${box.width}:${box.height}`, 'setsar=1', `fps=${formatScalar(fps)}`);
     parts.push(...effects.parts);
     let hasAlpha = effects.hasAlpha;
 
@@ -1469,14 +1631,17 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     '-map', '[vout]',
   ];
 
-  if (audioLabels.length > 0) {
-    args.push('-map', '[aout]', '-c:a', 'aac', '-b:a', '192k');
-  } else {
-    args.push('-an');
-  }
-
+  args.push(...audioEncodeArgs(settings, audioLabels.length > 0));
   args.push(...videoEncodeArgs(settings));
-  args.push('-movflags', '+faststart');
+
+  if (settings.container === 'mp4' || settings.container === 'mov') {
+    args.push('-movflags', '+faststart');
+  }
+  // New formats always force their muxer so the explicit output path may use
+  // any extension; mp4/mov do so when a container was explicitly requested.
+  if (settings.containerExplicit || settings.codec === 'prores' || settings.codec === 'vp9') {
+    args.push('-f', settings.container);
+  }
   if (settings.fpsProvided) args.push('-r', formatScalar(settings.fps));
   args.push(
     '-t', formatSeconds(durationSeconds),
@@ -1485,7 +1650,12 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     outputPath,
   );
 
-  return { args, durationFrames };
+  return {
+    args,
+    durationFrames,
+    codec: settings.codec,
+    container: settings.container,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1496,8 +1666,8 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
  * Render a project to `outputPath` with ffmpeg.
  *
  * @param {{ project: object, projectRoot: string, outputPath: string,
- *   onProgress?: (progress: number) => void, signal?: AbortSignal }} input
- * @returns {Promise<{ outputPath: string, durationFrames: number }>}
+ *   onProgress?: (progress: number) => void, signal?: AbortSignal, options?: object }} input
+ * @returns {Promise<{ outputPath: string, durationFrames: number, codec: string, container: string }>}
  */
 export async function runExport({
   project,
@@ -1581,5 +1751,10 @@ export async function runExport({
   }
 
   emitProgress(1);
-  return { outputPath, durationFrames: built.durationFrames };
+  return {
+    outputPath,
+    durationFrames: built.durationFrames,
+    codec: built.codec,
+    container: built.container,
+  };
 }

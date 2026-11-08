@@ -166,8 +166,16 @@ Importing only fills the media library; it does not add clips to the timeline.
 - **Global media library**: project/library tabs with search, kind/favorite
   filters, thumbnails, favorites, categories/tags, rename/delete and Add to
   project. Library assets are content-addressed and shared across projects.
-- **Export presets**: H.264/H.265, project/1080p/720p/custom resolution, fps,
-  CRF or bitrate.
+- **Export presets/formats**: H.264/H.265/ProRes/VP9-WebM, project/1080p/720p/
+  custom resolution, fps, CRF or bitrate.
+- **Crop**: normalized per-clip crop applied before transform/effects, with
+  preview and export support.
+- **Transcription**: optional Whisper-compatible endpoint; per-media
+  transcribe action, transcript storage, caption generation, and a Transcripts
+  tab. Requires `OPENTAKE_STUDIO_ASR_URL` (or defaults to OpenAI) and a key.
+- **Search**: project media/transcript keyword search with seek-to-cue results.
+- **Generation**: optional OpenAI-compatible image and speech generation with
+  provider status, prompts/voices and automatic import into the project.
 - **Captions**: add a caption clip, edit timed segments and style, import SRT/VTT
   text, and export SRT/VTT.
 - **Markers**: add markers at the playhead, label/color them, click the ruler tick
@@ -272,6 +280,10 @@ MCP endpoint, client or credential is involved.
 | `opentake_studio_rename_project` | `name` | Renames the project display name. |
 | `opentake_studio_update_track` | `trackId`, `name?`, `muted?`, `hidden?` | Renames/mutes/hides/shows a track. |
 | `opentake_studio_remove_track` | `trackId` | Removes a track and its clips. |
+| `opentake_studio_transcribe_media` | `mediaId`, `createCaptions?` | Transcribes a video/audio asset with the configured Whisper-compatible endpoint; optionally adds a caption clip. |
+| `opentake_studio_search` | `query` | Searches project media names and stored transcripts. |
+| `opentake_studio_generate_image` | `prompt`, `size?` | Generates an image with the configured OpenAI-compatible provider and adds it to the project. |
+| `opentake_studio_generate_speech` | `text`, `voice?`, `model?` | Generates speech audio with the configured provider and adds it to the project. |
 | `opentake_studio_library_list` | `query?`, `kind?`, `favorite?`, `category?` | Lists the global media library. |
 | `opentake_studio_library_import` | `path` | Imports an absolute folder into the global library (content-deduped). |
 | `opentake_studio_library_add_to_project` | `id` | Adds a library asset to the current project. |
@@ -377,10 +389,14 @@ gaps:
 - **Effects are per-clip only:** no effect stacks/masks/motion tracking, and
   drawtext-fallback text ignores effects/fades (browser-rendered PNGs support
   them).
-- **Still missing from the Rust/Tauri app:** multicam, Lottie/Motion documents,
-  AI generation/upscaling, Whisper transcription, SigLIP2 visual/semantic
-  search, media library folders/favorites, HDR/proxy management, account/updater
-  surfaces, and full 1:1 UI parity.
+- **AI features are provider-backed, not bundled:** transcription and
+  generation need an OpenAI-compatible endpoint/key (or a local compatible
+  server). There is no bundled Whisper/CLIP model; visual/semantic search and
+  video generation are not implemented yet.
+- **Still missing from the Rust/Tauri app:** multicam, nested sequences/groups,
+  Lottie/Motion documents, masks/blend modes, audio ducking/automation, visual
+  (CLIP/SigLIP) search, HDR/proxy management, account/updater surfaces, and full
+  1:1 UI parity.
 - **Preview is approximate.** The canvas composite is for interaction, not a
   frame-accurate reference. Export is authoritative. Browser codec support can
   differ from ffmpeg.
@@ -392,12 +408,12 @@ gaps:
   text the same way the canvas renderer does.
 - **Audio is basic.** A video clip's source audio is included when the media has
   audio and the track is not muted; audio clips are mixed with their clip
-  `volume`. There are no fades, ducking, gain automation, or separate track
-  effects. Only `clip.volume` is applied; the preview monitor volume is not part
-  of the export.
-- **One output format.** Export is H.264/AAC MP4 at the project resolution/fps.
-  There are no ProRes/H.265/WebM variants, resolution presets, or audio-only
-  exports.
+  `volume`/fades and volume keyframes. There is no ducking, gain automation or
+  separate track effects; the preview monitor volume is not part of the export.
+- **Export formats are limited to the built-in encoders.** H.264/H.265/ProRes/
+  VP9-WebM are supported with project/custom resolution, fps and CRF/bitrate,
+  but there are no two-pass encodes, alpha/ProRes 4444, 10-bit HDR delivery or
+  audio-only exports.
 - **One project, one export.** The Host holds one open project and one running
   export at a time; starting another export while one runs returns
   `export-running`.
@@ -465,13 +481,15 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **269/269 tests pass**, 27 suites, 0 failures (model, project, media, export, captions, host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **299/299 tests pass**, 31 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |
 | Host routes | Project create, media import, add clip and add text were exercised through the Host routes. |
 | Agent tools | `opentake_studio_get_state`, `opentake_studio_add_text`, `opentake_studio_remove_clips` and `opentake_studio_export` were called live. |
-| UI export | The export dialog ran; a text PNG was posted, and ffmpeg produced an MP4 at **1280×720, H.264 + AAC, 2.0 s**; the exported frame shows the text overlay. |
+| UI export | The export dialog ran; text/caption PNGs were posted, and ffmpeg produced an MP4 at **1280×720, H.264 + AAC**; the exported frame shows the text overlay. |
+| Formats/presets | H.265 640×360@24 and ProRes MOV + VP9 WebM exports were ffprobe-verified; crop and true dissolve/wipe were pixel/probe-verified. |
+| Library/AI | Global library import/list/favorite/add-to-project ran live; transcription and generation were verified against local OpenAI-compatible fixture servers. |
 
 Not verified / not claimed:
 

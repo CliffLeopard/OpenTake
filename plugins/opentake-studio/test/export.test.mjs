@@ -6,7 +6,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, it } from 'node:test';
 
-import { ExportError, buildExportArgs, runExport } from '../lib/export.js';
+import {
+  EXPORT_CODECS,
+  ExportError,
+  buildExportArgs,
+  defaultContainerForCodec,
+  defaultExtensionForCodec,
+  runExport,
+} from '../lib/export.js';
 import {
   importToProject,
   probeMedia,
@@ -52,6 +59,7 @@ let phaseRealProject = null;
 let redMedia = null;
 let blueMedia = null;
 let greenMedia = null;
+let splitMedia = null;
 let phase2Project = null;
 
 function mediaEntry(overrides = {}) {
@@ -265,8 +273,8 @@ async function ffmpegEncoderNames() {
       const names = new Set();
       if (code === 0) {
         for (const line of stdout.split('\n')) {
-          const match = /^\s*V[A-Za-z.]*\s+(\S+)/.exec(line);
-          if (match !== null) names.add(match[1]);
+          const match = /^\s*([VA])[A-Za-z.]*\s+(\S+)/.exec(line);
+          if (match !== null) names.add(match[2]);
         }
       }
       resolve(names);
@@ -276,6 +284,9 @@ async function ffmpegEncoderNames() {
 
 const encoderNames = initialTools.available ? await ffmpegEncoderNames() : new Set();
 const hasH265Encoder = encoderNames.has('libx265') || encoderNames.has('hevc_videotoolbox');
+const hasProresEncoder = encoderNames.has('prores_ks');
+const hasVp9Encoder = encoderNames.has('libvpx-vp9');
+const hasOpusEncoder = encoderNames.has('libopus');
 
 function samplePixel(filePath, seconds, x, y) {
   return new Promise((resolve, reject) => {
@@ -352,6 +363,14 @@ before(async () => {
     '-f', 'lavfi', '-i', 'color=c=green:s=320x180:d=1',
     '-frames:v', '1',
     path.join(sourceDir, 'greenposter.png'),
+  ]);
+  // Left red / right blue poster for the crop pixel test.
+  await runFfmpeg([
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'color=c=red:s=320x180:d=1',
+    '-vf', 'drawbox=x=160:y=0:w=160:h=180:color=blue:t=fill',
+    '-frames:v', '1',
+    path.join(sourceDir, 'split.png'),
   ]);
 
   exportProjectRoot = path.join(exportTemp, 'project');
@@ -448,6 +467,7 @@ before(async () => {
   redMedia = byName.get('red.mp4');
   blueMedia = byName.get('blue.mp4');
   greenMedia = byName.get('greenposter.png');
+  splitMedia = byName.get('split.png');
 
   // True dissolve between red (0..30 frames, 1s) and blue (trimStart 10,
   // 30..60) with 10 transition frames (5 per side), plus a 45-degree rotated
@@ -1452,7 +1472,7 @@ it('builds codec/resolution/fps/crf/bitrate presets and validates them', () => {
   }
 
   for (const options of [
-    { codec: 'vp9' },
+    { codec: 'av1' },
     { width: 0 },
     { height: 1 },
     { fps: 0 },
@@ -1560,3 +1580,430 @@ it(
     assert.equal(videoStream.codec_name, 'hevc');
   },
 );
+
+// ---------------------------------------------------------------------------
+// Phase 6: ProRes / WebM export formats
+// ---------------------------------------------------------------------------
+
+it('exposes default containers and extensions per codec', () => {
+  assert.deepEqual([...EXPORT_CODECS], ['h264', 'h265', 'prores', 'vp9']);
+  assert.equal(defaultExtensionForCodec('h264'), '.mp4');
+  assert.equal(defaultExtensionForCodec('h265'), '.mp4');
+  assert.equal(defaultExtensionForCodec('prores'), '.mov');
+  assert.equal(defaultExtensionForCodec('vp9'), '.webm');
+  assert.equal(defaultExtensionForCodec('webm'), '.webm', 'webm is a vp9 alias');
+  assert.equal(defaultExtensionForCodec('hevc'), '.mp4', 'hevc is an h265 alias');
+  assert.equal(defaultContainerForCodec('prores'), 'mov');
+  assert.equal(defaultContainerForCodec('webm'), 'webm');
+  assert.throws(
+    () => defaultExtensionForCodec('av1'),
+    (error) => error instanceof ExportError && error.code === 'invalid-input',
+  );
+});
+
+it('builds ProRes MOV argv with PCM audio and no CRF', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'out.mov');
+  const built = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'prores' },
+  });
+  assert.equal(built.codec, 'prores');
+  assert.equal(built.container, 'mov');
+  assert.ok(hasPair(built.args, '-c:v', 'prores_ks'));
+  assert.ok(hasPair(built.args, '-profile:v', '3'));
+  assert.ok(hasPair(built.args, '-pix_fmt', 'yuv422p10le'));
+  assert.ok(hasPair(built.args, '-c:a', 'pcm_s16le'));
+  assert.ok(hasPair(built.args, '-f', 'mov'));
+  assert.ok(hasPair(built.args, '-movflags', '+faststart'));
+  assert.ok(!built.args.includes('-crf'), 'ProRes ignores CRF');
+  assert.ok(!built.args.includes('-preset'));
+  assert.ok(!hasPair(built.args, '-c:a', 'aac'));
+
+  const bitrateBuilt = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'prores', bitrate: '80M' },
+  });
+  assert.ok(hasPair(bitrateBuilt.args, '-b:v', '80M'));
+  assert.ok(!bitrateBuilt.args.includes('-crf'));
+
+  const crfIgnored = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'prores', crf: 10 },
+  });
+  assert.ok(!crfIgnored.args.includes('-crf'));
+});
+
+it('builds VP9/WebM argv with libopus and CRF/bitrate semantics', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'out.webm');
+  const built = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'vp9' },
+  });
+  assert.equal(built.codec, 'vp9');
+  assert.equal(built.container, 'webm');
+  assert.ok(hasPair(built.args, '-c:v', 'libvpx-vp9'));
+  assert.ok(hasPair(built.args, '-pix_fmt', 'yuv420p'));
+  assert.ok(hasPair(built.args, '-crf', '31'));
+  assert.ok(hasPair(built.args, '-b:v', '0'), 'constant-quality VP9 uses -b:v 0');
+  assert.ok(hasPair(built.args, '-c:a', 'libopus'));
+  assert.ok(hasPair(built.args, '-b:a', '128k'));
+  assert.ok(hasPair(built.args, '-f', 'webm'));
+  assert.ok(!hasPair(built.args, '-movflags', '+faststart'));
+  assert.ok(!built.args.includes('-preset'));
+
+  const alias = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'webm' },
+  });
+  assert.equal(alias.codec, 'vp9');
+  assert.ok(hasPair(alias.args, '-c:v', 'libvpx-vp9'));
+
+  const crfBuilt = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'vp9', crf: 40 },
+  });
+  assert.ok(hasPair(crfBuilt.args, '-crf', '40'));
+  assert.ok(hasPair(crfBuilt.args, '-b:v', '0'));
+
+  const bitrateBuilt = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'vp9', bitrate: '2M' },
+  });
+  assert.ok(hasPair(bitrateBuilt.args, '-b:v', '2M'));
+  assert.ok(!bitrateBuilt.args.includes('-crf'), 'bitrate mode does not use CRF');
+});
+
+it('validates codec/container combinations', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'out.bin');
+  const buildWith = (options) => buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options,
+  });
+
+  // H.264/H.265 may be written into MOV when explicitly requested.
+  const mov = buildWith({ container: 'mov' });
+  assert.equal(mov.container, 'mov');
+  assert.ok(hasPair(mov.args, '-f', 'mov'));
+  assert.ok(hasPair(mov.args, '-c:a', 'aac'));
+  assert.ok(hasPair(mov.args, '-movflags', '+faststart'));
+  assert.ok(!hasPair(mov.args, '-f', 'mp4'), 'default h264 export does not force a muxer');
+
+  for (const options of [
+    { codec: 'prores', container: 'mp4' },
+    { codec: 'prores', container: 'webm' },
+    { codec: 'vp9', container: 'mov' },
+    { codec: 'vp9', container: 'mp4' },
+    { codec: 'h264', container: 'webm' },
+    { codec: 'h265', container: 'webm' },
+    { codec: 'h264', container: 'mkv' },
+    { codec: 'av1' },
+  ]) {
+    assert.throws(
+      () => buildWith(options),
+      (error) => error instanceof ExportError && error.code === 'invalid-input',
+      `expected invalid-input for ${JSON.stringify(options)}`,
+    );
+  }
+});
+
+it('selects the audio codec per format and omits it for silent projects', () => {
+  const silent = createFixtureProject();
+  // Keep only the video track and mark its source silent so no audio chain is
+  // produced at all.
+  silent.tracks = [silent.tracks[0]];
+  silent.media[0].hasAudio = false;
+
+  const proresSilent = buildExportArgs({
+    project: silent,
+    projectRoot: FIXTURE_ROOT,
+    outputPath: path.join(FIXTURE_ROOT, 'silent.mov'),
+    options: { codec: 'prores' },
+  });
+  assert.ok(proresSilent.args.includes('-an'));
+  assert.ok(!hasPair(proresSilent.args, '-c:a', 'pcm_s16le'));
+
+  const vp9Silent = buildExportArgs({
+    project: silent,
+    projectRoot: FIXTURE_ROOT,
+    outputPath: path.join(FIXTURE_ROOT, 'silent.webm'),
+    options: { codec: 'vp9' },
+  });
+  assert.ok(vp9Silent.args.includes('-an'));
+  assert.ok(!hasPair(vp9Silent.args, '-c:a', 'libopus'));
+});
+
+it(
+  'exports a real ProRes MOV verified by ffprobe',
+  {
+    skip: toolSkip
+      ? toolSkip
+      : (!hasProresEncoder ? 'prores_ks encoder is not available' : false),
+  },
+  async () => {
+    const outputPath = path.join(exportTemp, 'formats-prores.mov');
+    const result = await runExport({
+      project: realProject,
+      projectRoot: exportProjectRoot,
+      outputPath,
+      options: { codec: 'prores' },
+    });
+    assert.equal(result.codec, 'prores');
+    assert.equal(result.container, 'mov');
+    assert.equal(result.durationFrames, 45);
+
+    const info = await stat(outputPath);
+    assert.ok(info.size > 1000);
+    const probe = await probeMedia(outputPath);
+    assert.equal(probe.kind, 'video');
+    assert.equal(probe.width, 320);
+    assert.equal(probe.height, 180);
+    assert.equal(probe.hasAudio, true);
+    assert.ok(probe.durationSeconds > 1 && probe.durationSeconds < 2);
+
+    const parsed = JSON.parse(await runFfprobe([
+      '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+    ]));
+    const videoStream = parsed.streams.find((stream) => stream.codec_type === 'video');
+    const audioStream = parsed.streams.find((stream) => stream.codec_type === 'audio');
+    assert.equal(videoStream.codec_name, 'prores');
+    assert.equal(videoStream.pix_fmt, 'yuv422p10le');
+    assert.equal(audioStream.codec_name, 'pcm_s16le');
+  },
+);
+
+it(
+  'exports a real VP9 WebM verified by ffprobe',
+  {
+    skip: toolSkip
+      ? toolSkip
+      : (!hasVp9Encoder || !hasOpusEncoder ? 'libvpx-vp9/libopus encoders are not available' : false),
+  },
+  async () => {
+    const outputPath = path.join(exportTemp, 'formats-vp9.webm');
+    const result = await runExport({
+      project: realProject,
+      projectRoot: exportProjectRoot,
+      outputPath,
+      options: { codec: 'vp9' },
+    });
+    assert.equal(result.codec, 'vp9');
+    assert.equal(result.container, 'webm');
+    assert.equal(result.durationFrames, 45);
+
+    const info = await stat(outputPath);
+    assert.ok(info.size > 1000);
+    const probe = await probeMedia(outputPath);
+    assert.equal(probe.kind, 'video');
+    assert.equal(probe.width, 320);
+    assert.equal(probe.height, 180);
+    assert.equal(probe.hasAudio, true);
+    assert.ok(probe.durationSeconds > 1 && probe.durationSeconds < 2);
+
+    const parsed = JSON.parse(await runFfprobe([
+      '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+    ]));
+    const videoStream = parsed.streams.find((stream) => stream.codec_type === 'video');
+    const audioStream = parsed.streams.find((stream) => stream.codec_type === 'audio');
+    assert.equal(videoStream.codec_name, 'vp9');
+    assert.equal(audioStream.codec_name, 'opus');
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Phase 6: crop export
+// ---------------------------------------------------------------------------
+
+it('applies a normalized crop before scale and keeps the transform box', () => {
+  const cropped = makeProject({
+    clips: [
+      makeClip({
+        id: 'crop-video', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 45,
+        crop: { x: 0.25, y: 0, width: 0.5, height: 1 },
+      }),
+    ],
+  });
+  const filter = filterOf(buildPhase(cropped));
+  assert.ok(filter.includes('crop=w=iw*0.5:h=ih*1:x=iw*0.25:y=ih*0'), filter);
+  const cropIndex = filter.indexOf('crop=');
+  const scaleIndex = filter.indexOf('scale=');
+  assert.ok(cropIndex >= 0 && cropIndex < scaleIndex, 'crop must run before scale');
+  assert.ok(filter.includes('overlay=x=0:y=0'), 'overlay placement/transform box unchanged');
+
+  const plain = makeProject({
+    clips: [
+      makeClip({ id: 'plain-video', type: 'video', mediaId: 'media-video', startFrame: 0, durationFrames: 45 }),
+    ],
+  });
+  const plainFilter = filterOf(buildPhase(plain));
+  assert.ok(!plainFilter.includes('crop='), 'no-crop clips are unchanged');
+  assert.match(plainFilter, /\[1:v\]scale=320:180,setsar=1,fps=30/);
+});
+
+it('applies crop before rotation and scales the cropped region into the box', () => {
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: 'crop-rotate', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 45,
+        crop: { x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+        transform: { x: 0, y: 0, width: 1, height: 1, rotation: 90 },
+      }),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+  const cropIndex = filter.indexOf('crop=w=iw*0.8:h=ih*0.8:x=iw*0.1:y=ih*0.1');
+  const scaleIndex = filter.indexOf('scale=320:180');
+  const rotateIndex = filter.indexOf('rotate=');
+  assert.ok(cropIndex >= 0, filter);
+  assert.ok(scaleIndex > cropIndex, 'scale follows crop');
+  assert.ok(rotateIndex > scaleIndex, 'rotation follows scale');
+});
+
+it('applies crop to image clips and browser-rendered text PNGs', async () => {
+  const imageProject = makeProject({
+    media: [
+      mediaEntry({
+        id: 'media-image', name: 'card.png', kind: 'image', fileName: 'image.png',
+        durationFrames: null, sourceDurationSeconds: null, hasAudio: false,
+      }),
+    ],
+    clips: [
+      makeClip({
+        id: 'crop-image', type: 'image', mediaId: 'media-image',
+        startFrame: 0, durationFrames: 30,
+        crop: { x: 0, y: 0, width: 0.5, height: 0.5 },
+      }),
+    ],
+  });
+  const imageFilter = filterOf(buildPhase(imageProject));
+  assert.ok(imageFilter.includes('crop=w=iw*0.5:h=ih*0.5:x=iw*0:y=ih*0'), imageFilter);
+  assert.ok(imageFilter.indexOf('crop=') < imageFilter.indexOf('scale='));
+
+  const textClipId = 'crop-png-text';
+  const pngPath = path.join(phaseRoot, 'renders', `${textClipId}.png`);
+  await writeFile(pngPath, 'fake png for argv-only assertions');
+  const textProject = makeProject({
+    clips: [
+      makeClip({
+        id: textClipId, type: 'text', mediaId: null,
+        startFrame: 0, durationFrames: 30,
+        crop: { x: 0, y: 0, width: 0.25, height: 0.5 },
+        text: { content: 'crop me', fontSize: 20, color: '#ffffff', fontWeight: '400', align: 'left' },
+      }),
+    ],
+  });
+  const textBuilt = buildPhase(textProject);
+  const textFilter = filterOf(textBuilt);
+  assert.ok(inputsOf(textBuilt.args).includes(pngPath));
+  assert.ok(textFilter.includes('crop=w=iw*0.25:h=ih*0.5:x=iw*0:y=ih*0'), textFilter);
+  assert.ok(!textFilter.includes('drawtext='), 'PNG render path wins over drawtext');
+});
+
+it('keeps effects, fades and keyframes on cropped clips', () => {
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: 'crop-rich', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 45,
+        crop: { x: 0, y: 0, width: 0.5, height: 0.5 },
+        fadeInFrames: 10, fadeOutFrames: 10,
+        effects: [{ id: 'fx', type: 'brightness', enabled: true, params: { amount: 1.4 } }],
+        keyframes: {
+          x: [{ frame: 0, value: 0 }, { frame: 45, value: 0.25 }],
+        },
+      }),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+  assert.ok(filter.includes('crop=w=iw*0.5:h=ih*0.5:x=iw*0:y=ih*0'), filter);
+  assert.ok(filter.includes('eq=brightness=0.399999') || filter.includes('eq=brightness=0.4'), filter);
+  assert.ok(filter.includes('fade=t=in:st=0:d=0.333333'), filter);
+  assert.ok(filter.includes('fade=t=out:st=1.166667:d=0.333333'), filter);
+  assert.ok(filter.includes("overlay=x='if(lt(t,0),0,"), filter);
+});
+
+it('falls back from true xfade when either clip has a crop', () => {
+  const project = trueTransitionProject('dissolve');
+  project.tracks[0].clips[0].crop = { x: 0, y: 0, width: 1, height: 1 };
+  const filter = filterOf(buildPhase(project));
+  assert.ok(!filter.includes('xfade='), 'cropped clips cannot use xfade');
+  assert.ok(filter.includes('fade=t=out:st=1.166667:d=0.333333'), filter);
+  assert.ok(filter.includes('fade=t=in:st=1.5:d=0.333333'), filter);
+  assert.ok(filter.includes('crop=w=iw*1:h=ih*1:x=iw*0:y=ih*0'));
+});
+
+it('ignores crop in the drawtext fallback', () => {
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: 'crop-text', type: 'text', mediaId: null, startFrame: 0, durationFrames: 30,
+        crop: { x: 0, y: 0, width: 0.5, height: 0.5 },
+        text: { content: 'uncropped text', fontSize: 20, color: '#ffffff', fontWeight: '400', align: 'left' },
+      }),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+  assert.ok(!filter.includes('crop='), 'drawtext fallback cannot crop');
+  assert.ok(filter.includes("text='uncropped text'"));
+});
+
+it('exports a cropped clip and samples only the cropped region', { skip: toolSkip }, async () => {
+  const project = makeProject({
+    media: [splitMedia],
+    clips: [
+      makeClip({
+        id: 'crop-real', type: 'image', mediaId: splitMedia.id,
+        startFrame: 0, durationFrames: 30,
+        crop: { x: 0.5, y: 0, width: 0.5, height: 1 },
+      }),
+    ],
+  });
+  const outputPath = path.join(exportTemp, 'crop-export.mp4');
+  const result = await runExport({
+    project,
+    projectRoot: exportProjectRoot,
+    outputPath,
+    options: { codec: 'h264' },
+  });
+  assert.equal(result.durationFrames, 30);
+  assert.equal(result.codec, 'h264');
+  assert.equal(result.container, 'mp4');
+
+  const probe = await probeMedia(outputPath);
+  assert.equal(probe.kind, 'video');
+  assert.equal(probe.width, 320);
+  assert.equal(probe.height, 180);
+  assert.ok(probe.durationSeconds > 0.5 && probe.durationSeconds < 1.5);
+
+  // The source is red on the left and blue on the right; cropping x=0.5 keeps
+  // only blue, and the cropped region is scaled back to the full 320x180 box.
+  for (const x of [60, 160, 260]) {
+    const pixel = await samplePixel(outputPath, 0.2, x, 90);
+    assert.ok(
+      pixel.r < 50 && pixel.g < 50 && pixel.b > 150,
+      `expected blue at x=${x} after cropping the right half, got ${JSON.stringify(pixel)}`,
+    );
+  }
+  const info = await stat(outputPath);
+  assert.ok(info.size > 1000);
+});

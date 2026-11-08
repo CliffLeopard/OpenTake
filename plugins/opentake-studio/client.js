@@ -164,9 +164,63 @@ window.__ModuleLoader__.load({
 			return `${base}${separator}${name}`;
 		}
 
-		function suggestedExportName(project) {
+		function exportCodecExtension(codec) {
+			if (codec === 'prores') return '.mov';
+			if (codec === 'vp9') return '.webm';
+			return '.mp4';
+		}
+
+		function suggestedExportName(project, codec) {
 			const base = slugify(project && project.name ? project.name : 'opentake-studio');
-			return `${base}-${Date.now()}.mp4`;
+			return `${base}-${Date.now()}${exportCodecExtension(codec)}`;
+		}
+
+		function transcriptCaptionOperation(transcript, project) {
+			if (!transcript || !Array.isArray(transcript.segments) || !project) return null;
+			const fps = Math.max(1, Number(project.fps) || 30);
+			const segments = transcript.segments
+				.map((segment) => ({
+					startFrame: Math.max(0, Math.round(finiteNumber(segment.startSeconds, 0) * fps)),
+					durationFrames: Math.max(1, Math.round((finiteNumber(segment.endSeconds, 0) - finiteNumber(segment.startSeconds, 0)) * fps)),
+					text: typeof segment.text === 'string' ? segment.text : '',
+				}))
+				.filter((segment) => segment.text.trim().length > 0);
+			if (segments.length === 0) return null;
+			const startFrame = Math.min(...segments.map((segment) => segment.startFrame));
+			const endFrame = Math.max(...segments.map((segment) => segment.startFrame + segment.durationFrames));
+			const durationFrames = Math.max(1, endFrame - startFrame);
+			const relative = segments
+				.map((segment) => ({
+					startFrame: Math.max(0, segment.startFrame - startFrame),
+					durationFrames: segment.durationFrames,
+					text: segment.text,
+				}))
+				.filter((segment) => segment.startFrame < durationFrames);
+			if (relative.length === 0) return null;
+			return {
+				type: 'add-caption',
+				clipId: newId(),
+				startFrame,
+				durationFrames,
+				segments: relative,
+				style: { fontSize: 44, color: '#ffffff', fontWeight: '600', align: 'center', background: 'rgba(0,0,0,0.45)' },
+			};
+		}
+
+		function asrConfigured(asr) {
+			return Boolean(asr && asr.configured === true && asr.error === undefined);
+		}
+
+		function asrKeyRef(asr) {
+			return asr && typeof asr.keyRef === 'string' && asr.keyRef.length > 0 ? asr.keyRef : 'OPENTAKE_STUDIO_ASR_KEY';
+		}
+
+		function transcriptPreviewLines(transcript, count) {
+			if (!transcript || !Array.isArray(transcript.segments)) return [];
+			return transcript.segments.slice(0, count === undefined ? 3 : count).map((segment) => ({
+				time: formatClock(finiteNumber(segment.startSeconds, 0)),
+				text: typeof segment.text === 'string' ? segment.text : '',
+			}));
 		}
 
 		function effectiveExportSettings(project, dialog) {
@@ -174,7 +228,7 @@ window.__ModuleLoader__.load({
 			const projectWidth = project && Number.isFinite(Number(project.width)) ? Math.max(1, Math.round(Number(project.width))) : 1920;
 			const projectHeight = project && Number.isFinite(Number(project.height)) ? Math.max(1, Math.round(Number(project.height))) : 1080;
 			const projectFps = project && Number.isFinite(Number(project.fps)) ? Math.max(1, Number(project.fps)) : 30;
-			const codec = source.codec === 'h265' ? 'h265' : 'h264';
+			const codec = ['h264', 'h265', 'prores', 'vp9'].includes(source.codec) ? source.codec : 'h264';
 			const resolution = ['project', '1080p', '720p', 'custom'].includes(source.resolution) ? source.resolution : 'project';
 			let width = projectWidth;
 			let height = projectHeight;
@@ -205,6 +259,7 @@ window.__ModuleLoader__.load({
 				crf,
 				bitrate,
 				overwrite: source.overwrite === true,
+				extension: exportCodecExtension(codec),
 			};
 		}
 
@@ -216,6 +271,36 @@ window.__ModuleLoader__.load({
 				width: clamp01(finiteNumber(input.width, 1)),
 				height: clamp01(finiteNumber(input.height, 1)),
 				rotation: finiteNumber(input.rotation, 0),
+			};
+		}
+
+		function clipCropOf(clip) {
+			const value = clip && clip.crop;
+			if (!value || typeof value !== 'object') return null;
+			const crop = {
+				x: clamp01(finiteNumber(value.x, 0)),
+				y: clamp01(finiteNumber(value.y, 0)),
+				width: clamp01(finiteNumber(value.width, 1)),
+				height: clamp01(finiteNumber(value.height, 1)),
+			};
+			if (crop.width <= 0 || crop.height <= 0) return null;
+			if (crop.x + crop.width > 1) crop.width = Math.max(0.01, 1 - crop.x);
+			if (crop.y + crop.height > 1) crop.height = Math.max(0.01, 1 - crop.y);
+			return crop;
+		}
+
+		function cropDraftFromClip(clip) {
+			return clipCropOf(clip) || { x: 0, y: 0, width: 1, height: 1 };
+		}
+
+		function normalizeCropDraft(draft) {
+			const width = clamp(finiteNumber(draft.width, 1), 0.01, 1);
+			const height = clamp(finiteNumber(draft.height, 1), 0.01, 1);
+			return {
+				x: clamp(finiteNumber(draft.x, 0), 0, 1 - width),
+				y: clamp(finiteNumber(draft.y, 0), 0, 1 - height),
+				width,
+				height,
 			};
 		}
 
@@ -1067,6 +1152,14 @@ window.__ModuleLoader__.load({
 							/* an older canvas ignores the filter */
 						}
 					}
+					const crop = clipCropOf(clip);
+					if (crop && (clip.type === 'text' || clip.type === 'caption')) {
+						const cropX = crop.x * width - (box.x + box.width / 2);
+						const cropY = crop.y * height - (box.y + box.height / 2);
+						context.beginPath();
+						context.rect(cropX, cropY, Math.max(0.5, crop.width * width), Math.max(0.5, crop.height * height));
+						context.clip();
+					}
 					context.translate(box.x + box.width / 2, box.y + box.height / 2);
 					if (box.rotation !== 0) context.rotate((box.rotation * Math.PI) / 180);
 					if (clip.type === 'text') {
@@ -1076,12 +1169,40 @@ window.__ModuleLoader__.load({
 					} else if (clip.type === 'video' && elements && elements.video) {
 						const video = elements.video;
 						if (video.readyState >= 2 && video.videoWidth > 0) {
-							context.drawImage(video, -box.width / 2, -box.height / 2, box.width, box.height);
+							if (crop) {
+								context.drawImage(
+									video,
+									crop.x * video.videoWidth,
+									crop.y * video.videoHeight,
+									Math.max(1, crop.width * video.videoWidth),
+									Math.max(1, crop.height * video.videoHeight),
+									-box.width / 2,
+									-box.height / 2,
+									box.width,
+									box.height,
+								);
+							} else {
+								context.drawImage(video, -box.width / 2, -box.height / 2, box.width, box.height);
+							}
 						}
 					} else if (clip.type === 'image' && elements && elements.image) {
 						const image = elements.image;
 						if (image.complete && image.naturalWidth > 0) {
-							context.drawImage(image, -box.width / 2, -box.height / 2, box.width, box.height);
+							if (crop) {
+								context.drawImage(
+									image,
+									crop.x * image.naturalWidth,
+									crop.y * image.naturalHeight,
+									Math.max(1, crop.width * image.naturalWidth),
+									Math.max(1, crop.height * image.naturalHeight),
+									-box.width / 2,
+									-box.height / 2,
+									box.width,
+									box.height,
+								);
+							} else {
+								context.drawImage(image, -box.width / 2, -box.height / 2, box.width, box.height);
+							}
 						}
 					}
 					try {
@@ -1220,6 +1341,54 @@ window.__ModuleLoader__.load({
 .ots-library-category{color:var(--dsw-alias-label-secondary);display:inline-block;max-width:74px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ots-library-card .ots-library-actions-row .ots-mini{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ots-modal-fixed{position:fixed}
+.ots-media-actions{display:flex;gap:3px;padding:0 6px 6px;flex-wrap:wrap}
+.ots-media-actions .ots-mini{font-size:9.5px;height:18px;max-width:100%;overflow:hidden;padding:0 4px;text-overflow:ellipsis;white-space:nowrap}
+.ots-media-note{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;color:var(--dsw-alias-label-secondary);font-size:10.5px;line-height:1.45;margin:0 0 6px;padding:6px 7px}
+.ots-search{display:flex;flex-direction:column;gap:5px;margin-bottom:7px}
+.ots-search-row{display:flex;gap:4px}
+.ots-search-row .ots-input{flex:1 1 auto;height:24px;font-size:11px}
+.ots-search-error{color:var(--dsw-alias-state-error-primary);font-size:10.5px;margin:0}
+.ots-search-results{background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;max-height:210px;overflow:auto;padding:3px}
+.ots-search-group{display:flex;flex-direction:column;gap:1px;margin-bottom:3px}
+.ots-search-group-title{color:var(--dsw-alias-label-secondary);font-size:9px;letter-spacing:.35px;padding:2px 4px;text-transform:uppercase}
+.ots-search-result{background:none;border:0;border-radius:4px;color:inherit;cursor:pointer;display:flex;flex-direction:column;gap:0;padding:3px 5px;text-align:left;width:100%}
+.ots-search-result:hover{background:var(--dsw-alias-bg-layer-2)}
+.ots-search-result-name{color:var(--dsw-alias-label-primary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-search-result-snippet{color:var(--dsw-alias-label-secondary);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-search-result-time{color:var(--dsw-alias-label-secondary);font-size:9.5px;font-variant-numeric:tabular-nums}
+.ots-transcript-preview{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;display:flex;flex-direction:column;gap:3px;margin-bottom:7px;padding:6px 7px}
+.ots-transcript-preview-head{align-items:center;display:flex;gap:6px;justify-content:space-between}
+.ots-transcript-preview-head strong{color:var(--dsw-alias-label-primary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-transcript-preview-seg{color:var(--dsw-alias-label-secondary);display:flex;font-size:10px;gap:5px;line-height:1.35}
+.ots-transcript-preview-time{color:var(--dsw-alias-label-secondary);flex:0 0 auto;font-variant-numeric:tabular-nums}
+.ots-asr-card{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;display:flex;flex-direction:column;gap:4px;margin-bottom:7px;padding:7px}
+.ots-asr-head{align-items:center;display:flex;gap:6px;justify-content:space-between}
+.ots-asr-title{color:var(--dsw-alias-label-primary);font-size:11.5px;font-weight:600}
+.ots-asr-details{display:flex;flex-direction:column;gap:2px}
+.ots-asr-row{display:flex;font-size:9.5px;gap:6px;justify-content:space-between;min-width:0}
+.ots-asr-key{color:var(--dsw-alias-label-secondary);flex:0 0 auto}
+.ots-asr-value{color:var(--dsw-alias-label-primary);overflow:hidden;text-align:right;text-overflow:ellipsis;white-space:nowrap}
+.ots-library-group-title{color:var(--dsw-alias-label-secondary);flex:1 1 auto;font-size:10px;letter-spacing:.3px;text-transform:uppercase}
+.ots-transcript-list{display:flex;flex-direction:column;gap:5px}
+.ots-transcript-row{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;display:flex;flex-direction:column;gap:3px;padding:6px 7px}
+.ots-transcript-row-head{align-items:center;display:flex;gap:6px;justify-content:space-between;min-width:0}
+.ots-transcript-name{color:var(--dsw-alias-label-primary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-transcript-meta{color:var(--dsw-alias-label-secondary);font-size:9.5px}
+.ots-transcript-snippet{color:var(--dsw-alias-label-secondary);font-size:10px;line-height:1.4;margin:0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.ots-transcripts{display:flex;flex-direction:column;gap:5px}
+.ots-generate{display:flex;flex-direction:column;gap:6px}
+.ots-generate-card{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;display:flex;flex-direction:column;gap:5px;padding:7px}
+.ots-generate-head{align-items:center;display:flex;gap:6px;justify-content:space-between;min-width:0}
+.ots-generate-title{color:var(--dsw-alias-label-primary);font-size:11.5px;font-weight:600}
+.ots-generate-provider{align-items:center;display:grid;font-size:9.5px;gap:4px;grid-template-columns:auto minmax(0,1fr) auto}
+.ots-generate-provider-name{color:var(--dsw-alias-label-secondary)}
+.ots-generate-provider-id{color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-generate-error{color:var(--dsw-alias-state-error-primary);font-size:10.5px;line-height:1.4;margin:0;overflow-wrap:anywhere}
+.ots-generate-actions{display:flex;gap:5px;justify-content:flex-end}
+.ots-generate textarea{min-height:54px}
+.ots-generate .ots-field-grid{grid-template-columns:1fr 1fr}
+
+
 
 .ots-media-empty-title{color:var(--dsw-alias-label-secondary);display:block;font-weight:600;margin-bottom:4px}
 .ots-drop-hint{border:.5px dashed var(--dsw-alias-border-l1);border-radius:8px;color:var(--dsw-alias-label-secondary);font-size:11.5px;margin-top:8px;padding:10px;text-align:center}
@@ -1751,6 +1920,83 @@ window.__ModuleLoader__.load({
 			'library.importHint': 'Every video, audio and image file in the folder is imported into the global library.',
 			'library.importConfirm': 'Import',
 			'library.working': 'Working…',
+			'common.yes': 'Yes',
+			'common.no': 'No',
+			'transcribe.tabTranscripts': 'Transcripts',
+			'transcribe.action': 'Transcribe',
+			'transcribe.actionTitle': 'Transcribe with captions added to the timeline',
+			'transcribe.onlyTitle': 'Transcribe without adding captions',
+			'transcribe.busy': 'Transcribing…',
+			'transcribe.done': 'Transcript ready for {name}.',
+			'transcribe.captionsAdded': 'Transcript ready for {name}; captions were added to the timeline.',
+			'transcribe.captionsCreated': 'Caption clip created from {name}.',
+			'transcribe.noCaptions': 'Transcript ready for {name}.',
+			'transcribe.noTranscriptPreview': 'The transcript is stored but no preview is available.',
+			'transcribe.emptyTranscript': 'The transcript has no usable segments.',
+			'transcribe.error': 'Transcription failed for {name}: {message}',
+			'transcribe.preview': 'Transcript · {name}',
+			'transcribe.closePreview': 'Close transcript preview',
+			'transcribe.asrTitle': 'Speech recognition',
+			'transcribe.asrReady': 'Configured',
+			'transcribe.asrMissing': 'Not configured',
+			'transcribe.asrHint': 'Configure ASR on the Host: set {keyRef} (API key) or OPENTAKE_STUDIO_ASR_URL for a loopback Whisper-compatible endpoint, then reload the Host.',
+			'transcribe.asrUnknown': 'ASR status is unavailable; transcribe may still work if the Host is configured.',
+			'transcribe.endpoint': 'Endpoint',
+			'transcribe.model': 'Model',
+			'transcribe.language': 'Language',
+			'transcribe.keyRef': 'Key reference',
+			'transcribe.loopback': 'Loopback',
+			'transcribe.transcriptsTitle': 'Transcripts',
+			'transcribe.refresh': 'Refresh',
+			'transcribe.loading': 'Loading transcripts…',
+			'transcribe.empty': 'No transcripts yet',
+			'transcribe.emptyHint': 'Transcribe a video or audio asset from the Project tab.',
+			'transcribe.segmentCount': '{count} segment(s)',
+			'transcribe.createCaptions': 'Create captions',
+			'transcribe.loadError': 'Could not load transcripts: {message}',
+			'search.placeholder': 'Search media and transcripts',
+			'search.action': 'Search',
+			'search.clear': 'Clear',
+			'search.loading': 'Searching…',
+			'search.error': 'Search failed: {message}',
+			'search.noResults': 'No results for “{query}”.',
+			'search.transcripts': 'Transcripts',
+			'search.media': 'Media',
+			'generate.tab': 'Generate',
+			'generate.providers': 'Generation providers',
+			'generate.imageProvider': 'Image',
+			'generate.speechProvider': 'Speech',
+			'generate.configured': 'Configured',
+			'generate.notConfigured': 'Not configured',
+			'generate.unknown': 'Generation status unavailable.',
+			'generate.hint': 'Configure OpenAI generation on the Host: set OPENAI_API_KEY (optionally OPENAI_BASE_URL) or store the credential in DSH, then reload the Host.',
+			'generate.working': 'Generating…',
+			'generate.imageTitle': 'Generate image',
+			'generate.imagePrompt': 'Image prompt',
+			'generate.imagePromptPlaceholder': 'Describe the image to generate…',
+			'generate.imageSize': 'Size',
+			'generate.imageAction': 'Generate image',
+			'generate.imageDone': 'Image generated and added to the project media.',
+			'generate.speechTitle': 'Generate speech',
+			'generate.speechText': 'Speech text',
+			'generate.speechTextPlaceholder': 'Enter the text to speak…',
+			'generate.voice': 'Voice',
+			'generate.model': 'Model (optional)',
+			'generate.modelPlaceholder': 'Provider default model',
+			'generate.speechAction': 'Generate speech',
+			'generate.speechDone': 'Speech generated and added to the project media.',
+			'generate.error': 'Generation failed: {message}',
+			'inspector.crop': 'Crop',
+			'inspector.cropReset': 'Reset crop',
+			'inspector.cropX': 'Crop X',
+			'inspector.cropY': 'Crop Y',
+			'inspector.cropWidth': 'Crop width',
+			'inspector.cropHeight': 'Crop height',
+			'inspector.cropHint': 'Normalized source crop; independent of the transform. Cropped clips fall back from true transitions to the fade approximation.',
+			'export.codecProres': 'ProRes (.mov)',
+			'export.codecVp9': 'VP9 / WebM (.webm)',
+			'export.extensionHint': 'Output extension: {ext}',
+			'export.proresHint': 'ProRes ignores the CRF value (profile/bitrate based).',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -2122,6 +2368,83 @@ window.__ModuleLoader__.load({
 			'library.importHint': '该文件夹中所有视频、音频和图片都会导入全局素材库。',
 			'library.importConfirm': '导入',
 			'library.working': '处理中…',
+			'common.yes': '是',
+			'common.no': '否',
+			'transcribe.tabTranscripts': '转写',
+			'transcribe.action': '转写',
+			'transcribe.actionTitle': '转写并把字幕添加到时间线',
+			'transcribe.onlyTitle': '仅转写，不添加字幕',
+			'transcribe.busy': '转写中…',
+			'transcribe.done': '{name} 的转写已完成。',
+			'transcribe.captionsAdded': '{name} 的转写已完成，字幕已添加到时间线。',
+			'transcribe.captionsCreated': '已根据 {name} 创建字幕片段。',
+			'transcribe.noCaptions': '{name} 的转写已完成。',
+			'transcribe.noTranscriptPreview': '转写已保存，但无法显示预览。',
+			'transcribe.emptyTranscript': '转写没有可用的分段。',
+			'transcribe.error': '{name} 转写失败：{message}',
+			'transcribe.preview': '转写 · {name}',
+			'transcribe.closePreview': '关闭转写预览',
+			'transcribe.asrTitle': '语音识别',
+			'transcribe.asrReady': '已配置',
+			'transcribe.asrMissing': '未配置',
+			'transcribe.asrHint': '请在 Host 上配置 ASR：设置 {keyRef}（API 密钥）或 OPENTAKE_STUDIO_ASR_URL 指向本地 Whisper 兼容端点，然后重启 Host。',
+			'transcribe.asrUnknown': '无法读取 ASR 状态；如果 Host 已配置，转写仍可能可用。',
+			'transcribe.endpoint': '端点',
+			'transcribe.model': '模型',
+			'transcribe.language': '语言',
+			'transcribe.keyRef': '密钥引用',
+			'transcribe.loopback': '回环',
+			'transcribe.transcriptsTitle': '转写记录',
+			'transcribe.refresh': '刷新',
+			'transcribe.loading': '正在加载转写…',
+			'transcribe.empty': '还没有转写',
+			'transcribe.emptyHint': '在“工程”标签中对视频或音频执行转写。',
+			'transcribe.segmentCount': '{count} 个分段',
+			'transcribe.createCaptions': '创建字幕',
+			'transcribe.loadError': '加载转写失败：{message}',
+			'search.placeholder': '搜索媒体与转写',
+			'search.action': '搜索',
+			'search.clear': '清除',
+			'search.loading': '正在搜索…',
+			'search.error': '搜索失败：{message}',
+			'search.noResults': '没有找到“{query}”的结果。',
+			'search.transcripts': '转写',
+			'search.media': '媒体',
+			'generate.tab': '生成',
+			'generate.providers': '生成服务',
+			'generate.imageProvider': '图像',
+			'generate.speechProvider': '语音',
+			'generate.configured': '已配置',
+			'generate.notConfigured': '未配置',
+			'generate.unknown': '无法读取生成服务状态。',
+			'generate.hint': '请在 Host 上配置 OpenAI 生成服务：设置 OPENAI_API_KEY（可选 OPENAI_BASE_URL）或在 DSH 中保存凭据，然后重启 Host。',
+			'generate.working': '正在生成…',
+			'generate.imageTitle': '生成图像',
+			'generate.imagePrompt': '图像提示词',
+			'generate.imagePromptPlaceholder': '描述要生成的图像…',
+			'generate.imageSize': '尺寸',
+			'generate.imageAction': '生成图像',
+			'generate.imageDone': '图像已生成并添加到工程媒体。',
+			'generate.speechTitle': '生成语音',
+			'generate.speechText': '语音文本',
+			'generate.speechTextPlaceholder': '输入要朗读的文本…',
+			'generate.voice': '音色',
+			'generate.model': '模型（可选）',
+			'generate.modelPlaceholder': '使用服务默认模型',
+			'generate.speechAction': '生成语音',
+			'generate.speechDone': '语音已生成并添加到工程媒体。',
+			'generate.error': '生成失败：{message}',
+			'inspector.crop': '裁剪',
+			'inspector.cropReset': '重置裁剪',
+			'inspector.cropX': '裁剪 X',
+			'inspector.cropY': '裁剪 Y',
+			'inspector.cropWidth': '裁剪宽度',
+			'inspector.cropHeight': '裁剪高度',
+			'inspector.cropHint': '归一化的源裁剪区域，与变换相互独立。裁剪片段会从真正的转场回退为淡入淡出近似。',
+			'export.codecProres': 'ProRes（.mov）',
+			'export.codecVp9': 'VP9 / WebM（.webm）',
+			'export.extensionHint': '输出扩展名：{ext}',
+			'export.proresHint': 'ProRes 会忽略 CRF 值（基于 profile/码率）。',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -2911,6 +3234,456 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		function ProjectSearch(props) {
+			const { t, onOpenResult } = props;
+			const [query, setQuery] = React.useState('');
+			const [submitted, setSubmitted] = React.useState('');
+			const [results, setResults] = React.useState(null);
+			const [loading, setLoading] = React.useState(false);
+			const [error, setError] = React.useState(null);
+			const runSearch = async (event) => {
+				if (event && typeof event.preventDefault === 'function') event.preventDefault();
+				const needle = query.trim();
+				if (needle.length === 0) {
+					setSubmitted('');
+					setResults(null);
+					setError(null);
+					return;
+				}
+				setLoading(true);
+				setError(null);
+				try {
+					const data = await hostPost('search', { query: needle });
+					setResults(data && Array.isArray(data.results) ? data.results : []);
+					setSubmitted(needle);
+				} catch (issue) {
+					setError(t('search.error', { message: issue && issue.message ? issue.message : String(issue) }));
+					setResults(null);
+				} finally {
+					setLoading(false);
+				}
+			};
+			const clearSearch = () => {
+				setQuery('');
+				setSubmitted('');
+				setResults(null);
+				setError(null);
+			};
+			const renderGroup = (title, list) =>
+				list.length === 0
+					? null
+					: h(
+							'div',
+							{ className: 'ots-search-group' },
+							h('div', { className: 'ots-search-group-title' }, title),
+							list.map((result, index) =>
+								h(
+									'button',
+									{
+										type: 'button',
+										key: `${result.kind || 'result'}-${result.mediaId || ''}-${index}`,
+										className: 'ots-search-result',
+										title: result.snippet || result.name,
+										onClick: () => onOpenResult(result),
+									},
+									h('span', { className: 'ots-search-result-name' }, result.name || result.mediaId || ''),
+									h('span', { className: 'ots-search-result-snippet' }, result.snippet || ''),
+									Number.isFinite(Number(result.startSeconds))
+										? h('span', { className: 'ots-search-result-time' }, formatClock(Number(result.startSeconds)))
+										: null,
+								),
+							),
+						);
+			const mediaResults = results ? results.filter((result) => result.kind !== 'transcript') : [];
+			const transcriptResults = results ? results.filter((result) => result.kind === 'transcript') : [];
+			return h(
+				'div',
+				{ className: 'ots-search' },
+				h(
+					'form',
+					{ className: 'ots-search-row', onSubmit: runSearch },
+					h('input', {
+						className: 'ots-input',
+						type: 'search',
+						value: query,
+						placeholder: t('search.placeholder'),
+						'aria-label': t('search.placeholder'),
+						onChange: (event) => setQuery(event.target.value),
+					}),
+					h(
+						'button',
+						{ type: 'submit', className: 'ots-btn ots-btn-outline', disabled: loading },
+						loading ? t('search.loading') : t('search.action'),
+					),
+					submitted.length > 0 ? h(Btn, { variant: 'ghost', onClick: clearSearch }, t('search.clear')) : null,
+				),
+				loading ? h('div', { className: 'ots-library-status', role: 'status' }, t('search.loading')) : null,
+				error ? h('div', { className: 'ots-search-error', role: 'alert' }, error) : null,
+				results && !loading
+					? results.length === 0
+						? h('div', { className: 'ots-library-status' }, t('search.noResults', { query: submitted }))
+						: h(
+								'div',
+								{ className: 'ots-search-results' },
+								renderGroup(t('search.transcripts'), transcriptResults),
+								renderGroup(t('search.media'), mediaResults),
+							)
+					: null,
+			);
+		}
+
+		function TranscriptsPanel(props) {
+			const { t, asr, onCreateCaptions } = props;
+			const [transcripts, setTranscripts] = React.useState([]);
+			const [loading, setLoading] = React.useState(true);
+			const [error, setError] = React.useState(null);
+			const load = async () => {
+				setLoading(true);
+				setError(null);
+				try {
+					const data = await hostRequest('transcripts');
+					setTranscripts(data && Array.isArray(data.transcripts) ? data.transcripts : []);
+				} catch (issue) {
+					setError(t('transcribe.loadError', { message: issue && issue.message ? issue.message : String(issue) }));
+				} finally {
+					setLoading(false);
+				}
+			};
+			React.useEffect(() => {
+				void load();
+			}, []);
+			const configured = asrConfigured(asr);
+			const keyRef = asrKeyRef(asr);
+			const asrDetails = asr
+				? [
+						{ key: t('transcribe.endpoint'), value: asr.url || '—' },
+						{ key: t('transcribe.model'), value: asr.model || '—' },
+						{ key: t('transcribe.language'), value: asr.language || 'auto' },
+						{ key: t('transcribe.keyRef'), value: asr.keyRef || keyRef },
+						{ key: t('transcribe.loopback'), value: asr.loopback ? t('common.yes') : t('common.no') },
+					]
+				: [];
+			return h(
+				'div',
+				{ className: 'ots-transcripts' },
+				h(
+					'div',
+					{ className: 'ots-asr-card', 'data-configured': configured ? 'true' : 'false' },
+					h(
+						'div',
+						{ className: 'ots-asr-head' },
+						h('span', { className: 'ots-asr-title' }, t('transcribe.asrTitle')),
+						h(
+							'span',
+							{ className: 'ots-pill', 'data-ok': configured ? 'true' : 'false' },
+							h('span', { className: 'ots-pill-dot' }),
+							configured ? t('transcribe.asrReady') : t('transcribe.asrMissing'),
+						),
+					),
+					asr && asr.error ? h('p', { className: 'ots-note', 'data-warn': 'true' }, asr.error) : null,
+					!configured ? h('p', { className: 'ots-note', 'data-warn': 'true' }, t('transcribe.asrHint', { keyRef })) : null,
+					asr
+						? h(
+								'div',
+								{ className: 'ots-asr-details' },
+								asrDetails.map((row) =>
+									h(
+										'div',
+										{ className: 'ots-asr-row', key: row.key },
+										h('span', { className: 'ots-asr-key' }, row.key),
+										h('span', { className: 'ots-asr-value', title: row.value }, row.value),
+									),
+								),
+							)
+						: h('p', { className: 'ots-note' }, t('transcribe.asrUnknown')),
+				),
+				h(
+					'div',
+					{ className: 'ots-library-actions-row' },
+					h('span', { className: 'ots-library-group-title' }, t('transcribe.transcriptsTitle')),
+					h(Btn, { variant: 'outline', onClick: () => void load(), disabled: loading }, t('transcribe.refresh')),
+				),
+				loading
+					? h('div', { className: 'ots-library-status', role: 'status' }, t('transcribe.loading'))
+					: error
+						? h(
+								'div',
+								{ className: 'ots-library-status ots-library-error', role: 'alert' },
+								h('span', {}, error),
+								h(Btn, { variant: 'outline', onClick: () => void load() }, t('library.retry')),
+							)
+						: transcripts.length === 0
+							? h(
+									'div',
+									{ className: 'ots-media-empty' },
+									h('span', { className: 'ots-media-empty-title' }, t('transcribe.empty')),
+									h('span', {}, t('transcribe.emptyHint')),
+								)
+							: h(
+									'div',
+									{ className: 'ots-transcript-list' },
+									transcripts.map((transcript) => {
+										const created = Number(transcript.createdAt);
+										return h(
+											'div',
+											{ className: 'ots-transcript-row', key: transcript.mediaId || transcript.mediaName },
+											h(
+												'div',
+												{ className: 'ots-transcript-row-head' },
+												h('span', { className: 'ots-transcript-name', title: transcript.mediaName }, transcript.mediaName || transcript.mediaId || ''),
+												h('span', { className: 'ots-transcript-meta' }, t('transcribe.segmentCount', { count: Array.isArray(transcript.segments) ? transcript.segments.length : 0 })),
+											),
+											h(
+												'div',
+												{ className: 'ots-transcript-meta' },
+												[transcript.language || null, transcript.model || null, Number.isFinite(created) && created > 0 ? new Date(created).toLocaleString() : null]
+													.filter(Boolean)
+													.join(' · '),
+											),
+											typeof transcript.text === 'string' && transcript.text.length > 0
+												? h('p', { className: 'ots-transcript-snippet' }, transcript.text.slice(0, 220))
+												: null,
+											h(
+												ButtonRow,
+												null,
+												h(Btn, { variant: 'outline', onClick: () => onCreateCaptions(transcript) }, t('transcribe.createCaptions')),
+											),
+										);
+									}),
+								),
+			);
+		}
+
+		function ButtonRow(props) {
+			return h('div', { className: 'ots-library-actions-row' }, props.children);
+		}
+
+		function GeneratePanel(props) {
+			const { t, generation, onState, showNotice, onGenerated } = props;
+			const [providers, setProviders] = React.useState(generation || null);
+			const [imagePrompt, setImagePrompt] = React.useState('');
+			const [imageSize, setImageSize] = React.useState('1024x1024');
+			const [speechText, setSpeechText] = React.useState('');
+			const [voice, setVoice] = React.useState('alloy');
+			const [speechModel, setSpeechModel] = React.useState('');
+			const [busy, setBusy] = React.useState(null);
+			const [error, setError] = React.useState(null);
+			React.useEffect(() => {
+				let active = true;
+				hostRequest('generate/providers')
+					.then((data) => {
+						if (active) setProviders(data);
+					})
+					.catch(() => {
+						/* fall back to state.generation */
+					});
+				return () => {
+					active = false;
+				};
+			}, []);
+			const current = providers || generation || null;
+			const imageInfo = current && current.image ? current.image : null;
+			const speechInfo = current && current.speech ? current.speech : null;
+			const imageConfigured = !imageInfo || imageInfo.configured !== false;
+			const speechConfigured = !speechInfo || speechInfo.configured !== false;
+			const anyMissing = (imageInfo && imageInfo.configured === false) || (speechInfo && speechInfo.configured === false);
+			const renderProvider = (label, info) =>
+				h(
+					'div',
+					{ className: 'ots-generate-provider' },
+					h('span', { className: 'ots-generate-provider-name' }, label),
+					h(
+						'span',
+						{ className: 'ots-generate-provider-id', title: info && info.baseUrl ? info.baseUrl : '' },
+						info ? `${info.model || '—'}${info.baseUrl ? ` · ${info.baseUrl}` : ''}` : t('generate.unknown'),
+					),
+					h(
+						'span',
+						{ className: 'ots-pill', 'data-ok': info && info.configured === false ? 'false' : 'true' },
+						h('span', { className: 'ots-pill-dot' }),
+						info && info.configured === false ? t('generate.notConfigured') : t('generate.configured'),
+					),
+				);
+			const runImage = async () => {
+				const prompt = imagePrompt.trim();
+				if (prompt.length === 0 || busy !== null) return;
+				setBusy('image');
+				setError(null);
+				try {
+					const payload = await hostPost('generate/image', { prompt, size: imageSize });
+					if (typeof onState === 'function') onState(payload);
+					setImagePrompt('');
+					showNotice(t('generate.imageDone'));
+					if (typeof onGenerated === 'function') onGenerated();
+				} catch (issue) {
+					setError(t('generate.error', { message: issue && issue.message ? issue.message : String(issue) }));
+				} finally {
+					setBusy(null);
+				}
+			};
+			const runSpeech = async () => {
+				const text = speechText.trim();
+				if (text.length === 0 || busy !== null) return;
+				setBusy('speech');
+				setError(null);
+				try {
+					const body = { text, voice };
+					if (speechModel.trim().length > 0) body.model = speechModel.trim();
+					const payload = await hostPost('generate/tts', body);
+					if (typeof onState === 'function') onState(payload);
+					setSpeechText('');
+					showNotice(t('generate.speechDone'));
+					if (typeof onGenerated === 'function') onGenerated();
+				} catch (issue) {
+					setError(t('generate.error', { message: issue && issue.message ? issue.message : String(issue) }));
+				} finally {
+					setBusy(null);
+				}
+			};
+			return h(
+				'div',
+				{ className: 'ots-generate' },
+				h(
+					'div',
+					{ className: 'ots-generate-card' },
+					h(
+						'div',
+						{ className: 'ots-generate-head' },
+						h('span', { className: 'ots-generate-title' }, t('generate.providers')),
+					),
+					renderProvider(t('generate.imageProvider'), imageInfo),
+					renderProvider(t('generate.speechProvider'), speechInfo),
+					!current ? h('p', { className: 'ots-note' }, t('generate.unknown')) : null,
+					anyMissing ? h('p', { className: 'ots-note', 'data-warn': 'true' }, t('generate.hint')) : null,
+				),
+				error ? h('div', { className: 'ots-generate-error', role: 'alert' }, error) : null,
+				busy ? h('div', { className: 'ots-library-status', role: 'status', 'aria-live': 'polite' }, t('generate.working')) : null,
+				h(
+					'div',
+					{ className: 'ots-generate-card' },
+					h(
+						'div',
+						{ className: 'ots-generate-head' },
+						h('span', { className: 'ots-generate-title' }, t('generate.imageTitle')),
+						h(
+							'span',
+							{ className: 'ots-pill', 'data-ok': imageConfigured ? 'true' : 'false' },
+							h('span', { className: 'ots-pill-dot' }),
+							imageConfigured ? t('generate.configured') : t('generate.notConfigured'),
+						),
+					),
+					h('textarea', {
+						className: 'ots-textarea',
+						value: imagePrompt,
+						placeholder: t('generate.imagePromptPlaceholder'),
+						'aria-label': t('generate.imagePrompt'),
+						onChange: (event) => setImagePrompt(event.target.value),
+					}),
+					h(
+						'label',
+						{ className: 'ots-field' },
+						h('span', { className: 'ots-field-label' }, t('generate.imageSize')),
+						h(
+							'select',
+							{
+								className: 'ots-select',
+								value: imageSize,
+								'aria-label': t('generate.imageSize'),
+								onChange: (event) => setImageSize(event.target.value),
+							},
+							['1024x1024', '1024x1536', '1536x1024'].map((size) =>
+								h('option', { key: size, value: size }, size.replace('x', ' × ')),
+							),
+						),
+					),
+					h(
+						'div',
+						{ className: 'ots-generate-actions' },
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'ots-btn ots-btn-primary',
+								disabled: busy !== null || imagePrompt.trim().length === 0 || !imageConfigured,
+								onClick: runImage,
+							},
+							busy === 'image' ? t('generate.working') : t('generate.imageAction'),
+						),
+					),
+				),
+				h(
+					'div',
+					{ className: 'ots-generate-card' },
+					h(
+						'div',
+						{ className: 'ots-generate-head' },
+						h('span', { className: 'ots-generate-title' }, t('generate.speechTitle')),
+						h(
+							'span',
+							{ className: 'ots-pill', 'data-ok': speechConfigured ? 'true' : 'false' },
+							h('span', { className: 'ots-pill-dot' }),
+							speechConfigured ? t('generate.configured') : t('generate.notConfigured'),
+						),
+					),
+					h('textarea', {
+						className: 'ots-textarea',
+						value: speechText,
+						placeholder: t('generate.speechTextPlaceholder'),
+						'aria-label': t('generate.speechText'),
+						onChange: (event) => setSpeechText(event.target.value),
+					}),
+					h(
+						'div',
+						{ className: 'ots-field-grid' },
+						h(
+							'label',
+							{ className: 'ots-field' },
+							h('span', { className: 'ots-field-label' }, t('generate.voice')),
+							h(
+								'select',
+								{
+									className: 'ots-select',
+									value: voice,
+									'aria-label': t('generate.voice'),
+									onChange: (event) => setVoice(event.target.value),
+								},
+								['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse'].map((name) =>
+									h('option', { key: name, value: name }, name),
+								),
+							),
+						),
+						h(
+							'label',
+							{ className: 'ots-field' },
+							h('span', { className: 'ots-field-label' }, t('generate.model')),
+							h('input', {
+								className: 'ots-input',
+								type: 'text',
+								value: speechModel,
+								placeholder: speechInfo && speechInfo.model ? speechInfo.model : t('generate.modelPlaceholder'),
+								'aria-label': t('generate.model'),
+								onChange: (event) => setSpeechModel(event.target.value),
+							}),
+						),
+					),
+					h(
+						'div',
+						{ className: 'ots-generate-actions' },
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'ots-btn ots-btn-primary',
+								disabled: busy !== null || speechText.trim().length === 0 || !speechConfigured,
+								onClick: runSpeech,
+							},
+							busy === 'speech' ? t('generate.working') : t('generate.speechAction'),
+						),
+					),
+				),
+			);
+		}
+
 		function MediaLibrary(props) {
 			const {
 				t,
@@ -2924,16 +3697,92 @@ window.__ModuleLoader__.load({
 				pickDirectory,
 				onLibraryState,
 				showNotice,
+				asr,
+				generation,
+				onOpenSearchResult,
+				onCreateCaptionsFromTranscript,
 			} = props;
 			const [tab, setTab] = React.useState('project');
+			const [transcribingId, setTranscribingId] = React.useState(null);
+			const [transcribeError, setTranscribeError] = React.useState(null);
+			const [transcriptPreview, setTranscriptPreview] = React.useState(null);
 			const media = project ? project.media : [];
 			const fps = project ? project.fps : 30;
+			const asrReady = !asr || asrConfigured(asr);
+			const fetchTranscriptFor = async (mediaId) => {
+				const data = await hostRequest('transcripts');
+				const list = data && Array.isArray(data.transcripts) ? data.transcripts : [];
+				return list.find((transcript) => transcript && transcript.mediaId === mediaId) || null;
+			};
+			const runTranscribe = async (item, createCaptions) => {
+				if (transcribingId !== null) return;
+				setTranscribingId(item.id);
+				setTranscribeError(null);
+				try {
+					const response = await hostPost('transcribe', {
+						mediaId: item.id,
+						createCaptions: createCaptions === true,
+					});
+					let transcript = response && response.transcript ? response.transcript : null;
+					if (response && response.version === 1 && 'project' in response) {
+						if (typeof onLibraryState === 'function') onLibraryState(response);
+						try {
+							transcript = await fetchTranscriptFor(item.id);
+						} catch (issue) {
+							transcript = null;
+						}
+						showNotice(t('transcribe.captionsAdded', { name: item.name }));
+					} else if (transcript) {
+						showNotice(t('transcribe.done', { name: item.name }));
+					} else {
+						showNotice(t('transcribe.noCaptions', { name: item.name }));
+					}
+					setTranscriptPreview({ mediaId: item.id, mediaName: item.name, transcript });
+				} catch (issue) {
+					const raw = issue && issue.message ? issue.message : String(issue);
+					setTranscribeError(t('transcribe.error', { name: item.name, message: raw }));
+				} finally {
+					setTranscribingId(null);
+				}
+			};
 			const handleDrop = (event) => {
 				event.preventDefault();
 				if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length > 0) {
 					onDropFiles(event.dataTransfer.files);
 				}
 			};
+			const transcriptPreviewPanel = transcriptPreview
+				? h(
+						'div',
+						{ className: 'ots-transcript-preview' },
+						h(
+							'div',
+							{ className: 'ots-transcript-preview-head' },
+							h('strong', {}, t('transcribe.preview', { name: transcriptPreview.mediaName || '' })),
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'ots-mini',
+									onClick: () => setTranscriptPreview(null),
+									title: t('transcribe.closePreview'),
+									'aria-label': t('transcribe.closePreview'),
+								},
+								'\u00d7',
+							),
+						),
+						transcriptPreview.transcript
+							? transcriptPreviewLines(transcriptPreview.transcript, 4).map((line, index) =>
+									h(
+										'div',
+										{ className: 'ots-transcript-preview-seg', key: index },
+										h('span', { className: 'ots-transcript-preview-time' }, line.time),
+										h('span', {}, line.text),
+									),
+								)
+							: h('p', { className: 'ots-note' }, t('transcribe.noTranscriptPreview')),
+					)
+				: null;
 			const projectContent =
 				media.length === 0
 					? h(
@@ -2999,6 +3848,35 @@ window.__ModuleLoader__.load({
 											),
 										),
 									),
+									item.kind === 'video' || item.kind === 'audio'
+										? h(
+												'div',
+												{ className: 'ots-media-actions' },
+												h(
+													'button',
+													{
+														type: 'button',
+														className: 'ots-mini',
+														disabled: transcribingId !== null || !asrReady,
+														title: asrReady ? t('transcribe.actionTitle') : t('transcribe.asrHint', { keyRef: asrKeyRef(asr) }),
+														onClick: () => void runTranscribe(item, true),
+													},
+													transcribingId === item.id ? t('transcribe.busy') : t('transcribe.action'),
+												),
+												h(
+													'button',
+													{
+														type: 'button',
+														className: 'ots-mini',
+														disabled: transcribingId !== null || !asrReady,
+														title: t('transcribe.onlyTitle'),
+														'aria-label': t('transcribe.onlyTitle'),
+														onClick: () => void runTranscribe(item, false),
+													},
+													'T',
+												),
+											)
+										: null,
 								),
 							),
 						);
@@ -3050,6 +3928,30 @@ window.__ModuleLoader__.load({
 						},
 						t('library.tabLibrary'),
 					),
+					h(
+						'button',
+						{
+							type: 'button',
+							role: 'tab',
+							className: 'ots-media-tab',
+							'data-active': tab === 'transcripts' ? 'true' : 'false',
+							'aria-selected': tab === 'transcripts' ? 'true' : 'false',
+							onClick: () => setTab('transcripts'),
+						},
+						t('transcribe.tabTranscripts'),
+					),
+					h(
+						'button',
+						{
+							type: 'button',
+							role: 'tab',
+							className: 'ots-media-tab',
+							'data-active': tab === 'generate' ? 'true' : 'false',
+							'aria-selected': tab === 'generate' ? 'true' : 'false',
+							onClick: () => setTab('generate'),
+						},
+						t('generate.tab'),
+					),
 				),
 				h(
 					'div',
@@ -3062,19 +3964,58 @@ window.__ModuleLoader__.load({
 							if (tab === 'project') handleDrop(event);
 						},
 					},
-					tab === 'project'
-						? projectContent
-						: h(LibraryPanel, {
+					tab === 'library'
+						? h(LibraryPanel, {
 								t,
 								pickDirectory,
 								onState: onLibraryState,
 								showNotice,
 								ffmpegAvailable,
 								projectAvailable: Boolean(project),
-							}),
-					tab === 'project' && uploading
-						? h('div', { className: 'ots-panel-sub', role: 'status' }, uploading)
-						: null,
+							})
+						: tab === 'generate'
+							? h(GeneratePanel, {
+									t,
+									generation,
+									onState: onLibraryState,
+									showNotice,
+									onGenerated: () => setTab('project'),
+								})
+							: h(
+								ReactFragment,
+								null,
+								h(ProjectSearch, { t, onOpenResult: onOpenSearchResult }),
+								tab === 'project'
+									? h(
+											ReactFragment,
+											null,
+											!asrReady
+												? h(
+														'p',
+														{ className: 'ots-media-note', role: 'status' },
+														t('transcribe.asrHint', { keyRef: asrKeyRef(asr) }),
+													)
+												: null,
+											transcribeError
+												? h(Banner, {
+														message: transcribeError,
+														tone: 'error',
+														onDismiss: () => setTranscribeError(null),
+														dismissLabel: t('error.dismiss'),
+													})
+												: null,
+											transcriptPreviewPanel,
+											projectContent,
+											uploading
+												? h('div', { className: 'ots-panel-sub', role: 'status' }, uploading)
+												: null,
+										)
+									: h(TranscriptsPanel, {
+											t,
+											asr,
+											onCreateCaptions: onCreateCaptionsFromTranscript,
+										}),
+							),
 				),
 			);
 		}
@@ -4038,6 +4979,74 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		function CropEditor(props) {
+			const { t, clip, onSetCrop } = props;
+			const signature = JSON.stringify(clip.crop || null);
+			const [draft, setDraft] = React.useState(() => cropDraftFromClip(clip));
+			const syncKey = `${clip.id}:${signature}`;
+			React.useEffect(() => {
+				setDraft(cropDraftFromClip(clip));
+			}, [syncKey]);
+			const update = (patch) => setDraft((previous) => Object.assign({}, previous, patch));
+			const commit = () => onSetCrop(normalizeCropDraft(draft));
+			const reset = () => {
+				setDraft({ x: 0, y: 0, width: 1, height: 1 });
+				onSetCrop(null);
+			};
+			const activeCrop = clipCropOf(clip);
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'crop' },
+				h(
+					'div',
+					{ className: 'ots-subhead' },
+					h('h3', { className: 'ots-section-title' }, t('inspector.crop')),
+					h(
+						Btn,
+						{ variant: 'ghost', onClick: reset, disabled: !activeCrop },
+						t('inspector.cropReset'),
+					),
+				),
+				h(
+					'div',
+					{ className: 'ots-field-grid' },
+					h(NumberField, {
+						label: t('inspector.cropX'),
+						value: draft.x,
+						min: 0,
+						max: 1,
+						onChange: (value) => update({ x: value }),
+						onBlur: commit,
+					}),
+					h(NumberField, {
+						label: t('inspector.cropY'),
+						value: draft.y,
+						min: 0,
+						max: 1,
+						onChange: (value) => update({ y: value }),
+						onBlur: commit,
+					}),
+					h(NumberField, {
+						label: t('inspector.cropWidth'),
+						value: draft.width,
+						min: 0.01,
+						max: 1,
+						onChange: (value) => update({ width: value }),
+						onBlur: commit,
+					}),
+					h(NumberField, {
+						label: t('inspector.cropHeight'),
+						value: draft.height,
+						min: 0.01,
+						max: 1,
+						onChange: (value) => update({ height: value }),
+						onBlur: commit,
+					}),
+				),
+				h('p', { className: 'ots-field-hint' }, t('inspector.cropHint')),
+			);
+		}
+
 		function Inspector(props) {
 			const {
 				t,
@@ -4052,6 +5061,7 @@ window.__ModuleLoader__.load({
 				onPropertyCommit,
 				onTextChange,
 				onTextCommit,
+				onSetCrop,
 				onAddText,
 				onSpeedChange,
 				onFadeChange,
@@ -4342,6 +5352,7 @@ window.__ModuleLoader__.load({
 							h('p', { className: 'ots-field-hint' }, t('inspector.normalized')),
 						),
 					);
+					body.push(h(CropEditor, { t, clip, onSetCrop }));
 				}
 				if (isText) {
 					const text = draft || draftFromClip(clip);
@@ -5221,7 +6232,14 @@ window.__ModuleLoader__.load({
 				: '';
 			const exportSummary = exportSettings
 				? t('export.summary', {
-						codec: t(exportSettings.codec === 'h265' ? 'export.codecH265' : 'export.codecH264'),
+						codec:
+							exportSettings.codec === 'h265'
+								? t('export.codecH265')
+								: exportSettings.codec === 'prores'
+									? t('export.codecProres')
+									: exportSettings.codec === 'vp9'
+										? t('export.codecVp9')
+										: t('export.codecH264'),
 						width: exportSettings.width,
 						height: exportSettings.height,
 						fps: exportSettings.fps,
@@ -5278,13 +6296,15 @@ window.__ModuleLoader__.load({
 									'select',
 									{
 										className: 'ots-select',
-										value: dialog.codec === 'h265' ? 'h265' : 'h264',
+										value: ['h264', 'h265', 'prores', 'vp9'].includes(dialog.codec) ? dialog.codec : 'h264',
 										'aria-label': t('export.codec'),
 										title: t('export.codec'),
 										onChange: (event) => onPatch({ codec: event.target.value }),
 									},
 									h('option', { value: 'h264' }, t('export.codecH264')),
 									h('option', { value: 'h265' }, t('export.codecH265')),
+									h('option', { value: 'prores' }, t('export.codecProres')),
+									h('option', { value: 'vp9' }, t('export.codecVp9')),
 								),
 							),
 							h(
@@ -5425,6 +6445,10 @@ window.__ModuleLoader__.load({
 							{ className: 'ots-export-summary', key: 'summary' },
 							h('strong', {}, t('export.estimated')),
 							h('div', {}, exportSummary),
+							h('div', {}, t('export.extensionHint', { ext: exportSettings.extension })),
+							exportSettings.codec === 'prores'
+								? h('div', { className: 'ots-note' }, t('export.proresHint'))
+								: null,
 						),
 					]
 				: [];
@@ -6027,7 +7051,7 @@ window.__ModuleLoader__.load({
 			const handleExport = () => {
 				const projectValue = projectRef.current;
 				if (!projectValue) return;
-				const suggested = suggestedExportName(projectValue);
+				const suggested = suggestedExportName(projectValue, 'h264');
 				setDialog({
 					mode: 'export',
 					path: '',
@@ -6224,6 +7248,11 @@ window.__ModuleLoader__.load({
 				if (!clipId) return;
 				void runEdit([{ type: 'set-fades', clipId, ...patch }]);
 			};
+			const handleSetCrop = (crop) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'set-crop', clipId, crop }]);
+			};
 			const handleSetKeyframes = (property, keyframes) => {
 				const clipId = primaryClipIdRef.current;
 				if (!clipId) return;
@@ -6293,6 +7322,38 @@ window.__ModuleLoader__.load({
 				const clipId = primaryClipIdRef.current;
 				if (!clipId) return;
 				void runEdit([{ type: 'update-caption', clipId, ...patch }]);
+			};
+			const handleOpenSearchResult = (result) => {
+				if (!result) return;
+				const projectValue = projectRef.current;
+				if (!projectValue) return;
+				const fps = Math.max(1, Number(projectValue.fps) || 30);
+				let selectedClip = null;
+				if (typeof result.mediaId === 'string') {
+					for (const row of allClips(projectValue)) {
+						if (row.clip.mediaId === result.mediaId) {
+							selectedClip = row.clip;
+							setSelectedClipIds([row.clip.id]);
+							break;
+						}
+					}
+				}
+				if (Number.isFinite(Number(result.startSeconds))) {
+					seekToFrame(Math.round(Number(result.startSeconds) * fps));
+				} else if (selectedClip) {
+					seekToFrame(selectedClip.startFrame);
+				}
+			};
+			const handleCreateCaptionsFromTranscript = async (transcript) => {
+				const projectValue = projectRef.current;
+				if (!projectValue) return;
+				const operation = transcriptCaptionOperation(transcript, projectValue);
+				if (operation === null) {
+					showNotice(t('transcribe.emptyTranscript'));
+					return;
+				}
+				const payload = await runEdit([operation], { selectNew: (clip) => clip.type === 'caption' });
+				if (payload) showNotice(t('transcribe.captionsCreated', { name: transcript && transcript.mediaName ? transcript.mediaName : '' }));
 			};
 			const handleImportCaptions = async (content) => {
 				const previous = projectRef.current;
@@ -6491,7 +7552,7 @@ window.__ModuleLoader__.load({
 					if (picked === null) return;
 					const next = Object.assign({}, current, { error: null });
 					if (current.mode === 'export') {
-						next.path = joinPath(picked, current.name || suggestedExportName(projectRef.current));
+						next.path = joinPath(picked, suggestedExportName(projectRef.current, current.codec));
 					} else {
 						next.path = picked;
 					}
@@ -6734,6 +7795,10 @@ window.__ModuleLoader__.load({
 										pickDirectory,
 										onLibraryState: absorb,
 										showNotice,
+										asr: snapshot ? snapshot.asr : null,
+										generation: snapshot ? snapshot.generation : null,
+										onOpenSearchResult: handleOpenSearchResult,
+										onCreateCaptionsFromTranscript: handleCreateCaptionsFromTranscript,
 										onImport: handleImport,
 										onAddMedia: handleAddMedia,
 										onDropFiles: handleDropFiles,
@@ -6770,6 +7835,7 @@ window.__ModuleLoader__.load({
 										onAddText: handleAddText,
 										onSpeedChange: handleSetSpeed,
 										onFadeChange: handleSetFades,
+										onSetCrop: handleSetCrop,
 										onSetKeyframes: handleSetKeyframes,
 										onAddEffect: handleAddEffect,
 										onUpdateEffect: handleUpdateEffect,

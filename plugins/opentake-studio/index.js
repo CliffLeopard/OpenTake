@@ -29,7 +29,7 @@ import {
   probeMedia,
   resolveTools,
 } from './lib/media.js';
-import { runExport } from './lib/export.js';
+import { defaultExtensionForCodec, runExport } from './lib/export.js';
 import { captionClipFromSegments, parseSubtitles, projectCaptionSegments, serializeSubtitles } from './lib/captions.js';
 import {
   addLibraryItemToProject,
@@ -41,6 +41,14 @@ import {
   listLibrary,
   updateLibraryItem,
 } from './lib/library.js';
+import {
+  TRANSCRIPT_CAPTION_STYLE,
+  readTranscripts,
+  transcribeMedia,
+  transcriptToCaptionSegments,
+  transcriptionSettings,
+} from './lib/transcribe.js';
+import { generateImage, generateSpeech, generationProviders } from './lib/generate.js';
 
 export const name = 'opentake-studio';
 export const inject = ['tools', 'webServer', 'connection'];
@@ -221,6 +229,20 @@ export function apply(ctx) {
   }
 
   async function buildState() {
+    let asrInfo = null;
+    try {
+      const settings = transcriptionSettings();
+      asrInfo = {
+        url: settings.url,
+        model: settings.model,
+        keyRef: settings.keyRef,
+        language: settings.language ?? null,
+        loopback: settings.loopback,
+        configured: settings.loopback || (process.env[settings.keyRef]?.length ?? 0) > 0,
+      };
+    } catch {
+      asrInfo = { configured: false, error: 'invalid-asr-url' };
+    }
     let ffmpeg;
     try {
       ffmpeg = await resolveTools();
@@ -238,6 +260,8 @@ export function apply(ctx) {
       saveError: state.saveError,
       lastError: state.lastError,
       pluginVersion: PLUGIN_VERSION,
+      ...(asrInfo === null ? {} : { asr: asrInfo }),
+      generation: await generationProviders(ctx),
     };
   }
 
@@ -728,6 +752,7 @@ export function apply(ctx) {
             ? { keyframes: clip.keyframes }
             : {}),
           ...(clip.caption === undefined ? {} : { caption: clip.caption }),
+          ...(clip.crop === undefined ? {} : { crop: clip.crop }),
         })),
       })),
       ...(project.markers === undefined ? {} : { markers: project.markers }),
@@ -908,6 +933,84 @@ export function apply(ctx) {
     res.end(data);
   }
 
+  async function generateProjectImage(input) {
+    const project = ensureProject();
+    const media = await generateImage({
+      ctx,
+      projectRoot: state.paths.root,
+      prompt: input.prompt,
+      size: input.size,
+    });
+    void project;
+    return applyOperations([{ type: 'add-media', media }]);
+  }
+
+  async function generateProjectSpeech(input) {
+    const project = ensureProject();
+    const media = await generateSpeech({
+      ctx,
+      project,
+      projectRoot: state.paths.root,
+      text: input.text,
+      voice: input.voice,
+      model: input.model,
+    });
+    return applyOperations([{ type: 'add-media', media }]);
+  }
+
+  async function transcribeProjectMedia(input) {
+    const project = ensureProject();
+    const media = findMedia(project, input.mediaId);
+    if (media === null) throw new RouteError('Unknown media id', 'invalid-input');
+    const transcript = await transcribeMedia({
+      ctx,
+      project,
+      projectRoot: state.paths.root,
+      media,
+    });
+    let resultState = null;
+    if (input.createCaptions === true) {
+      const caption = transcriptToCaptionSegments(transcript, project.fps);
+      if (caption !== null) {
+        resultState = await applyOperations([
+          {
+            type: 'add-caption',
+            ...caption,
+            style: TRANSCRIPT_CAPTION_STYLE,
+          },
+        ]);
+      }
+    }
+    return { transcript, state: resultState };
+  }
+
+  async function searchProject(query) {
+    const project = ensureProject();
+    const needle = String(query ?? '').trim().toLowerCase();
+    if (needle.length === 0) return { query: '', results: [] };
+    const results = [];
+    for (const media of project.media) {
+      if (media.name.toLowerCase().includes(needle)) {
+        results.push({ kind: 'media', mediaId: media.id, name: media.name, snippet: media.name });
+      }
+    }
+    const transcripts = await readTranscripts(state.paths.root);
+    for (const transcript of transcripts) {
+      if (transcript.text.toLowerCase().includes(needle)) {
+        const hit = transcript.segments.find((segment) => segment.text.toLowerCase().includes(needle));
+        results.push({
+          kind: 'transcript',
+          mediaId: transcript.mediaId,
+          name: transcript.mediaName,
+          startSeconds: hit?.startSeconds ?? 0,
+          endSeconds: hit?.endSeconds ?? 0,
+          snippet: hit?.text ?? transcript.text.slice(0, 160),
+        });
+      }
+    }
+    return { query, results };
+  }
+
   async function importCaptions(input) {
     const project = ensureProject();
     const text = typeof input.text === 'string' ? input.text : '';
@@ -938,7 +1041,8 @@ export function apply(ctx) {
     if (typeof input.path === 'string' && input.path.trim().length > 0) {
       output = path.resolve(input.path);
     } else {
-      output = path.join(state.paths.exportsDir, `${slugify(project.name)}-${Date.now()}.mp4`);
+      const extension = defaultExtensionForCodec(input.codec ?? 'h264');
+      output = path.join(state.paths.exportsDir, `${slugify(project.name)}-${Date.now()}${extension}`);
     }
     if (existsSync(output) && input.overwrite !== true) {
       throw new RouteError('The output file already exists; pass overwrite:true to replace it', 'output-exists', 409);
@@ -1012,15 +1116,25 @@ export function apply(ctx) {
         return 409;
       case 'project-not-found':
       case 'media-not-found':
+      case 'library-item-not-found':
         return 404;
       case 'no-project':
         return 409;
       case 'ffmpeg-unavailable':
+      case 'asr-unavailable':
+      case 'generation-unavailable':
+      case 'encoder-unavailable':
         return 503;
+      case 'asr-failed':
+      case 'generation-failed':
+        return 502;
       case 'invalid-input':
       case 'invalid-project':
       case 'model-error':
       case 'media-error':
+      case 'invalid-captions':
+      case 'invalid-library':
+      case 'library-path-escape':
         return 400;
       default:
         return 500;
@@ -1133,6 +1247,35 @@ export function apply(ctx) {
       if (sub === '/luts/upload' && req.method === 'POST') {
         const uploaded = await uploadLut(req, url.searchParams.get('name') ?? '');
         sendJson(res, 200, { ok: true, ...uploaded.data });
+        return;
+      }
+      if (sub === '/generate/providers' && req.method === 'GET') {
+        sendJson(res, 200, await generationProviders(ctx));
+        return;
+      }
+      if (sub === '/generate/image' && req.method === 'POST') {
+        sendJson(res, 200, await generateProjectImage(await readBoundedJson(req)));
+        return;
+      }
+      if (sub === '/generate/tts' && req.method === 'POST') {
+        sendJson(res, 200, await generateProjectSpeech(await readBoundedJson(req)));
+        return;
+      }
+      if (sub === '/transcribe' && req.method === 'POST') {
+        const body = await readBoundedJson(req);
+        const result = await transcribeProjectMedia(body);
+        sendJson(res, 200, result.state ?? { transcript: result.transcript });
+        return;
+      }
+      if (sub === '/transcripts' && req.method === 'GET') {
+        const transcripts = await readTranscripts(ensureProject() && state.paths.root);
+        sendJson(res, 200, { transcripts });
+        return;
+      }
+      if (sub === '/search' && req.method === 'POST') {
+        const body = await readBoundedJson(req);
+        const result = await searchProject(body.query);
+        sendJson(res, 200, result);
         return;
       }
       if (sub === '/captions/import' && req.method === 'POST') {
@@ -1344,6 +1487,76 @@ export function apply(ctx) {
     async (args) => {
       const exported = exportCaptions(args.format);
       return { text: exported.text, data: { format: exported.format } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_transcribe_media',
+    'Transcribe a project video/audio asset with the configured Whisper-compatible endpoint; optionally create a caption clip.',
+    {
+      type: 'object',
+      properties: {
+        mediaId: { type: 'string' },
+        createCaptions: { type: 'boolean' },
+      },
+      required: ['mediaId'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await transcribeProjectMedia(args);
+      return {
+        text: result.transcript.text,
+        data: { transcript: result.transcript, state: result.state ?? null },
+      };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_search',
+    'Search project media names and stored transcripts for a literal query.',
+    {
+      type: 'object',
+      properties: { query: { type: 'string' } },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await searchProject(args.query);
+      return { text: JSON.stringify(result.results), data: result };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_generate_image',
+    'Generate an image with the configured OpenAI-compatible provider and add it to the current project.',
+    {
+      type: 'object',
+      properties: { prompt: { type: 'string' }, size: { type: 'string' } },
+      required: ['prompt'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await generateProjectImage(args);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_generate_speech',
+    'Generate speech audio with the configured OpenAI-compatible provider and add it to the current project.',
+    {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        voice: { type: 'string' },
+        model: { type: 'string' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await generateProjectSpeech(args);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
     },
   );
 
@@ -1636,7 +1849,7 @@ export function apply(ctx) {
       properties: {
         path: { type: 'string' },
         overwrite: { type: 'boolean' },
-        codec: { type: 'string', enum: ['h264', 'h265'] },
+        codec: { type: 'string', enum: ['h264', 'h265', 'prores', 'vp9'] },
         width: { type: 'number' },
         height: { type: 'number' },
         fps: { type: 'number' },

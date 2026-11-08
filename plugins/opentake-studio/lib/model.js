@@ -60,6 +60,8 @@ const DEFAULT_CAPTION_STYLE = Object.freeze({
 });
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+/** Tolerance for normalized-rect edge sums (0.1 + 0.9 float noise). */
+const RECT_EPSILON = 1e-9;
 
 const DEFAULT_CLIP_TRANSFORM = Object.freeze({
   x: 0,
@@ -267,6 +269,33 @@ function normalizeTransform(value, code) {
     transform.rotation = requireFiniteNumber(value.rotation, code, 'transform.rotation');
   }
   return transform;
+}
+
+/**
+ * Normalize an optional crop rect. `null`/`undefined` means "no crop".
+ * A crop is frame-relative and independent of `transform`: x/y are the rect's
+ * top-left and width/height its size, all normalized to 0..1.
+ */
+function normalizeCrop(value, code) {
+  if (value === undefined || value === null) return null;
+  assertObject(value, code, 'crop');
+  const crop = { x: 0, y: 0, width: 1, height: 1 };
+  for (const key of ['x', 'y', 'width', 'height']) {
+    if (value[key] !== undefined) {
+      crop[key] = requireFiniteNumber(value[key], code, `crop.${key}`);
+    }
+  }
+  if (crop.x < 0 || crop.x > 1) fail(code, 'crop.x must be in [0,1]');
+  if (crop.y < 0 || crop.y > 1) fail(code, 'crop.y must be in [0,1]');
+  if (!(crop.width > 0) || crop.width > 1) fail(code, 'crop.width must be in (0,1]');
+  if (!(crop.height > 0) || crop.height > 1) fail(code, 'crop.height must be in (0,1]');
+  if (crop.x + crop.width > 1 + RECT_EPSILON) {
+    fail(code, 'crop.x + crop.width must be <= 1');
+  }
+  if (crop.y + crop.height > 1 + RECT_EPSILON) {
+    fail(code, 'crop.y + crop.height must be <= 1');
+  }
+  return crop;
 }
 
 /** Merge a partial transform patch onto an already valid transform. */
@@ -757,6 +786,8 @@ function normalizeClip(value) {
     fail(code, 'non-text clip must have text: null');
   }
 
+  const crop = normalizeCrop(value.crop, code);
+
   let caption = null;
   if (type === 'caption') {
     if (value.caption === undefined || value.caption === null) {
@@ -778,6 +809,7 @@ function normalizeClip(value) {
     volume,
     opacity,
     transform,
+    crop,
     text,
     fadeInFrames,
     fadeOutFrames,
@@ -1203,6 +1235,7 @@ function createClip({
   volume = 1,
   opacity = 1,
   transform = DEFAULT_CLIP_TRANSFORM,
+  crop = null,
   text = null,
   fadeInFrames = 0,
   fadeOutFrames = 0,
@@ -1221,6 +1254,7 @@ function createClip({
     volume,
     opacity,
     transform: { ...transform },
+    crop: crop === null ? null : { ...crop },
     text: text === null ? null : { ...text },
     fadeInFrames,
     fadeOutFrames,
@@ -1763,6 +1797,18 @@ function setClipPropertiesOperation(project, operation) {
   }
 }
 
+/**
+ * Set or clear a clip's normalized crop rect (Phase 6). `crop: null` clears it;
+ * omitting `crop` is an allowed no-op. Crop is independent of `transform`.
+ */
+function setCropOperation(project, operation) {
+  const clipId = requireId(operation.clipId, 'invalid-input', 'clipId');
+  const entry = findClip(project, clipId);
+  if (!entry) fail('clip-not-found', `clip not found: ${clipId}`);
+  if (operation.crop === undefined) return;
+  entry.clip.crop = operation.crop === null ? null : normalizeCrop(operation.crop, 'invalid-input');
+}
+
 function addTextOperation(project, operation) {
   const clipId = requireId(operation.clipId, 'invalid-input', 'clipId');
   if (findClip(project, clipId)) fail('duplicate-id', `clip id already exists: ${clipId}`);
@@ -2214,6 +2260,7 @@ const OPERATIONS = Object.freeze({
   'split-clip': splitClipOperation,
   'remove-clips': removeClipsOperation,
   'set-clip-properties': setClipPropertiesOperation,
+  'set-crop': setCropOperation,
   'add-text': addTextOperation,
   'update-text': updateTextOperation,
   'reorder-tracks': reorderTracksOperation,

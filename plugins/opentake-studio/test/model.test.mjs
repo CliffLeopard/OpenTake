@@ -3833,3 +3833,210 @@ describe('transform rotation range', () => {
     assert.equal(evaluateKeyframes(clipById(project, 'c1').keyframes.rotation, 50, 0), 0);
   });
 });
+
+// ===========================================================================
+// Phase 6: clip crop (normalized rect, independent of transform).
+// ===========================================================================
+
+describe('clip crop', () => {
+  const RECT = { x: 0.1, y: 0.2, width: 0.5, height: 0.6 };
+
+  it('defaults crop to null for every clip type', () => {
+    let project = phase1Fixture();
+    project = addClip(project, {
+      clipId: 'img',
+      mediaId: 'm-image',
+      trackId: 't-video2',
+      startFrame: 0,
+      durationFrames: 30,
+    });
+    project = addText(project, {
+      clipId: 'txt',
+      trackId: 't-video2',
+      startFrame: 100,
+      durationFrames: 30,
+    });
+    project = addCaption(project, {
+      clipId: 'cap',
+      trackId: 't-video2',
+      startFrame: 200,
+      durationFrames: 30,
+    });
+    for (const clipId of ['c1', 'img', 'txt', 'cap']) {
+      assert.equal(clipById(project, clipId).crop, null);
+    }
+  });
+
+  it('sets a normalized crop without touching transform or other clip fields', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-fades',
+      clipId: 'c1',
+      fadeInFrames: 5,
+    });
+    const before = clipById(project, 'c1');
+    const transformBefore = { ...before.transform };
+    const effectsBefore = JSON.stringify(before.effects);
+    project = applyOperation(project, { type: 'set-crop', clipId: 'c1', crop: RECT });
+    const clip = clipById(project, 'c1');
+    assert.deepEqual(clip.crop, RECT);
+    assert.deepEqual(clip.transform, transformBefore);
+    assert.equal(clip.fadeInFrames, 5);
+    assert.equal(JSON.stringify(clip.effects), effectsBefore);
+  });
+
+  it('clears with null and treats an omitted crop as a no-op', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'set-crop', clipId: 'c1', crop: RECT });
+    project = applyOperation(project, { type: 'set-crop', clipId: 'c1', crop: null });
+    assert.equal(clipById(project, 'c1').crop, null);
+
+    project = applyOperation(project, { type: 'set-crop', clipId: 'c1', crop: RECT });
+    const noop = applyOperation(project, { type: 'set-crop', clipId: 'c1' });
+    assert.deepEqual(clipById(noop, 'c1').crop, RECT);
+    assert.equal(typeof noop.updatedAt, 'number');
+  });
+
+  it('fills missing rect fields with full-frame defaults and strips unknown keys', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-crop',
+      clipId: 'c1',
+      crop: { width: 0.5, bogus: true },
+    });
+    assert.deepEqual(clipById(project, 'c1').crop, { x: 0, y: 0, width: 0.5, height: 1 });
+    project = applyOperation(project, {
+      type: 'set-crop',
+      clipId: 'c1',
+      crop: { x: 0.5, y: 0, width: 0.5, height: 1, bogus: 1 },
+    });
+    assert.deepEqual(clipById(project, 'c1').crop, { x: 0.5, y: 0, width: 0.5, height: 1 });
+  });
+
+  it('rejects invalid crop rects', () => {
+    const project = phase1Fixture();
+    const set = (crop) => applyOperation(project, { type: 'set-crop', clipId: 'c1', crop });
+    expectModelError(
+      () => applyOperation(project, { type: 'set-crop', clipId: 'ghost', crop: RECT }),
+      'clip-not-found',
+    );
+    expectModelError(() => applyOperation(project, { type: 'set-crop' }), 'invalid-input');
+    expectModelError(() => set('nope'), 'invalid-input');
+    expectModelError(() => set({ x: -0.1, y: 0, width: 0.5, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ x: 1.1, y: 0, width: 0.5, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ x: 0, y: 0, width: 0, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ x: 0, y: 0, width: 1.1, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ x: 0, y: 0, width: 0.5, height: 0 }), 'invalid-input');
+    expectModelError(() => set({ x: 0, y: 0, width: 0.5, height: 1.1 }), 'invalid-input');
+    expectModelError(() => set({ x: 0.8, y: 0, width: 0.5, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ x: 0, y: 0.8, width: 0.5, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ x: Number.NaN, y: 0, width: 0.5, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ x: 0, y: 0, width: Infinity, height: 0.5 }), 'invalid-input');
+    // Edge-touching rects are valid.
+    assert.doesNotThrow(() => set({ x: 0.5, y: 0.5, width: 0.5, height: 0.5 }));
+    assert.doesNotThrow(() => set({ x: 0, y: 0, width: 1, height: 1 }));
+  });
+
+  it('normalizes raw crop, strips unknown keys and keeps null when absent', () => {
+    const withCrop = normalizeProject(
+      mutatedRaw((value) => {
+        value.tracks[0].clips[0].crop = { x: 0.25, y: 0.1, width: 0.5, height: 0.4, bogus: 1 };
+      }),
+    );
+    const cropped = withCrop.tracks[0].clips.find((clip) => clip.id === 'c2');
+    assert.deepEqual(cropped.crop, { x: 0.25, y: 0.1, width: 0.5, height: 0.4 });
+
+    const plain = normalizeProject(rawProject());
+    assert.equal(plain.tracks[0].clips[0].crop, null);
+    assert.deepEqual(normalizeProject(withCrop), withCrop);
+
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.tracks[0].clips[0].crop = { x: 0.9, y: 0, width: 0.5, height: 0.5 };
+          }),
+        ),
+      'invalid-clip',
+    );
+  });
+
+  it('survives trims, moves, speed changes and keyframes', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'set-crop', clipId: 'c1', crop: RECT });
+    project = applyOperation(project, { type: 'set-keyframes', clipId: 'c1', property: 'opacity', keyframes: [{ frame: 0, value: 0.5 }] });
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'c1', durationFrames: 50 });
+    assert.deepEqual(clipById(project, 'c1').crop, RECT);
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'c1', trimStartFrame: 10 });
+    assert.deepEqual(clipById(project, 'c1').crop, RECT);
+    project = applyOperation(project, { type: 'move-clip', clipId: 'c1', startFrame: 50 });
+    assert.deepEqual(clipById(project, 'c1').crop, RECT);
+    project = applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 2 });
+    assert.deepEqual(clipById(project, 'c1').crop, RECT);
+    project = applyOperation(project, {
+      type: 'set-clip-properties',
+      clipIds: ['c1'],
+      transform: { rotation: 45 },
+    });
+    assert.deepEqual(clipById(project, 'c1').crop, RECT);
+    assert.equal(clipById(project, 'c1').transform.rotation, 45);
+  });
+
+  it('both split halves keep the crop (explicit and overlap splits)', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'set-crop', clipId: 'c1', crop: RECT });
+    project = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'c1',
+      atFrame: 40,
+      leftClipId: 'L',
+      rightClipId: 'R',
+    });
+    assert.deepEqual(clipById(project, 'L').crop, RECT);
+    assert.deepEqual(clipById(project, 'R').crop, RECT);
+
+    let overlap = fixture();
+    overlap = addClip(overlap, { clipId: 'old', startFrame: 0, durationFrames: 100 });
+    overlap = applyOperation(overlap, { type: 'set-crop', clipId: 'old', crop: RECT });
+    overlap = addClip(overlap, {
+      clipId: 'inside',
+      startFrame: 40,
+      durationFrames: 20,
+      splitRightClipId: 'old-right',
+    });
+    assert.deepEqual(clipById(overlap, 'old').crop, RECT);
+    assert.deepEqual(clipById(overlap, 'old-right').crop, RECT);
+  });
+
+  it('allows cropping text, caption and image clips', () => {
+    let project = fixture();
+    project = addClip(project, {
+      clipId: 'img',
+      mediaId: 'm-image',
+      trackId: 't-video2',
+      startFrame: 0,
+      durationFrames: 30,
+    });
+    project = addText(project, { clipId: 'txt', trackId: 't-video2', startFrame: 100, durationFrames: 30 });
+    project = addCaption(project, { clipId: 'cap', trackId: 't-video2', startFrame: 200, durationFrames: 30 });
+    for (const clipId of ['img', 'txt', 'cap']) {
+      project = applyOperation(project, { type: 'set-crop', clipId, crop: RECT });
+      assert.deepEqual(clipById(project, clipId).crop, RECT);
+    }
+    assert.equal(findClip(project, 'txt').clip.text.content, 'Hello');
+    assert.ok(findClip(project, 'cap').clip.caption.segments.length > 0);
+  });
+
+  it('is pure, deterministic and normalize-idempotent', () => {
+    const project = phase1Fixture();
+    const before = JSON.stringify(project);
+    const operation = { type: 'set-crop', clipId: 'c1', crop: RECT };
+    const operationBefore = JSON.stringify(operation);
+    const first = applyOperation(project, operation);
+    const second = applyOperation(project, operation);
+    assert.equal(JSON.stringify(project), before);
+    assert.equal(JSON.stringify(operation), operationBefore);
+    assert.deepEqual(first, second);
+    assert.deepEqual(normalizeProject(first), first);
+  });
+});
