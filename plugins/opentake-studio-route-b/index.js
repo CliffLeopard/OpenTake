@@ -233,7 +233,9 @@ export function apply(ctx) {
     const snapshot = JSON.parse(state.engine.getTimeline());
     const total = Math.max(1, snapshot.timeline.tracks.reduce((max, track) => Math.max(max, ...track.clips.map((clip) => clip.startFrame + clip.durationFrames)), 0));
     let frame = job.frame;
-    if (!job.paused) {
+    if (!job.paused && job.audioFrame !== null && Date.now() - job.audioAt < 750) {
+      frame = Math.max(0, Math.round(job.audioFrame));
+    } else if (!job.paused) {
       frame = job.startFrame + Math.floor(((Date.now() - job.startedAt) / 1000) * job.fps);
       if (frame >= total) {
         frame = Math.max(0, total - 1);
@@ -732,6 +734,8 @@ export function apply(ctx) {
           startedAt: Date.now(),
           fps: snapshot.timeline.fps || 30,
           sequence: 0,
+          audioFrame: null,
+          audioAt: 0,
           identity: playbackIdentity(cmd, args),
         };
         return null;
@@ -751,6 +755,8 @@ export function apply(ctx) {
           state.playback.frame = state.playback.startFrame;
           state.playback.startedAt = Date.now();
           state.playback.sequence = 0;
+          state.playback.audioFrame = null;
+          state.playback.audioAt = 0;
         }
         return null;
       case 'transcribe_model_status':
@@ -1167,6 +1173,15 @@ export function apply(ctx) {
       }
       if (sub === '/engine/motion/status' && req.method === 'GET') {
         sendJson(res, 200, state.motionJob ?? { active: false });
+        return;
+      }
+      if (sub === '/engine/playback/sync' && req.method === 'POST') {
+        const body = await readJson(req);
+        if (state.playback !== null && typeof body.frame === 'number' && Number.isFinite(body.frame)) {
+          state.playback.audioFrame = body.frame;
+          state.playback.audioAt = Date.now();
+        }
+        sendJson(res, 200, { ok: true });
         return;
       }
       if (sub === '/engine/playback/status' && req.method === 'GET') {

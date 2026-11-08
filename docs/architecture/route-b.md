@@ -92,8 +92,11 @@ by the DSH Host through N-API.
   returns `/engine/preview/frame`, `playback_start/seek/pause/stop` drive a
   wall-clock playhead, and the shim polls `/engine/playback/status` to emit
   `playback_frame`. The React preview renders frames as images; the shim also
-  plays a mixed mono WAV from `/engine/playback/audio`. Verified: play advanced
-  the UI playhead, rendered a frame, and the WAV served 2.0s pcm_s16le. A true
+  plays a mixed mono WAV from `/engine/playback/audio`. The shim reports
+  `audio.currentTime*fps` to `/engine/playback/sync`, making the audio element
+  the effective playhead clock while it is fresh; wall-clock remains fallback.
+  Verified: play advanced the UI playhead, rendered a frame, the WAV served
+  2.0s pcm_s16le, and an injected sync frame 42 became the status frame. A true
   cpal audio master clock is still not implemented.
 - Export sessions accept `rangeStartFrame`/`rangeEndFrame`: 60-frame source at
   frames 15..45 exported as a 1.0s H.264+AAC clip (verified).

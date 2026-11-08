@@ -10,6 +10,7 @@
   let motionPoll = null;
   let playbackAudio = null;
   let playbackAudioFps = 30;
+  let playbackAudioSync = null;
   let nextId = 1;
 
   function transformCallback(callback, once) {
@@ -109,6 +110,17 @@
         playbackAudio = new Audio(BASE + '/engine/playback/audio?t=' + Date.now());
         playbackAudio.play().catch(() => {});
         if (Number.isFinite(args?.identity?.fps)) playbackAudioFps = args.identity.fps;
+        if (playbackAudioSync !== null) clearInterval(playbackAudioSync);
+        playbackAudioSync = setInterval(() => {
+          if (playbackAudio === null || playbackAudio.paused) return;
+          const frame = Math.round(playbackAudio.currentTime * playbackAudioFps);
+          fetch(BASE + '/engine/playback/sync', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ frame }),
+          }).catch(() => {});
+        }, 200);
       } catch (error) { playbackAudio = null; }
       if (playbackPoll !== null) clearInterval(playbackPoll);
       playbackPoll = setInterval(async () => {
@@ -121,6 +133,7 @@
             playbackPoll = null;
             return;
           }
+          if (typeof status.fps === 'number' && status.fps > 0) playbackAudioFps = status.fps;
           if (status.paused) return;
           emitToListeners('playback_frame', {
             projectEpoch: status.projectEpoch,
@@ -140,6 +153,10 @@
       if (playbackAudio !== null) {
         playbackAudio.pause();
         if (cmd === 'playback_stop') playbackAudio = null;
+      }
+      if (playbackAudioSync !== null) {
+        clearInterval(playbackAudioSync);
+        playbackAudioSync = null;
       }
     }
     if (cmd === 'playback_seek' && playbackAudio !== null) {
