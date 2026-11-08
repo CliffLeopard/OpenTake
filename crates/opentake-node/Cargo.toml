@@ -17,6 +17,7 @@ opentake-domain = { workspace = true }
 opentake-ops = { workspace = true }
 opentake-media = { workspace = true }
 opentake-render = { workspace = true }
+opentake-project = { workspace = true }
 base64 = "0.22"
 velato = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }

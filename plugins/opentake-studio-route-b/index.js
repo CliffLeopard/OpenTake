@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v21.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v22.node');
 }
 
 function loadAddon() {
@@ -239,6 +239,21 @@ export function apply(ctx) {
       case 'import_media': {
         const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
         return importMedia(paths);
+      }
+      case 'export_xmeml':
+      case 'export_fcpxml':
+      case 'export_edl':
+      case 'export_otio':
+      case 'export_fcpxml_modern': {
+        const formats = {
+          export_xmeml: 'xmeml',
+          export_fcpxml: 'xmeml',
+          export_edl: 'edl',
+          export_otio: 'otio',
+          export_fcpxml_modern: 'fcpxml',
+        };
+        const written = state.engine.exportTimeline(String(args.path ?? ''), formats[cmd]);
+        return written;
       }
       case 'export_subtitles':
         return JSON.parse(state.engine.exportSubtitles(
@@ -702,6 +717,21 @@ export function apply(ctx) {
     async (args) => {
       const value = JSON.parse(ensureEngine().libraryImportToProject(args.id));
       return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_export_timeline',
+    'Write the timeline as XMEML/EDL/OTIO/FCPXML interchange.',
+    {
+      type: 'object',
+      properties: { path: { type: 'string' }, format: { type: 'string', enum: ['xmeml', 'edl', 'otio', 'fcpxml'] } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const written = ensureEngine().exportTimeline(args.path, args.format ?? 'xmeml');
+      return { text: written, data: { path: written } };
     },
   );
 

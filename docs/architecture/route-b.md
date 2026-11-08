@@ -28,6 +28,8 @@ by the DSH Host through N-API.
 - Lottie import supports both bodymovin `.json` and `.lottie` ZIP containers
   (`animations/*.json` extraction); a simple zipped shape renders in the
   composite.
+- Timeline interchange export writes XMEML (`.xml`), CMX3600 EDL, OpenTimelineIO
+  JSON and native FCPXML via `opentake-project`; all four verified.
 - Caption clips added through `EditRequest::AddCaptions` export to SRT/VTT via
   `opentake-domain`'s pure serializer; verified two cues at 30 fps.
 - Nested/compound sequences are supported through the extracted `EditRequest`

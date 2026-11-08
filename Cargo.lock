@@ -3909,6 +3909,7 @@ dependencies = [
  "opentake-domain",
  "opentake-media",
  "opentake-ops",
+ "opentake-project",
  "opentake-render",
  "serde",
  "serde_json",

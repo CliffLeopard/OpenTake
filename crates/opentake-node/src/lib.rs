@@ -862,6 +862,36 @@ impl Engine {
         result
     }
 
+    /// Write the timeline as an interchange document (`xmeml`, `edl`, `otio`,
+    /// `fcpxml`). Returns the written path.
+    #[napi]
+    pub fn export_timeline(&self, path: String, format: String) -> Result<String> {
+        let snapshot = self.core.get_timeline();
+        let manifest = self.core.media();
+        let project_dir = self.core.project_dir();
+        let body = match format.as_str() {
+            "edl" => opentake_project::export_edl(&snapshot.timeline, &manifest),
+            "otio" => opentake_project::export_otio(
+                &snapshot.timeline,
+                &manifest,
+                project_dir.as_deref(),
+            ),
+            "fcpxml" => opentake_project::export_fcpxml(
+                &snapshot.timeline,
+                &manifest,
+                project_dir.as_deref(),
+            ),
+            _ => opentake_project::export_xmeml_with_timecodes(
+                &snapshot.timeline,
+                &manifest,
+                project_dir.as_deref(),
+                &std::collections::HashMap::new(),
+            ),
+        };
+        std::fs::write(&path, body).map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(path)
+    }
+
     /// Write the timeline's caption cues as SRT or VTT; returns `{outPath,cueCount}`.
     #[napi]
     pub fn export_subtitles(&self, path: String, format: String) -> Result<String> {
