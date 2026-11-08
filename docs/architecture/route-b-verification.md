@@ -100,7 +100,7 @@ longer falls back to the warning path.
 | Proxies, relink, library, favorites | verified | API |
 | Timeline sprites | verified | 24-frame 800x450 JPEG tile grid |
 | Composite video/image/text | verified (video/effects/mask/text) | Lottie simple |
-| Playback | WebKit direct path verified; native cpal clock integrated; MJPEG stream available | Host playback uses native audio clock (frame 29 in 1s); `/engine/playback/stream` served 8–9 PNG parts in 1.2s at maxSize=320 (composite-bound); `/engine/preview/frame?format=jpeg` serves JPEG |
+| Playback | WebKit direct path verified; native cpal clock integrated; MJPEG stream available | Host playback uses native audio clock (frame 29 in 1s); `/engine/playback/stream` served 11 PNG parts in 1.2s at maxSize=320 after caching the wgpu device/compositor; `/engine/preview/frame?format=jpeg` serves JPEG |
 | Export H.264/AAC, range, alpha, audio-only | verified | current run |
 | Export H.265/10-bit | verified integrated | Host `export_video bitDepth=10` produced Main10 `yuv420p10le` BT.709; HDR tone-map/ducking remain isolated |
 | Interchange and subtitles | verified | XMEML/EDL/OTIO/FCPXML/SRT |

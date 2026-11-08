@@ -265,6 +265,40 @@ struct TextInfo {
     box_norm: (f64, f64, f64, f64),
 }
 
+struct RenderCache {
+    device: RenderDevice,
+    compositor: Compositor,
+    media: opentake_media::MediaEngine,
+    text: CosmicTextRasterizer,
+    lottie: LottieState,
+}
+
+thread_local! {
+    static RENDER_CACHE: RefCell<Option<Box<RenderCache>>> = const { RefCell::new(None) };
+}
+
+impl RenderCache {
+    fn get_or_init() -> std::result::Result<(), String> {
+        RENDER_CACHE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                let device = RenderDevice::try_new().map_err(|error| error.to_string())?;
+                let compositor = Compositor::new(&device.device);
+                let cache = std::env::temp_dir().join("opentake-route-b").join("cache");
+                let media = opentake_media::MediaEngine::new(&cache, cache.join("models"));
+                *slot = Some(Box::new(RenderCache {
+                    device,
+                    compositor,
+                    media,
+                    text: CosmicTextRasterizer::new(),
+                    lottie: LottieState::new(),
+                }));
+            }
+            Ok(())
+        })
+    }
+}
+
 struct BasicResolver<'a> {
     device: &'a opentake_render::wgpu::Device,
     queue: &'a opentake_render::wgpu::Queue,
@@ -398,27 +432,27 @@ fn composite_frame_decoded(
     if transparent {
         frame_plan.clear_rgba = [0.0, 0.0, 0.0, 0.0];
     }
-    let device = RenderDevice::try_new().map_err(|error| error.to_string())?;
-    let compositor = Compositor::new(&device.device);
-    let cache = std::env::temp_dir().join("opentake-route-b").join("cache");
-    let media_engine = opentake_media::MediaEngine::new(&cache, cache.join("models"));
-    let text_rasterizer = CosmicTextRasterizer::new();
-    let mut lottie = LottieState::new();
-    let mut resolver = BasicResolver {
-        device: &device.device,
-        queue: &device.queue,
-        engine: &media_engine,
-        text: &text,
-        text_rasterizer: &text_rasterizer,
-        lottie: &mut lottie,
-        canvas: (render_size.width, render_size.height),
-        media: &media,
-        timeline_fps: timeline.fps,
-        cache: HashMap::new(),
-    };
-    compositor
-        .render_to_rgba(&device.device, &device.queue, render_size, &frame_plan, &mut resolver)
-        .map_err(|error| error.to_string())
+    RenderCache::get_or_init()?;
+    RENDER_CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let cache = slot.as_mut().ok_or_else(|| "render cache unavailable".to_string())?;
+        let mut resolver = BasicResolver {
+            device: &cache.device.device,
+            queue: &cache.device.queue,
+            engine: &cache.media,
+            text: &text,
+            text_rasterizer: &cache.text,
+            lottie: &mut cache.lottie,
+            canvas: (render_size.width, render_size.height),
+            media: &media,
+            timeline_fps: timeline.fps,
+            cache: HashMap::new(),
+        };
+        cache
+            .compositor
+            .render_to_rgba(&cache.device.device, &cache.device.queue, render_size, &frame_plan, &mut resolver)
+            .map_err(|error| error.to_string())
+    })
 }
 
 fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Option<u32>) -> std::result::Result<serde_json::Value, String> {

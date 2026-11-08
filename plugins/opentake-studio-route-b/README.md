@@ -80,5 +80,5 @@ not runtime-tested on this machine.
 
 - Host playback now starts the addon cpal audio master clock; the mixed WAV
   route is withheld while native audio is active, and
-  `/engine/playback/stream` serves a multipart PNG stream driven by that clock;
+  `/engine/playback/stream` serves a multipart PNG stream driven by that clock (cached wgpu compositor);
   `/engine/preview/frame?format=jpeg` is available for lighter preview frames.
