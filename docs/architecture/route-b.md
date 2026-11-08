@@ -32,6 +32,8 @@ by the DSH Host through N-API.
   (`createNestedSequence`): verified a 60-frame nested clip composites and
   exports to 1280x720 H.264; nested audio is included in the mixdown
   (verified H.264+AAC).
+- Home/recent-project sync enriches UI entries with name, modified time and a
+  missing flag (verified through the Host IPC).
 - Global library list/favorite/categorize/rename/delete and import-to-project are
   bridged through `opentake-media::library::LibraryStore`; favorite/list/import
   were verified.

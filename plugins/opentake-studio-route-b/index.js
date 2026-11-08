@@ -11,7 +11,7 @@
  */
 
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -332,8 +332,32 @@ export function apply(ctx) {
         return null;
       case 'check_for_update':
         return null;
-      case 'home_projects_sync':
-        return [];
+      case 'home_projects_sync': {
+        const entries = Array.isArray(args.entries) ? args.entries : [];
+        return entries
+          .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.path === 'string')
+          .map((entry) => {
+            const absolute = entry.path;
+            const exists = existsSync(absolute);
+            let modifiedAt = typeof entry.modifiedAt === 'number' ? entry.modifiedAt : 0;
+            try {
+              if (exists) modifiedAt = Math.round(statSync(absolute).mtimeMs);
+            } catch { /* keep provided timestamp */ }
+            return {
+              path: absolute,
+              name: typeof entry.name === 'string' && entry.name.length > 0
+                ? entry.name
+                : path.basename(absolute, path.extname(absolute)),
+              createdAt: typeof entry.createdAt === 'number' ? entry.createdAt : (entry.openedAt ?? 0),
+              openedAt: typeof entry.openedAt === 'number' ? entry.openedAt : 0,
+              modifiedAt,
+              thumbnailPath: null,
+              preview: null,
+              missing: !exists,
+              offline: false,
+            };
+          });
+      }
       case 'home_project_register':
       case 'home_project_remove':
       case 'home_project_trash':
