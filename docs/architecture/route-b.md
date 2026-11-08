@@ -68,6 +68,9 @@ by the DSH Host through N-API.
   transcripts (Spoken/Files); visual embeddings/Moments are explicitly
   unavailable. `search_model_status` reports `route-b-text-search`, not SigLIP.
   Verified query "mock" -> Spoken hit, "src" -> Files hit.
+- Provider video generation is bridged as an agent tool: POST a provider
+  endpoint accepting `{prompt,model}`, download `video_url`/decode `video_b64`,
+  import the mp4 (mock verified 320x180 2s video asset).
 - Provider speech generation (TTS) is bridged as an agent tool: POST
   OpenAI-compatible `/audio/speech`, save mp3, import as audio (mock verified
   0.5s audio asset).

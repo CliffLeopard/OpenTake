@@ -113,6 +113,11 @@ export function apply(ctx) {
       key: process.env.OPENAI_API_KEY ?? null,
       model: process.env.OPENTAKE_IMAGE_MODEL ?? 'gpt-image-1',
     },
+    video: {
+      url: process.env.OPENTAKE_VIDEO_URL ?? null,
+      key: process.env.OPENTAKE_VIDEO_KEY ?? process.env.FAL_KEY ?? null,
+      model: process.env.OPENTAKE_VIDEO_MODEL ?? 'fal-ai/text-to-video',
+    },
     speech: {
       url: process.env.OPENTAKE_TTS_URL ?? (process.env.OPENAI_API_KEY ? 'https://api.openai.com/v1/audio/speech' : null),
       key: process.env.OPENAI_API_KEY ?? null,
@@ -312,6 +317,37 @@ export function apply(ctx) {
       rmSync(path.join(root, 'search-index'), { recursive: true, force: true });
     }
     return storageUsage();
+  }
+
+  async function generateVideo(prompt) {
+    if (state.video.url === null) throw new Error('video generation provider is not configured');
+    const response = await fetch(state.video.url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(state.video.key ? { authorization: `Key ${state.video.key}` } : {}),
+      },
+      body: JSON.stringify({ prompt, model: state.video.model }),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error?.message ?? body?.detail ?? `video generation failed (${response.status})`);
+    let bytes;
+    if (typeof body?.video_url === 'string' || typeof body?.url === 'string') {
+      const videoUrl = body.video_url ?? body.url;
+      const videoResponse = await fetch(videoUrl);
+      if (!videoResponse.ok) throw new Error(`generated video download failed (${videoResponse.status})`);
+      bytes = Buffer.from(await videoResponse.arrayBuffer());
+    } else if (typeof body?.video_b64 === 'string' || typeof body?.b64_json === 'string') {
+      bytes = Buffer.from(body.video_b64 ?? body.b64_json, 'base64');
+    } else {
+      throw new Error('video generation returned no video_url/video_b64');
+    }
+    if (bytes.length === 0) throw new Error('video generation returned empty bytes');
+    const directory = path.join(CACHE_ROOT, 'generated');
+    await mkdir(directory, { recursive: true });
+    const file = path.join(directory, `${Date.now()}-${randomUUID()}.mp4`);
+    await writeFile(file, bytes);
+    return { path: file, media: importMedia([file]) };
   }
 
   async function generateSpeech(text, voice) {
@@ -938,6 +974,14 @@ export function apply(ctx) {
         sendJson(res, 200, { ok: true, configured: state.asr.url !== null, model: state.asr.model });
         return;
       }
+      if (sub === '/engine/video/config' && req.method === 'POST') {
+        const body = await readJson(req);
+        state.video.url = typeof body.url === 'string' && body.url.length > 0 ? body.url : null;
+        state.video.key = typeof body.key === 'string' && body.key.length > 0 ? body.key : null;
+        state.video.model = typeof body.model === 'string' && body.model.length > 0 ? body.model : 'fal-ai/text-to-video';
+        sendJson(res, 200, { ok: true, configured: state.video.url !== null, model: state.video.model });
+        return;
+      }
       if (sub === '/engine/speech/config' && req.method === 'POST') {
         const body = await readJson(req);
         state.speech.url = typeof body.url === 'string' && body.url.length > 0 ? body.url : null;
@@ -1282,6 +1326,16 @@ export function apply(ctx) {
     },
     async (args) => {
       const value = await generateSpeech(args.text, args.voice);
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_generate_video',
+    'Generate a short video through the configured provider and import it into the project.',
+    { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'], additionalProperties: false },
+    async (args) => {
+      const value = await generateVideo(args.prompt);
       return { text: JSON.stringify(value), data: value };
     },
   );
