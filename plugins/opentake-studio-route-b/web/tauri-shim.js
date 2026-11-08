@@ -8,6 +8,8 @@
   const listeners = new Map();
   let playbackPoll = null;
   let motionPoll = null;
+  let playbackAudio = null;
+  let playbackAudioFps = 30;
   let nextId = 1;
 
   function transformCallback(callback, once) {
@@ -102,6 +104,12 @@
 
   function afterInvoke(cmd, args, body) {
     if (cmd === 'playback_start') {
+      try {
+        if (playbackAudio !== null) playbackAudio.pause();
+        playbackAudio = new Audio(BASE + '/engine/playback/audio?t=' + Date.now());
+        playbackAudio.play().catch(() => {});
+        if (Number.isFinite(args?.identity?.fps)) playbackAudioFps = args.identity.fps;
+      } catch (error) { playbackAudio = null; }
       if (playbackPoll !== null) clearInterval(playbackPoll);
       playbackPoll = setInterval(async () => {
         try {
@@ -129,6 +137,14 @@
     if (cmd === 'playback_stop' || cmd === 'playback_pause') {
       if (playbackPoll !== null) clearInterval(playbackPoll);
       playbackPoll = null;
+      if (playbackAudio !== null) {
+        playbackAudio.pause();
+        if (cmd === 'playback_stop') playbackAudio = null;
+      }
+    }
+    if (cmd === 'playback_seek' && playbackAudio !== null) {
+      const frame = typeof args.frame === 'number' ? args.frame : 0;
+      playbackAudio.currentTime = frame / Math.max(1, playbackAudioFps);
     }
 
     if (cmd === 'plugin:event|listen') {

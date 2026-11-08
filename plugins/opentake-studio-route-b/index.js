@@ -29,7 +29,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v25.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v26.node');
 }
 
 function loadAddon() {
@@ -1171,6 +1171,19 @@ export function apply(ctx) {
       }
       if (sub === '/engine/playback/status' && req.method === 'GET') {
         sendJson(res, 200, playbackStatus());
+        return;
+      }
+      if (sub === '/engine/playback/audio' && req.method === 'GET') {
+        try {
+          const file = state.engine.audioMixWav();
+          const bytes = await readFile(file);
+          res.statusCode = 200;
+          res.setHeader('content-type', 'audio/wav');
+          res.setHeader('cache-control', 'no-store');
+          res.end(bytes);
+        } catch (error) {
+          sendJson(res, 404, { error: { code: 'no-audio', message: error instanceof Error ? error.message : String(error) } });
+        }
         return;
       }
       if (sub === '/engine/preview/frame' && req.method === 'GET') {

@@ -1157,6 +1157,38 @@ impl Engine {
         json(&serde_json::json!({ "id": imported.id, "name": imported.name, "path": path.to_string_lossy() }))
     }
 
+    /// Mix the whole timeline audio and write a mono 16-bit WAV; returns its path.
+    #[napi]
+    pub fn audio_mix_wav(&self) -> Result<String> {
+        let timeline = self.core.get_timeline().timeline;
+        let pcm = self
+            .mix_timeline_audio(&timeline)
+            .ok_or_else(|| Error::from_reason("timeline has no audible audio"))?;
+        let directory = std::env::temp_dir().join("opentake-route-b").join("audio");
+        std::fs::create_dir_all(&directory).map_err(|error| Error::from_reason(error.to_string()))?;
+        let file = directory.join(format!("{}.wav", uuid::Uuid::new_v4()));
+        let data_len = pcm.samples_f32.len() * 2;
+        let mut bytes = Vec::with_capacity(44 + data_len);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&pcm.spec.sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(pcm.spec.sample_rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in &pcm.samples_f32 {
+            let value = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(&file, bytes).map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(file.to_string_lossy().into_owned())
+    }
+
     /// Generate a single-frame poster PNG for one imported asset and return
     /// its absolute path. Video uses the first frame; images use a scaled
     /// thumbnail; unsupported kinds return an empty string.

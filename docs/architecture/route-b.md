@@ -91,9 +91,10 @@ by the DSH Host through N-API.
 - Basic streaming playback is bridged in the Host: `get_preview_endpoint`
   returns `/engine/preview/frame`, `playback_start/seek/pause/stop` drive a
   wall-clock playhead, and the shim polls `/engine/playback/status` to emit
-  `playback_frame`. The React preview renders frames as images; audio master
-  clock/cpal is not implemented. Verified: play advanced the UI playhead and
-  rendered a frame.
+  `playback_frame`. The React preview renders frames as images; the shim also
+  plays a mixed mono WAV from `/engine/playback/audio`. Verified: play advanced
+  the UI playhead, rendered a frame, and the WAV served 2.0s pcm_s16le. A true
+  cpal audio master clock is still not implemented.
 - Export sessions accept `rangeStartFrame`/`rangeEndFrame`: 60-frame source at
   frames 15..45 exported as a 1.0s H.264+AAC clip (verified).
 - `export_video`: renders every timeline frame, encodes H.264/H.265/ProRes via

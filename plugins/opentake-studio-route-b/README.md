@@ -59,7 +59,8 @@ not runtime-tested on this machine.
   Studio documents (HTML/CSS) can be listed/created/edited/previewed through
   headless Chrome; publishing renders a PNG sequence, encodes mp4 or transparent
   ProRes 4444, imports it and adds a clip to the timeline; publish progress is
-  emitted through `motion_progress`. Agent tools
+  emitted through `motion_progress`. Playback also serves a mixed
+  mono WAV that the shim plays alongside the wall-clock preview. Agent tools
   can generate images, speech and short videos through configured providers. Caption cues export
   to SRT/VTT; XMEML/EDL/OTIO/FCPXML interchange export is bridged. Provider
   ASR (OpenAI-compatible verbose JSON) can transcribe and generate captions;
