@@ -14,7 +14,7 @@ use edit_request::EditRequest;
 use napi_derive::napi;
 use opentake_core::dto::{handle_get_timeline, handle_project_new, handle_project_open, handle_project_save, EditResultDto, TimelineSnapshotDto};
 use opentake_core::session::ProbedMedia;
-use opentake_domain::{MediaManifestEntry, MediaSource};
+use opentake_domain::{ClipType, MediaManifestEntry, MediaSource};
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|error| Error::from_reason(error.to_string()))
@@ -169,6 +169,75 @@ impl Engine {
             value["skipped"] = serde_json::json!(skipped);
         }
         json(&value)
+    }
+
+    /// Generate a single-frame poster PNG for one imported asset and return
+    /// its absolute path. Video uses the first frame; images use a scaled
+    /// thumbnail; unsupported kinds return an empty string.
+    #[napi]
+    pub fn thumbnail(&self, media_id: String) -> Result<String> {
+        let entry = self
+            .core
+            .media()
+            .entries
+            .iter()
+            .find(|entry| entry.id == media_id)
+            .cloned()
+            .ok_or_else(|| Error::from_reason(format!("media not found: {media_id}")))?;
+        let source = resolve_media_path(&entry, self.core.project_dir().as_deref())
+            .ok_or_else(|| Error::from_reason("media source path is unavailable"))?;
+        let cache = std::env::temp_dir().join("opentake-route-b").join("cache");
+        std::fs::create_dir_all(&cache).map_err(|error| Error::from_reason(error.to_string()))?;
+        let output = cache.join(format!("{media_id}.png"));
+        let engine = opentake_media::MediaEngine::new(&cache, cache.join("models"));
+        let frame = match entry.kind {
+            ClipType::Video => engine
+                .decode_frame(
+                    &source,
+                    &opentake_media::decode::FrameRequest {
+                        time_secs: 0.0,
+                        max_size: (320, 320),
+                        tolerance_secs: 1.0,
+                        apply_rotation: true,
+                    },
+                )
+                .map(|(_, frame)| frame)
+                .map_err(|error| Error::from_reason(error.to_string()))?,
+            ClipType::Image => opentake_media::thumbnail::image_thumbnail(&source, 320)
+                .map_err(|error| Error::from_reason(error.to_string()))?,
+            _ => return Ok(String::new()),
+        };
+        image::save_buffer(
+            &output,
+            &frame.rgba,
+            frame.width,
+            frame.height,
+            image::ColorType::Rgba8,
+        )
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(output.to_string_lossy().into_owned())
+    }
+
+    /// Normalized whole-source waveform buckets (`0 = loud`, `1 = silence`) for
+    /// one imported audio/video asset.
+    #[napi]
+    pub fn waveform(&self, media_id: String) -> Result<Vec<f64>> {
+        let entry = self
+            .core
+            .media()
+            .entries
+            .iter()
+            .find(|entry| entry.id == media_id)
+            .cloned()
+            .ok_or_else(|| Error::from_reason(format!("media not found: {media_id}")))?;
+        if !matches!(entry.kind, ClipType::Audio | ClipType::Video) {
+            return Err(Error::from_reason("media has no audio track"));
+        }
+        let source = resolve_media_path(&entry, self.core.project_dir().as_deref())
+            .ok_or_else(|| Error::from_reason("media source path is unavailable"))?;
+        opentake_media::waveform::waveform(&source, entry.duration)
+            .map(|samples| samples.into_iter().map(f64::from).collect())
+            .map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Apply one Tauri-compatible `EditRequest` JSON object. Returns

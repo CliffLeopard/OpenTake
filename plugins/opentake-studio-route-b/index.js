@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v4.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v6.node');
 }
 
 function loadAddon() {
@@ -95,6 +95,7 @@ export function apply(ctx) {
     engine: null,
     addonError: null,
     loadError: null,
+    thumbnails: new Map(),
   };
 
   try {
@@ -162,6 +163,32 @@ export function apply(ctx) {
     res.end(bytes);
   }
 
+  function mediaWithThumbnails() {
+    const catalog = JSON.parse(state.engine.mediaList());
+    for (const item of catalog.items) {
+      const thumbnail = state.thumbnails.get(item.id);
+      if (typeof thumbnail === 'string' && thumbnail.length > 0) item.thumbnail = thumbnail;
+    }
+    return catalog;
+  }
+
+  function importMedia(paths) {
+    const catalog = JSON.parse(state.engine.importMedia(paths));
+    for (const item of catalog.items) {
+      if (state.thumbnails.has(item.id)) continue;
+      try {
+        const thumbnail = state.engine.thumbnail(item.id);
+        if (typeof thumbnail === 'string' && thumbnail.length > 0) {
+          state.thumbnails.set(item.id, thumbnail);
+          item.thumbnail = thumbnail;
+        }
+      } catch {
+        // A missing poster must not fail an otherwise usable import.
+      }
+    }
+    return catalog;
+  }
+
   function invokeCore(cmd, args) {
     if (state.engine === null) throw new Error(state.loadError ?? 'OpenTake Rust engine is unavailable');
     switch (cmd) {
@@ -207,11 +234,40 @@ export function apply(ctx) {
       case 'check_path_exists':
         return typeof args.path === 'string' && existsSync(args.path);
       case 'get_media':
-        return JSON.parse(state.engine.mediaList());
+        return mediaWithThumbnails();
       case 'import_media': {
         const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
-        return JSON.parse(state.engine.importMedia(paths));
+        return importMedia(paths);
       }
+      case 'generate_thumbnail': {
+        const mediaRef = typeof args.mediaRef === 'string' ? args.mediaRef : '';
+        const thumbnail = state.engine.thumbnail(mediaRef);
+        if (thumbnail.length > 0) state.thumbnails.set(mediaRef, thumbnail);
+        const item = JSON.parse(state.engine.mediaList()).items.find((entry) => entry.id === mediaRef);
+        return {
+          mediaRef,
+          type: item?.type ?? 'video',
+          thumbnailPath: thumbnail.length > 0 ? thumbnail : null,
+          spritePath: null,
+          tileWidth: item?.width ?? null,
+          tileHeight: item?.height ?? null,
+          columns: 1,
+          times: [0],
+        };
+      }
+      case 'get_waveform':
+        return state.engine.waveform(typeof args.mediaRef === 'string' ? args.mediaRef : '');
+      case 'preload_media':
+        return true;
+      case 'get_preview_endpoint':
+        return null;
+      case 'set_proxy_playback_enabled':
+      case 'set_timeline_sprite_interactive':
+        return null;
+      case 'matting_model_status':
+        return null;
+      case 'check_for_update':
+        return null;
       case 'home_projects_sync':
         return [];
       case 'home_project_register':
@@ -282,13 +338,13 @@ export function apply(ctx) {
         return;
       }
       if (sub === '/engine/media' && req.method === 'GET') {
-        sendJson(res, 200, JSON.parse(ensureEngine().mediaList()));
+        sendJson(res, 200, mediaWithThumbnails());
         return;
       }
       if (sub === '/engine/import-media' && req.method === 'POST') {
         const body = await readJson(req, 4 * 1024 * 1024);
         const paths = Array.isArray(body.paths) ? body.paths.filter((value) => typeof value === 'string') : [];
-        sendJson(res, 200, JSON.parse(ensureEngine().importMedia(paths)));
+        sendJson(res, 200, importMedia(paths));
         return;
       }
       if (sub === '/engine/new' && req.method === 'POST') {
@@ -376,7 +432,7 @@ export function apply(ctx) {
     'Read the OpenTake Rust engine media catalog (MediaList JSON).',
     { type: 'object', properties: {}, additionalProperties: false },
     async () => {
-      const value = JSON.parse(ensureEngine().mediaList());
+      const value = mediaWithThumbnails();
       return { text: JSON.stringify(value), data: value };
     },
   );
@@ -391,8 +447,18 @@ export function apply(ctx) {
       additionalProperties: false,
     },
     async (args) => {
-      const value = JSON.parse(ensureEngine().importMedia(args.paths));
+      const value = importMedia(args.paths);
       return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_waveform',
+    'Read normalized waveform buckets (0=loud, 1=silence) for one media asset.',
+    { type: 'object', properties: { mediaRef: { type: 'string' } }, required: ['mediaRef'], additionalProperties: false },
+    async (args) => {
+      const samples = ensureEngine().waveform(args.mediaRef);
+      return { text: JSON.stringify(samples), data: { samples } };
     },
   );
 
