@@ -19,7 +19,7 @@ use opentake_core::dto::{
 };
 use opentake_core::session::ProbedMedia;
 use opentake_domain::{
-    AudioDenoise, ClipType, ColorGrade, CubeLut, DenoiseMode, LutReference,
+    AudioDenoise, ChromaKey, ClipType, ColorGrade, CubeLut, DenoiseMode, Effect, LutReference,
     MaskShape as DomainMaskShape, MediaColorMetadata, MediaManifestEntry, MediaSource,
 };
 use opentake_media::analysis::{
@@ -1144,6 +1144,96 @@ fn apply_linear_color_pipeline(
     .map_err(|error| error.to_string())
 }
 
+fn supported_effect_name(name: &str) -> bool {
+    matches!(name, "grayscale" | "sepia" | "invert")
+}
+
+fn apply_effects_linear(
+    frame: &LinearFrame,
+    effects: &[Effect],
+    chroma_key: Option<&ChromaKey>,
+) -> std::result::Result<LinearFrame, String> {
+    if effects.is_empty() && chroma_key.is_none() {
+        return Ok(frame.clone());
+    }
+    const SDR_WHITE: f64 = 203.0 / 10_000.0;
+    let mut components = Vec::with_capacity(frame.width() as usize * frame.height() as usize * 4);
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            let pixel = frame.pixel(x, y).unwrap_or([0.0, 0.0, 0.0, 0.0]);
+            let mut rgb = [
+                f64::from(pixel[0]) / SDR_WHITE,
+                f64::from(pixel[1]) / SDR_WHITE,
+                f64::from(pixel[2]) / SDR_WHITE,
+            ];
+            for effect in effects.iter().filter(|effect| effect.enabled) {
+                match effect.name.as_str() {
+                    "grayscale" => {
+                        let amount = effect
+                            .params
+                            .get("amount")
+                            .copied()
+                            .unwrap_or(1.0)
+                            .clamp(0.0, 1.0);
+                        let luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+                        for channel in &mut rgb {
+                            *channel = *channel * (1.0 - amount) + luma * amount;
+                        }
+                    }
+                    "sepia" => {
+                        let amount = effect
+                            .params
+                            .get("amount")
+                            .copied()
+                            .unwrap_or(1.0)
+                            .clamp(0.0, 1.0);
+                        let (r, g, b) = (rgb[0], rgb[1], rgb[2]);
+                        let sepia = [
+                            0.393 * r + 0.769 * g + 0.189 * b,
+                            0.349 * r + 0.686 * g + 0.168 * b,
+                            0.272 * r + 0.534 * g + 0.131 * b,
+                        ];
+                        for channel in 0..3 {
+                            rgb[channel] = rgb[channel] * (1.0 - amount) + sepia[channel] * amount;
+                        }
+                    }
+                    "invert" => {
+                        let amount = effect
+                            .params
+                            .get("amount")
+                            .copied()
+                            .unwrap_or(1.0)
+                            .clamp(0.0, 1.0);
+                        for channel in &mut rgb {
+                            let inverted = 1.0 - channel.clamp(0.0, 1.0);
+                            *channel = *channel * (1.0 - amount) + inverted * amount;
+                        }
+                    }
+                    other => return Err(format!("unsupported HDR effect: {other}")),
+                }
+            }
+            let mut alpha = pixel[3];
+            if let Some(key) = chroma_key {
+                alpha *= key.alpha(rgb[0], rgb[1], rgb[2]) as f32;
+            }
+            components.extend_from_slice(&[
+                (rgb[0] * SDR_WHITE) as f32,
+                (rgb[1] * SDR_WHITE) as f32,
+                (rgb[2] * SDR_WHITE) as f32,
+                alpha,
+            ]);
+        }
+    }
+    LinearFrame::from_f32(
+        frame.width(),
+        frame.height(),
+        &components,
+        LinearPrimaries::Bt2020,
+        LinearTransfer::Linear,
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// Preflight for the HDR10 production path: reject false-HDR before spawning
 /// the encoder. Every visible visual layer in the exported range must be an
 /// HDR PQ video layer in the supported subset (static affine transform/opacity
@@ -1160,6 +1250,40 @@ fn validate_hdr10_timeline(
     let timeline = &snapshot.timeline;
     let manifest = core.media();
     let mut hdr_video_layers = 0usize;
+    let mut ancestors = Vec::new();
+    validate_hdr_timeline_recursive(
+        timeline,
+        &timeline.nested_sequences,
+        &manifest,
+        start_frame,
+        end_frame,
+        0,
+        &mut hdr_video_layers,
+        &mut ancestors,
+    )?;
+    if hdr_video_layers == 0 {
+        return Err(
+            "HDR10 export requires HDR video content in the selected range; refusing to tag SDR frames as HDR"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_hdr_timeline_recursive(
+    timeline: &opentake_domain::Timeline,
+    nested: &[opentake_domain::NestedSequence],
+    manifest: &opentake_domain::MediaManifest,
+    start_frame: i32,
+    end_frame: i32,
+    depth: usize,
+    hdr_video_layers: &mut usize,
+    ancestors: &mut Vec<String>,
+) -> std::result::Result<(), String> {
+    if depth > 8 {
+        return Err("HDR10 nested sequence depth exceeds 8".to_string());
+    }
     for track in timeline.tracks.iter().filter(|track| !track.hidden) {
         for clip in &track.clips {
             let clip_start = clip.start_frame;
@@ -1170,19 +1294,39 @@ fn validate_hdr10_timeline(
             if clip.media_type == ClipType::Audio {
                 continue;
             }
-            if clip.nested_sequence_id.is_some() {
-                return Err("HDR10 export does not support nested sequences yet".to_string());
-            }
-            if !clip.effects.is_empty()
-                || clip.stabilization.is_some()
-                || clip.chroma_key.is_some()
-                || clip.transition_out.is_some()
-                || clip.reversed
-            {
+            if clip.stabilization.is_some() || clip.transition_out.is_some() || clip.reversed {
                 return Err(
-                    "HDR10 export supports crop, affine/keyframe/opacity, basic masks, SDR text/image overlays and basic grades/LUTs; effects/keying/transitions/reverse/nested sequences are not supported yet"
+                    "HDR10 export does not support stabilization, transitions or reverse yet"
                         .to_string(),
                 );
+            }
+            for effect in clip.effects.iter().filter(|effect| effect.enabled) {
+                if !supported_effect_name(&effect.name) {
+                    return Err(format!("unsupported HDR effect: {}", effect.name));
+                }
+            }
+            if let Some(sequence_id) = clip.nested_sequence_id.as_deref() {
+                if ancestors.iter().any(|ancestor| ancestor == sequence_id) {
+                    return Err("HDR10 nested sequence cycle detected".to_string());
+                }
+                let sequence = nested
+                    .iter()
+                    .find(|sequence| sequence.id == sequence_id)
+                    .ok_or_else(|| format!("nested sequence not found: {sequence_id}"))?;
+                ancestors.push(sequence_id.to_string());
+                let nested_end = sequence.timeline.total_frames().max(1);
+                validate_hdr_timeline_recursive(
+                    &sequence.timeline,
+                    nested,
+                    manifest,
+                    0,
+                    nested_end,
+                    depth + 1,
+                    hdr_video_layers,
+                    ancestors,
+                )?;
+                ancestors.pop();
+                continue;
             }
             match clip.media_type {
                 ClipType::Video => {
@@ -1228,7 +1372,7 @@ fn validate_hdr10_timeline(
                             entry.name, color.primaries
                         ));
                     }
-                    hdr_video_layers += 1;
+                    *hdr_video_layers += 1;
                 }
                 ClipType::Image => {
                     let entry = manifest
@@ -1259,12 +1403,6 @@ fn validate_hdr10_timeline(
             }
         }
     }
-    if hdr_video_layers == 0 {
-        return Err(
-            "HDR10 export requires HDR video content in the selected range; refusing to tag SDR frames as HDR"
-                .to_string(),
-        );
-    }
     Ok(())
 }
 
@@ -1277,6 +1415,35 @@ fn render_hdr_linear_frame(
 ) -> std::result::Result<LinearFrame, String> {
     let snapshot = core.get_timeline();
     let timeline = &snapshot.timeline;
+    let mut ancestors = Vec::new();
+    render_timeline_linear_frame(
+        core,
+        timeline,
+        &timeline.nested_sequences,
+        frame,
+        width,
+        height,
+        text_rasterizer,
+        0,
+        &mut ancestors,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_timeline_linear_frame(
+    core: &opentake_core::AppCore,
+    timeline: &opentake_domain::Timeline,
+    nested: &[opentake_domain::NestedSequence],
+    frame: i32,
+    width: u32,
+    height: u32,
+    text_rasterizer: &CosmicTextRasterizer,
+    depth: usize,
+    ancestors: &mut Vec<String>,
+) -> std::result::Result<LinearFrame, String> {
+    if depth > 8 {
+        return Err("HDR10 nested sequence depth exceeds 8".to_string());
+    }
     let manifest = core.media();
     let project_dir = core.project_dir();
     let mut layers: Vec<(
@@ -1294,15 +1461,9 @@ fn render_hdr_linear_frame(
             if clip.media_type == ClipType::Audio {
                 continue;
             }
-            if clip.nested_sequence_id.is_some()
-                || !clip.effects.is_empty()
-                || clip.stabilization.is_some()
-                || clip.chroma_key.is_some()
-                || clip.transition_out.is_some()
-                || clip.reversed
-            {
+            if clip.stabilization.is_some() || clip.transition_out.is_some() || clip.reversed {
                 return Err(
-                    "HDR10 export supports crop, affine/keyframe/opacity, basic masks, SDR text/image overlays and basic grades/LUTs; effects/keying/transitions/reverse/nested sequences are not supported yet"
+                    "HDR10 export does not support stabilization, transitions or reverse yet"
                         .to_string(),
                 );
             }
@@ -1317,96 +1478,136 @@ fn render_hdr_linear_frame(
                 flip_horizontal: sampled_transform.flip_horizontal,
                 flip_vertical: sampled_transform.flip_vertical,
             };
-            let linear = match clip.media_type {
-                ClipType::Video => {
-                    let entry = manifest
-                        .entries
-                        .iter()
-                        .find(|entry| entry.id == clip.media_ref)
-                        .ok_or_else(|| format!("HDR source media not found: {}", clip.media_ref))?;
-                    let path = resolve_media_path(entry, project_dir.as_deref())
-                        .ok_or_else(|| format!("HDR source path unavailable for {}", entry.name))?;
-                    let transfer = entry
-                        .color
-                        .as_ref()
-                        .and_then(|color| color.transfer.clone())
-                        .unwrap_or_default()
-                        .to_ascii_lowercase();
-                    let fps = timeline.fps.max(1) as f64;
-                    let source_frame = clip.trim_start_frame as f64
-                        + (frame - clip.start_frame) as f64 * clip.speed.max(0.000_1);
-                    decode_hdr_linear_frame(&path, source_frame / fps, width, height, &transfer)?
+            let mut linear = if let Some(sequence_id) = clip.nested_sequence_id.as_deref() {
+                if ancestors.iter().any(|ancestor| ancestor == sequence_id) {
+                    return Err("HDR10 nested sequence cycle detected".to_string());
                 }
-                ClipType::Image => {
-                    let entry = manifest
-                        .entries
-                        .iter()
-                        .find(|entry| entry.id == clip.media_ref)
-                        .ok_or_else(|| {
-                            format!("image overlay media not found: {}", clip.media_ref)
-                        })?;
-                    if entry.color.as_ref().is_some_and(MediaColorMetadata::is_hdr) {
+                let sequence = nested
+                    .iter()
+                    .find(|sequence| sequence.id == sequence_id)
+                    .ok_or_else(|| format!("nested sequence not found: {sequence_id}"))?;
+                let local_frame = clip.trim_start_frame
+                    + ((frame - clip.start_frame) as f64 * clip.speed.max(0.000_1)).round() as i32;
+                if local_frame < 0 || local_frame >= sequence.timeline.total_frames().max(1) {
+                    continue;
+                }
+                ancestors.push(sequence_id.to_string());
+                let rendered = render_timeline_linear_frame(
+                    core,
+                    &sequence.timeline,
+                    nested,
+                    local_frame,
+                    width,
+                    height,
+                    text_rasterizer,
+                    depth + 1,
+                    ancestors,
+                )?;
+                ancestors.pop();
+                rendered
+            } else {
+                match clip.media_type {
+                    ClipType::Video => {
+                        let entry = manifest
+                            .entries
+                            .iter()
+                            .find(|entry| entry.id == clip.media_ref)
+                            .ok_or_else(|| {
+                                format!("HDR source media not found: {}", clip.media_ref)
+                            })?;
+                        let path =
+                            resolve_media_path(entry, project_dir.as_deref()).ok_or_else(|| {
+                                format!("HDR source path unavailable for {}", entry.name)
+                            })?;
+                        let transfer = entry
+                            .color
+                            .as_ref()
+                            .and_then(|color| color.transfer.clone())
+                            .unwrap_or_default()
+                            .to_ascii_lowercase();
+                        let fps = timeline.fps.max(1) as f64;
+                        let source_frame = clip.trim_start_frame as f64
+                            + (frame - clip.start_frame) as f64 * clip.speed.max(0.000_1);
+                        decode_hdr_linear_frame(
+                            &path,
+                            source_frame / fps,
+                            width,
+                            height,
+                            &transfer,
+                        )?
+                    }
+                    ClipType::Image => {
+                        let entry = manifest
+                            .entries
+                            .iter()
+                            .find(|entry| entry.id == clip.media_ref)
+                            .ok_or_else(|| {
+                                format!("image overlay media not found: {}", clip.media_ref)
+                            })?;
+                        if entry.color.as_ref().is_some_and(MediaColorMetadata::is_hdr) {
+                            return Err(format!(
+                                "HDR image overlays are not supported yet: {}",
+                                entry.name
+                            ));
+                        }
+                        let path =
+                            resolve_media_path(entry, project_dir.as_deref()).ok_or_else(|| {
+                                format!("image overlay path unavailable for {}", entry.name)
+                            })?;
+                        let (_, rgba) = opentake_media::decode_frame_at(
+                            &path,
+                            &opentake_media::decode::FrameRequest {
+                                time_secs: 0.0,
+                                max_size: (width, height),
+                                tolerance_secs: 1.0,
+                                apply_rotation: true,
+                            },
+                        )
+                        .map_err(|error| format!("decode image overlay {}: {error}", entry.name))?;
+                        sdr_rgba8_to_linear_frame(&rgba, false)?
+                    }
+                    ClipType::Text => {
+                        let content = clip
+                            .text_content
+                            .as_deref()
+                            .ok_or_else(|| "text overlay has no content".to_string())?;
+                        let style = clip
+                            .text_style
+                            .as_ref()
+                            .ok_or_else(|| "text overlay has no style".to_string())?;
+                        let top_left = sampled_transform.top_left();
+                        let decoded = text_rasterizer
+                            .rasterize(&TextRasterRequest {
+                                clip_id: &clip.id,
+                                content,
+                                style,
+                                box_norm: (
+                                    top_left.x,
+                                    top_left.y,
+                                    sampled_transform.width,
+                                    sampled_transform.height,
+                                ),
+                                canvas: (width, height),
+                            })
+                            .ok_or_else(|| "text overlay rasterization failed".to_string())?;
+                        let rgba = RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
+                        sdr_rgba8_to_linear_frame(&rgba, true)?
+                    }
+                    other => {
                         return Err(format!(
-                            "HDR image overlays are not supported yet: {}",
-                            entry.name
+                            "HDR10 export does not support {:?} layers yet",
+                            other
                         ));
                     }
-                    let path =
-                        resolve_media_path(entry, project_dir.as_deref()).ok_or_else(|| {
-                            format!("image overlay path unavailable for {}", entry.name)
-                        })?;
-                    let (_, rgba) = opentake_media::decode_frame_at(
-                        &path,
-                        &opentake_media::decode::FrameRequest {
-                            time_secs: 0.0,
-                            max_size: (width, height),
-                            tolerance_secs: 1.0,
-                            apply_rotation: true,
-                        },
-                    )
-                    .map_err(|error| format!("decode image overlay {}: {error}", entry.name))?;
-                    sdr_rgba8_to_linear_frame(&rgba, false)?
-                }
-                ClipType::Text => {
-                    let content = clip
-                        .text_content
-                        .as_deref()
-                        .ok_or_else(|| "text overlay has no content".to_string())?;
-                    let style = clip
-                        .text_style
-                        .as_ref()
-                        .ok_or_else(|| "text overlay has no style".to_string())?;
-                    let top_left = sampled_transform.top_left();
-                    let decoded = text_rasterizer
-                        .rasterize(&TextRasterRequest {
-                            clip_id: &clip.id,
-                            content,
-                            style,
-                            box_norm: (
-                                top_left.x,
-                                top_left.y,
-                                sampled_transform.width,
-                                sampled_transform.height,
-                            ),
-                            canvas: (width, height),
-                        })
-                        .ok_or_else(|| "text overlay rasterization failed".to_string())?;
-                    let rgba = RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
-                    sdr_rgba8_to_linear_frame(&rgba, true)?
-                }
-                other => {
-                    return Err(format!(
-                        "HDR10 export does not support {:?} layers yet",
-                        other
-                    ));
                 }
             };
-            let linear = apply_linear_color_pipeline(
+            linear = apply_linear_color_pipeline(
                 &linear,
                 clip.color_grade.as_ref(),
                 clip.lut.as_ref(),
                 project_dir.as_deref(),
             )?;
+            linear = apply_effects_linear(&linear, &clip.effects, clip.chroma_key.as_ref())?;
             let crop = clip.crop_at(frame);
             let crop_uv = (
                 crop.left.clamp(0.0, 0.99),
@@ -3766,5 +3967,59 @@ mod hdr_grade_tests {
         assert!((sampled[0] - 0.25).abs() < 1e-5, "sampled={sampled:?}");
         assert!((sampled[1] - 0.5).abs() < 1e-5);
         assert!((sampled[2] - 0.75).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod hdr_effects_tests {
+    use super::*;
+
+    fn pixel(r: f32, g: f32, b: f32) -> LinearFrame {
+        LinearFrame::from_f32(
+            1,
+            1,
+            &[r, g, b, 1.0],
+            LinearPrimaries::Bt2020,
+            LinearTransfer::Linear,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn invert_effect_changes_linear_pixel_and_grayscale_preserves_luma() {
+        let frame = pixel(0.0203, 0.01015, 0.005075);
+        let invert = Effect {
+            name: "invert".to_string(),
+            params: [("amount".to_string(), 1.0)].into_iter().collect(),
+            enabled: true,
+        };
+        let inverted = apply_effects_linear(&frame, &[invert], None).unwrap();
+        assert!(inverted.pixel(0, 0).unwrap()[0] < 0.001);
+        let grayscale = Effect {
+            name: "grayscale".to_string(),
+            params: [("amount".to_string(), 1.0)].into_iter().collect(),
+            enabled: true,
+        };
+        let gray = apply_effects_linear(&frame, &[grayscale], None).unwrap();
+        let out = gray.pixel(0, 0).unwrap();
+        assert!((out[0] - out[1]).abs() < 1e-4 && (out[1] - out[2]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn chroma_key_reduces_alpha_for_matching_hue() {
+        // Neutral grey with a grey key: chroma distance is zero -> alpha 0.
+        let frame = pixel(0.0203, 0.0203, 0.0203);
+        let key = ChromaKey {
+            key_color: opentake_domain::Rgb {
+                r: 0.5,
+                g: 0.5,
+                b: 0.5,
+            },
+            similarity: 0.5,
+            smoothness: 0.1,
+            spill: 0.0,
+        };
+        let keyed = apply_effects_linear(&frame, &[], Some(&key)).unwrap();
+        assert!(keyed.pixel(0, 0).unwrap()[3] < 0.01);
     }
 }

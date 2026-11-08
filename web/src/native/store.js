@@ -166,6 +166,12 @@ export function createNativeEditorStore({
     pollIntervalMs,
     settings: null,
     settingsLoading: false,
+    luts: [],
+    lutsLoading: false,
+    library: [],
+    libraryLoading: false,
+    motion: [],
+    motionLoading: false,
     exportState: {
       active: false,
       phase: 'idle',
@@ -400,9 +406,11 @@ export function createNativeEditorStore({
   }
 
   function openPanel(panel) {
-    const next = panel === 'export' || panel === 'settings' || panel === 'captions' ? panel : 'editor';
+    const next = panel === 'export' || panel === 'settings' || panel === 'captions' || panel === 'library' || panel === 'motion' ? panel : 'editor';
     update({ panel: next });
     if (next === 'settings') void refreshSettings();
+    if (next === 'library') void refreshLibrary();
+    if (next === 'motion') void refreshMotion();
   }
 
   function closePanel() {
@@ -523,6 +531,95 @@ export function createNativeEditorStore({
   async function cancelExport() {
     try {
       return await client.invoke('cancel_export');
+    } catch (error) {
+      update({ error: errorMessage(error) });
+      return null;
+    }
+  }
+
+  async function refreshLuts() {
+    update({ lutsLoading: true });
+    try {
+      const result = await client.listLuts();
+      update({ luts: Array.isArray(result?.items) ? result.items : [], lutsLoading: false });
+      return result;
+    } catch (error) {
+      update({ lutsLoading: false, error: errorMessage(error) });
+      return null;
+    }
+  }
+
+  async function uploadFile(file, { kind = 'media' } = {}) {
+    update({ busy: true, error: null });
+    try {
+      const result = await client.uploadFile(file, { kind });
+      if (kind === 'lut') {
+        update({
+          busy: false,
+          luts: Array.isArray(result?.luts?.items) ? result.luts.items : state.luts,
+          settings: state.settings,
+        });
+      } else {
+        update({ busy: false, media: mediaItems(result?.catalog) });
+      }
+      return result;
+    } catch (error) {
+      update({ busy: false, error: errorMessage(error) });
+      return null;
+    }
+  }
+
+  async function uploadFiles(files) {
+    const list = Array.from(files ?? []).filter((file) => file !== null && typeof file === 'object');
+    const results = [];
+    for (const file of list) {
+      const kind = typeof file.name === 'string' && file.name.toLowerCase().endsWith('.cube') ? 'lut' : 'media';
+      const result = await uploadFile(file, { kind });
+      if (result !== null) results.push(result);
+    }
+    return results;
+  }
+
+  async function refreshLibrary() {
+    update({ libraryLoading: true });
+    try {
+      const entries = await client.libraryList(null);
+      update({ library: Array.isArray(entries) ? entries : [], libraryLoading: false });
+      return entries;
+    } catch (error) {
+      update({ libraryLoading: false, error: errorMessage(error) });
+      return null;
+    }
+  }
+
+  async function importLibraryEntry(id) {
+    try {
+      const result = await client.libraryImportToProject(id);
+      await refresh();
+      return result;
+    } catch (error) {
+      update({ error: errorMessage(error) });
+      return null;
+    }
+  }
+
+  async function refreshMotion() {
+    update({ motionLoading: true });
+    try {
+      const documents = await client.motionDocuments();
+      update({ motion: Array.isArray(documents) ? documents : [], motionLoading: false });
+      return documents;
+    } catch (error) {
+      update({ motionLoading: false, error: errorMessage(error) });
+      return null;
+    }
+  }
+
+  async function createMotion(title = 'Untitled Motion') {
+    try {
+      const document = await client.motionCreate(title);
+      await refreshMotion();
+      return document;
     } catch (error) {
       update({ error: errorMessage(error) });
       return null;
@@ -868,6 +965,13 @@ export function createNativeEditorStore({
     setTrackProperties,
     setClipEffects,
     setClipMasks,
+    refreshLuts,
+    uploadFile,
+    uploadFiles,
+    refreshLibrary,
+    importLibraryEntry,
+    refreshMotion,
+    createMotion,
     setColorGrade,
     setLut,
     setChromaKey,

@@ -32,7 +32,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v43.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v44.node');
 }
 
 function loadAddon() {
@@ -74,6 +74,17 @@ function webPathFor(relative) {
   const root = path.resolve(WEB_DIR) + path.sep;
   if (resolved !== path.resolve(WEB_DIR) && !resolved.startsWith(root)) return null;
   return resolved;
+}
+
+async function readBody(req, limit = 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.byteLength;
+    if (size > limit) throw new Error('request body too large');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function readJson(req, limit = 1024 * 1024) {
@@ -506,6 +517,43 @@ export function apply(ctx) {
 
   const MOTION_HTML = `<main class="motion-stage">\n  <p class="motion-kicker">Motion Studio</p>\n  <h1>让创意动起来</h1>\n  <p class="motion-subtitle">Real HTML · Real CSS · Real motion</p>\n</main>\n`;
   const MOTION_CSS = `html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #111214; color: #f7f7f5; font-family: Inter, "PingFang SC", sans-serif; }\n.motion-stage { display: grid; align-content: center; width: 100%; height: 100%; padding: 10%; background: radial-gradient(circle at 72% 24%, #5f5cff 0, transparent 34%); }\n.motion-kicker { color: #a9a7ff; letter-spacing: .18em; text-transform: uppercase; }\nh1 { margin: .12em 0; font-size: clamp(48px, 8vw, 144px); animation: title-in 1.2s both; }\n.motion-subtitle { font-size: clamp(18px, 2.2vw, 42px); opacity: .72; animation: subtitle-in 1.2s .18s both; }\n@keyframes title-in { from { opacity: 0; transform: translateY(48px) scale(.96); } to { opacity: 1; transform: none; } }\n@keyframes subtitle-in { from { opacity: 0; transform: translateY(24px); } to { opacity: .72; transform: none; } }\n`;
+
+  function currentProjectPath() {
+    const snapshot = JSON.parse(ensureEngine().getTimeline());
+    if (typeof snapshot.projectPath !== 'string' || snapshot.projectPath.length === 0) {
+      throw new Error('save the project before importing assets');
+    }
+    return snapshot.projectPath;
+  }
+
+  function projectLutDirectory() {
+    return path.join(currentProjectPath(), 'media', 'luts');
+  }
+
+  function listProjectLuts() {
+    const snapshot = JSON.parse(ensureEngine().getTimeline());
+    if (typeof snapshot.projectPath !== 'string' || snapshot.projectPath.length === 0) {
+      return { items: [], projectPath: null };
+    }
+    const directory = path.join(snapshot.projectPath, 'media', 'luts');
+    if (!existsSync(directory)) return { items: [], projectPath: snapshot.projectPath };
+    const items = [];
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.cube')) continue;
+      const id = entry.name.slice(0, -5);
+      if (!/^[0-9a-f]{64}$/.test(id)) continue;
+      let bytes = 0;
+      try { bytes = statSync(path.join(directory, entry.name)).size; } catch { continue; }
+      let name = id.slice(0, 12);
+      try {
+        const sidecar = JSON.parse(readFileSync(path.join(directory, `${id}.json`), 'utf8'));
+        if (typeof sidecar.name === 'string' && sidecar.name.length > 0) name = sidecar.name;
+      } catch { /* older LUT without display metadata */ }
+      items.push({ id, name, bytes, intensity: 1 });
+    }
+    items.sort((a, b) => a.id.localeCompare(b.id));
+    return { items, projectPath: snapshot.projectPath };
+  }
 
   function motionRoot() {
     const snapshot = JSON.parse(state.engine.getTimeline());
@@ -1624,6 +1672,48 @@ export function apply(ctx) {
       if (sub === '/engine/media' && req.method === 'GET') {
         sendJson(res, 200, mediaWithThumbnails());
         return;
+      }
+      if (sub === '/engine/luts' && req.method === 'GET') {
+        sendJson(res, 200, listProjectLuts());
+        return;
+      }
+      if (sub === '/engine/upload' && req.method === 'POST') {
+        const requestUrl = new URL(req.url ?? '/', 'http://localhost');
+        const rawName = requestUrl.searchParams.get('name') ?? '';
+        const kind = requestUrl.searchParams.get('kind') === 'lut' ? 'lut' : 'media';
+        const safeName = path.basename(rawName).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 160);
+        if (safeName.length === 0 || safeName === '.' || safeName === '..') {
+          sendJson(res, 400, { error: { code: 'invalid-upload', message: 'name is required' } });
+          return;
+        }
+        try {
+          const limit = kind === 'lut' ? 16 * 1024 * 1024 : 256 * 1024 * 1024;
+          const bytes = await readBody(req, limit);
+          if (bytes.length === 0) throw new Error('upload is empty');
+          if (kind === 'lut') {
+            if (!safeName.toLowerCase().endsWith('.cube')) throw new Error('LUT upload must be a .cube file');
+            const text = bytes.subarray(0, Math.min(bytes.length, 1024 * 1024)).toString('utf8');
+            if (!/LUT_3D_SIZE\s+\d+/i.test(text)) throw new Error('invalid LUT: missing LUT_3D_SIZE');
+            const id = createHash('sha256').update(bytes).digest('hex');
+            const directory = projectLutDirectory();
+            mkdirSync(directory, { recursive: true });
+            writeFileSync(path.join(directory, `${id}.cube`), bytes);
+            const name = safeName.replace(/\.cube$/i, '').slice(0, 128) || 'Imported LUT';
+            writeFileSync(path.join(directory, `${id}.json`), JSON.stringify({ name }), 'utf8');
+            sendJson(res, 200, { kind: 'lut', lut: { id, name, intensity: 1 }, luts: listProjectLuts() });
+            return;
+          }
+          const directory = path.join(CACHE_ROOT, 'uploads', randomUUID());
+          mkdirSync(directory, { recursive: true });
+          const target = path.join(directory, safeName);
+          writeFileSync(target, bytes);
+          const catalog = importMedia([target]);
+          sendJson(res, 200, { kind: 'media', catalog });
+          return;
+        } catch (error) {
+          sendJson(res, 400, { error: { code: 'upload-failed', message: error instanceof Error ? error.message : String(error) } });
+          return;
+        }
       }
       if (sub === '/engine/import-media' && req.method === 'POST') {
         const body = await readJson(req, 4 * 1024 * 1024);

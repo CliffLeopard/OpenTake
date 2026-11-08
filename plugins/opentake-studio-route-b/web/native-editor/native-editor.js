@@ -761,14 +761,14 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	function ye(e) {
 		e._valueTracker ||= ve(e);
 	}
-	function j(e) {
+	function be(e) {
 		if (!e) return !1;
 		var t = e._valueTracker;
 		if (!t) return !0;
 		var n = t.getValue(), r = "";
 		return e && (r = _e(e) ? e.checked ? "true" : "false" : e.value), e = r, e === n ? !1 : (t.setValue(e), !0);
 	}
-	function be(e) {
+	function xe(e) {
 		if (e ||= typeof document < "u" ? document : void 0, e === void 0) return null;
 		try {
 			return e.activeElement || e.body;
@@ -776,7 +776,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			return e.body;
 		}
 	}
-	function xe(e, t) {
+	function j(e, t) {
 		var n = t.checked;
 		return k({}, t, {
 			defaultChecked: void 0,
@@ -815,7 +815,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		n = e.name, n !== "" && (e.name = ""), e.defaultChecked = !!e._wrapperState.initialChecked, n !== "" && (e.name = n);
 	}
 	function Ee(e, t, n) {
-		(t !== "number" || be(e.ownerDocument) !== e) && (n == null ? e.defaultValue = "" + e._wrapperState.initialValue : e.defaultValue !== "" + n && (e.defaultValue = "" + n));
+		(t !== "number" || xe(e.ownerDocument) !== e) && (n == null ? e.defaultValue = "" + e._wrapperState.initialValue : e.defaultValue !== "" + n && (e.defaultValue = "" + n));
 	}
 	var De = Array.isArray;
 	function Oe(e, t, n, r) {
@@ -1829,7 +1829,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		mi(e, 0);
 	}
 	function wr(e) {
-		if (j(Yi(e))) return e;
+		if (be(Yi(e))) return e;
 	}
 	function Tr(e, t) {
 		if (e === "change") return t;
@@ -1915,7 +1915,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		return e && t ? e === t ? !0 : e && e.nodeType === 3 ? !1 : t && t.nodeType === 3 ? Vr(e, t.parentNode) : "contains" in e ? e.contains(t) : e.compareDocumentPosition ? !!(e.compareDocumentPosition(t) & 16) : !1 : !1;
 	}
 	function Hr() {
-		for (var e = window, t = be(); t instanceof e.HTMLIFrameElement;) {
+		for (var e = window, t = xe(); t instanceof e.HTMLIFrameElement;) {
 			try {
 				var n = typeof t.contentWindow.location.href == "string";
 			} catch {
@@ -1923,7 +1923,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			}
 			if (n) e = t.contentWindow;
 			else break;
-			t = be(e.document);
+			t = xe(e.document);
 		}
 		return t;
 	}
@@ -1955,7 +1955,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	var Gr = c && "documentMode" in document && 11 >= document.documentMode, Kr = null, qr = null, Jr = null, Yr = !1;
 	function Xr(e, t, n) {
 		var r = n.window === n ? n.document : n.nodeType === 9 ? n : n.ownerDocument;
-		Yr || Kr == null || Kr !== be(r) || (r = Kr, "selectionStart" in r && Ur(r) ? r = {
+		Yr || Kr == null || Kr !== xe(r) || (r = Kr, "selectionStart" in r && Ur(r) ? r = {
 			start: r.selectionStart,
 			end: r.selectionEnd
 		} : (r = (r.ownerDocument && r.ownerDocument.defaultView || window).getSelection(), r = {
@@ -3896,7 +3896,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			var o = null;
 			switch (n) {
 				case "input":
-					i = xe(e, i), r = xe(e, r), o = [];
+					i = j(e, i), r = j(e, r), o = [];
 					break;
 				case "select":
 					i = k({}, i, { value: void 0 }), r = k({}, r, { value: void 0 }), o = [];
@@ -4050,7 +4050,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 									P("toggle", e), o = i;
 									break;
 								case "input":
-									Se(e, i), o = xe(e, i), P("invalid", e);
+									Se(e, i), o = j(e, i), P("invalid", e);
 									break;
 								case "option":
 									o = i;
@@ -5766,7 +5766,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 						if (i !== e && i.form === e.form) {
 							var a = Xi(i);
 							if (!a) throw Error(r(90));
-							j(i), we(i, a);
+							be(i), we(i, a);
 						}
 					}
 				}
@@ -5962,6 +5962,62 @@ function b({ base: e = "/opentake-studio-route-b", fetchImpl: t = globalThis.fet
 		},
 		exportStatus: () => i("/engine/export/status"),
 		playbackStatus: () => i("/engine/playback/status"),
+		listLuts: () => i("/engine/luts"),
+		uploadFile: async (e, { kind: i = "media", name: a = void 0 } = {}) => {
+			if (typeof e != "object" || !e || typeof e.arrayBuffer != "function") throw TypeError("uploadFile requires a browser File");
+			let o = typeof a == "string" && a.length > 0 ? a : typeof e.name == "string" ? e.name : "upload.bin", s = `${r}/engine/upload?name=${encodeURIComponent(o)}&kind=${i === "lut" ? "lut" : "media"}`, c = await t(s, {
+				method: "POST",
+				headers: { "content-type": "application/octet-stream" },
+				body: e,
+				signal: n
+			}), l = typeof c.text == "function" ? await c.text() : "", u = null;
+			try {
+				u = l.length > 0 ? JSON.parse(l) : null;
+			} catch {
+				u = null;
+			}
+			if (!c.ok) throw new v(u?.error?.message ?? `upload failed with HTTP ${c.status}`, {
+				status: c.status ?? 0,
+				code: u?.error?.code ?? "upload-failed",
+				url: s
+			});
+			return u;
+		},
+		libraryList: (e = null) => i("/engine/invoke", {
+			method: "POST",
+			body: {
+				cmd: "library_list",
+				args: e === null ? {} : { category: e }
+			}
+		}),
+		libraryImportToProject: (e) => i("/engine/invoke", {
+			method: "POST",
+			body: {
+				cmd: "library_import_to_project",
+				args: { id: e }
+			}
+		}),
+		motionDocuments: () => i("/engine/invoke", {
+			method: "POST",
+			body: {
+				cmd: "motion_document_list",
+				args: {}
+			}
+		}),
+		motionCreate: (e) => i("/engine/invoke", {
+			method: "POST",
+			body: {
+				cmd: "motion_document_create",
+				args: { request: { title: e } }
+			}
+		}),
+		motionRead: (e) => i("/engine/invoke", {
+			method: "POST",
+			body: {
+				cmd: "motion_document_read",
+				args: { documentId: e }
+			}
+		}),
 		importMedia: (e) => {
 			if (!Array.isArray(e) || e.some((e) => typeof e != "string")) throw TypeError("importMedia requires an array of paths");
 			return i("/engine/import-media", {
@@ -6034,6 +6090,23 @@ var x = Object.freeze({
 		busy: "Working…",
 		allChanges: "All changes are engine-backed.",
 		prototypeNotice: "Bounded native mount: home, media, timeline and preview. The full editor remains in the iframe fallback.",
+		library: "Library",
+		libraryHint: "Read-only global library from the existing library_list route.",
+		libraryEmpty: "No library entries.",
+		importToProject: "Import to project",
+		motion: "Motion",
+		motionHint: "Motion documents from the existing motion_document_* routes.",
+		motionEmpty: "No motion documents yet.",
+		createMotion: "Create motion document",
+		motionTitle: "Motion title",
+		lutSelect: "Project LUT",
+		lutSelectPlaceholder: "Select a LUT…",
+		applySelectedLut: "Apply LUT",
+		lutRefresh: "Refresh LUTs",
+		lutUpload: "Upload .cube LUT",
+		lutManual: "Manual reference",
+		dropFiles: "Drop media or .cube files here",
+		upload: "Upload",
 		advanced: "Advanced",
 		colorGrade: "Color grade",
 		exposure: "Exposure",
@@ -6210,6 +6283,23 @@ var x = Object.freeze({
 		busy: "处理中…",
 		allChanges: "所有改动均由引擎持久化。",
 		prototypeNotice: "有界的原生挂载：主页、素材、时间线和预览。完整编辑器仍保留在 iframe 回退中。",
+		library: "素材库",
+		libraryHint: "来自现有 library_list 路由的只读全局素材库。",
+		libraryEmpty: "素材库为空。",
+		importToProject: "导入项目",
+		motion: "Motion",
+		motionHint: "来自现有 motion_document_* 路由的 Motion 文档。",
+		motionEmpty: "暂无 Motion 文档。",
+		createMotion: "新建 Motion 文档",
+		motionTitle: "Motion 标题",
+		lutSelect: "项目 LUT",
+		lutSelectPlaceholder: "选择 LUT…",
+		applySelectedLut: "应用 LUT",
+		lutRefresh: "刷新 LUT",
+		lutUpload: "上传 .cube LUT",
+		lutManual: "手动引用",
+		dropFiles: "拖入素材或 .cube 文件",
+		upload: "上传",
 		advanced: "高级",
 		colorGrade: "调色",
 		exposure: "曝光",
@@ -6466,6 +6556,12 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 		pollIntervalMs: n,
 		settings: null,
 		settingsLoading: !1,
+		luts: [],
+		lutsLoading: !1,
+		library: [],
+		libraryLoading: !1,
+		motion: [],
+		motionLoading: !1,
 		exportState: {
 			active: !1,
 			phase: "idle",
@@ -6665,8 +6761,8 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 		return typeof t.muted == "boolean" && (n.muted = t.muted), typeof t.hidden == "boolean" && (n.hidden = t.hidden), typeof t.syncLocked == "boolean" && (n.syncLocked = t.syncLocked), n.muted === void 0 && n.hidden === void 0 && n.syncLocked === void 0 ? (d({ error: "no track property to change" }), null) : b(n);
 	}
 	function C(e) {
-		let t = e === "export" || e === "settings" || e === "captions" ? e : "editor";
-		d({ panel: t }), t === "settings" && oe();
+		let t = e === "export" || e === "settings" || e === "captions" || e === "library" || e === "motion" ? e : "editor";
+		d({ panel: t }), t === "settings" && oe(), t === "library" && de(), t === "motion" && pe();
 	}
 	function ne() {
 		d({ panel: "editor" });
@@ -6787,59 +6883,150 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			return d({ error: D(e) }), null;
 		}
 	}
-	async function le(e, t) {
+	async function le() {
+		d({ lutsLoading: !0 });
+		try {
+			let t = await e.listLuts();
+			return d({
+				luts: Array.isArray(t?.items) ? t.items : [],
+				lutsLoading: !1
+			}), t;
+		} catch (e) {
+			return d({
+				lutsLoading: !1,
+				error: D(e)
+			}), null;
+		}
+	}
+	async function k(t, { kind: n = "media" } = {}) {
+		d({
+			busy: !0,
+			error: null
+		});
+		try {
+			let r = await e.uploadFile(t, { kind: n });
+			return d(n === "lut" ? {
+				busy: !1,
+				luts: Array.isArray(r?.luts?.items) ? r.luts.items : a.luts,
+				settings: a.settings
+			} : {
+				busy: !1,
+				media: ae(r?.catalog)
+			}), r;
+		} catch (e) {
+			return d({
+				busy: !1,
+				error: D(e)
+			}), null;
+		}
+	}
+	async function ue(e) {
+		let t = Array.from(e ?? []).filter((e) => typeof e == "object" && !!e), n = [];
+		for (let e of t) {
+			let t = await k(e, { kind: typeof e.name == "string" && e.name.toLowerCase().endsWith(".cube") ? "lut" : "media" });
+			t !== null && n.push(t);
+		}
+		return n;
+	}
+	async function de() {
+		d({ libraryLoading: !0 });
+		try {
+			let t = await e.libraryList(null);
+			return d({
+				library: Array.isArray(t) ? t : [],
+				libraryLoading: !1
+			}), t;
+		} catch (e) {
+			return d({
+				libraryLoading: !1,
+				error: D(e)
+			}), null;
+		}
+	}
+	async function fe(t) {
+		try {
+			let n = await e.libraryImportToProject(t);
+			return await g(), n;
+		} catch (e) {
+			return d({ error: D(e) }), null;
+		}
+	}
+	async function pe() {
+		d({ motionLoading: !0 });
+		try {
+			let t = await e.motionDocuments();
+			return d({
+				motion: Array.isArray(t) ? t : [],
+				motionLoading: !1
+			}), t;
+		} catch (e) {
+			return d({
+				motionLoading: !1,
+				error: D(e)
+			}), null;
+		}
+	}
+	async function me(t = "Untitled Motion") {
+		try {
+			let n = await e.motionCreate(t);
+			return await pe(), n;
+		} catch (e) {
+			return d({ error: D(e) }), null;
+		}
+	}
+	async function he(e, t) {
 		return t !== null && (typeof t != "object" || Array.isArray(t)) ? (d({ error: "color grade must be an object or null" }), null) : b({
 			type: "setColorGrade",
 			clipIds: [e],
 			grade: t
 		});
 	}
-	async function k(e, t) {
+	async function ge(e, t) {
 		return t !== null && (typeof t != "object" || Array.isArray(t)) ? (d({ error: "LUT reference must be an object or null" }), null) : b({
 			type: "setLut",
 			clipIds: [e],
 			lut: t
 		});
 	}
-	async function ue(e, t) {
+	async function A(e, t) {
 		return t !== null && (typeof t != "object" || Array.isArray(t)) ? (d({ error: "chroma key must be an object or null" }), null) : b({
 			type: "setChromaKey",
 			clipIds: [e],
 			chromaKey: t
 		});
 	}
-	async function de(e, t) {
+	async function _e(e, t) {
 		return typeof t != "object" || !t || Array.isArray(t) ? (d({ error: "text style must be an object" }), null) : b({
 			type: "setClipProperties",
 			clipIds: [e],
 			properties: { textStyle: t }
 		});
 	}
-	async function fe() {
+	async function ve() {
 		let e = w(a.timeline, a.selectedClipId);
 		return e === null ? (d({ error: "select a clip before deleting it" }), null) : b({
 			type: "removeClips",
 			clipIds: [e.clip.id]
 		});
 	}
-	function pe(e) {
+	function ye(e) {
 		d({ error: typeof e == "string" ? e : String(e) });
 	}
-	async function me(e, t) {
+	async function be(e, t) {
 		return Array.isArray(t) ? b({
 			type: "setEffects",
 			clipIds: [e],
 			effects: t
 		}) : (d({ error: "effects must be an array" }), null);
 	}
-	async function he(e, t) {
+	async function xe(e, t) {
 		return Array.isArray(t) ? b({
 			type: "setMasks",
 			clipIds: [e],
 			masks: t
 		}) : (d({ error: "masks must be an array" }), null);
 	}
-	async function ge(e, t, n, r) {
+	async function j(e, t, n, r) {
 		let i = Math.trunc(Number(n));
 		return !Number.isInteger(i) || i < 0 ? (d({ error: "keyframe frame must be a non-negative integer" }), null) : typeof r != "number" || !Number.isFinite(r) ? (d({ error: "keyframe value must be a finite number" }), null) : b({
 			type: "upsertKeyframe",
@@ -6852,7 +7039,7 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}
 		});
 	}
-	async function A(e, t, n) {
+	async function Se(e, t, n) {
 		let r = Math.trunc(Number(n));
 		return !Number.isInteger(r) || r < 0 ? null : b({
 			type: "removeKeyframe",
@@ -6861,7 +7048,7 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			frame: r
 		});
 	}
-	async function _e({ content: e, startFrame: t = 0, durationFrames: n = 60 } = {}) {
+	async function Ce({ content: e, startFrame: t = 0, durationFrames: n = 60 } = {}) {
 		let r = typeof e == "string" ? e.trim() : "";
 		return r.length === 0 ? (d({ error: "caption text must not be empty" }), null) : b({
 			type: "addCaptions",
@@ -6924,7 +7111,7 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}]
 		});
 	}
-	async function ve(e, { content: t, startFrame: n, durationFrames: r } = {}) {
+	async function we(e, { content: t, startFrame: n, durationFrames: r } = {}) {
 		let i = w(a.timeline, e);
 		if (i === null) return d({ error: "caption clip not found" }), null;
 		let o = {};
@@ -6941,7 +7128,7 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}]
 		}) : null;
 	}
-	async function ye(t) {
+	async function Te(t) {
 		let n = Array.isArray(t) ? t.filter((e) => typeof e == "string" && e.trim().length > 0) : [];
 		if (n.length === 0) return d({ error: "enter one or more media paths to import" }), null;
 		d({
@@ -6961,7 +7148,7 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}), null;
 		}
 	}
-	async function j() {
+	async function Ee() {
 		if (!(a.playback.active && a.playback.paused === !1)) try {
 			let t = a.timeline ?? {};
 			await e.invoke("playback_start", {
@@ -6979,7 +7166,7 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 				try {
 					let t = await e.playbackStatus();
 					if (t === null || t.active !== !0) {
-						be(), d({ playback: {
+						De(), d({ playback: {
 							active: !1,
 							paused: !0,
 							frame: a.frame
@@ -6994,13 +7181,13 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 							paused: t.paused === !0,
 							frame: n
 						}
-					}), (t.terminal === !0 || t.active === !1) && (be(), d({ playback: {
+					}), (t.terminal === !0 || t.active === !1) && (De(), d({ playback: {
 						active: !1,
 						paused: !0,
 						frame: n
 					} }));
 				} catch {
-					be(), d({ playback: {
+					De(), d({ playback: {
 						active: !1,
 						paused: !0,
 						frame: a.frame
@@ -7011,11 +7198,11 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			d({ error: D(e) });
 		}
 	}
-	function be() {
+	function De() {
 		l !== null && (i(l), l = null);
 	}
-	async function xe() {
-		be();
+	async function Oe() {
+		De();
 		try {
 			await e.invoke("playback_pause", { frame: a.frame });
 		} catch (e) {
@@ -7027,7 +7214,7 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			frame: a.frame
 		} });
 	}
-	async function Se(t) {
+	async function ke(t) {
 		let n = Number.isFinite(Number(t)) ? Math.trunc(Number(t)) : 0;
 		if (d({
 			frame: Math.max(0, n),
@@ -7041,8 +7228,8 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			d({ error: D(e) });
 		}
 	}
-	async function Ce() {
-		be();
+	async function Ae() {
+		De();
 		try {
 			await e.invoke("playback_stop");
 		} catch {}
@@ -7052,17 +7239,17 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			frame: a.frame
 		} });
 	}
-	function we(e) {
+	function je(e) {
 		d({ selectedClipId: typeof e == "string" && w(a.timeline, e) ? e : null });
 	}
-	function Te(e) {
+	function Me(e) {
 		d({ selectedMediaId: typeof e == "string" && ae(a.media).some((t) => t.id === e) ? e : null });
 	}
-	function Ee(e) {
+	function Ne(e) {
 		let t = Number.isFinite(Number(e)) ? Math.trunc(Number(e)) : 0;
 		d({ frame: Math.min(Math.max(0, t), Math.max(0, T(a.timeline) - 1)) });
 	}
-	async function De(e) {
+	async function Pe(e) {
 		let t = w(a.timeline, a.selectedClipId);
 		if (t === null) return d({ error: "select a clip before moving it" }), null;
 		let n = Math.trunc(Number(e) || 0);
@@ -7077,20 +7264,20 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}]
 		});
 	}
-	function Oe(e) {
+	function Fe(e) {
 		d({ view: e === "editor" ? "editor" : "home" });
 	}
-	function ke(e) {
+	function Ie(e) {
 		d(p(e));
 	}
-	function Ae(e) {
+	function Le(e) {
 		d({ theme: e === "light" || e === "dark" ? e : "system" });
 	}
-	function je() {
+	function Re() {
 		d({ error: null });
 	}
-	function Me(t = a.pollIntervalMs) {
-		Ne();
+	function ze(t = a.pollIntervalMs) {
+		Be();
 		let n = Number(t);
 		!Number.isFinite(n) || n < 250 || (d({ pollIntervalMs: n }), s = r(async () => {
 			if (!a.busy) try {
@@ -7107,11 +7294,11 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}
 		}, n));
 	}
-	function Ne() {
+	function Be() {
 		s !== null && (i(s), s = null);
 	}
-	function Pe() {
-		Ne(), c !== null && (i(c), c = null), be(), o.clear();
+	function Ve() {
+		Be(), c !== null && (i(c), c = null), De(), o.clear();
 	}
 	return {
 		getSnapshot: () => a,
@@ -7127,42 +7314,49 @@ function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 		apply: b,
 		undo: () => x("undo"),
 		redo: () => x("redo"),
-		selectClip: we,
-		selectMedia: Te,
+		selectClip: je,
+		selectMedia: Me,
 		setClipProperties: ee,
 		setTrackProperties: te,
-		setClipEffects: me,
-		setClipMasks: he,
-		setColorGrade: le,
-		setLut: k,
-		setChromaKey: ue,
-		setTextStyle: de,
-		removeSelected: fe,
-		setError: pe,
-		upsertKeyframe: ge,
-		removeKeyframe: A,
-		addCaption: _e,
-		updateCaption: ve,
-		importMedia: ye,
-		play: j,
-		pause: xe,
-		seekTo: Se,
-		stopPlayback: Ce,
+		setClipEffects: be,
+		setClipMasks: xe,
+		refreshLuts: le,
+		uploadFile: k,
+		uploadFiles: ue,
+		refreshLibrary: de,
+		importLibraryEntry: fe,
+		refreshMotion: pe,
+		createMotion: me,
+		setColorGrade: he,
+		setLut: ge,
+		setChromaKey: A,
+		setTextStyle: _e,
+		removeSelected: ve,
+		setError: ye,
+		upsertKeyframe: j,
+		removeKeyframe: Se,
+		addCaption: Ce,
+		updateCaption: we,
+		importMedia: Te,
+		play: Ee,
+		pause: Oe,
+		seekTo: ke,
+		stopPlayback: Ae,
 		openPanel: C,
 		closePanel: ne,
 		refreshSettings: oe,
 		clearStorage: se,
 		exportVideo: ce,
 		cancelExport: O,
-		setFrame: Ee,
-		moveSelected: De,
-		setView: Oe,
-		setLocale: ke,
-		setTheme: Ae,
-		clearError: je,
-		startPolling: Me,
-		stopPolling: Ne,
-		dispose: Pe,
+		setFrame: Ne,
+		moveSelected: Pe,
+		setView: Fe,
+		setLocale: Ie,
+		setTheme: Le,
+		clearError: Re,
+		startPolling: ze,
+		stopPolling: Be,
+		dispose: Ve,
 		clipCount: () => ie(a.timeline),
 		totalFrames: () => T(a.timeline)
 	};
@@ -7241,7 +7435,12 @@ function pe(e, { state: t, client: n, t: r, store: i }) {
 	let a = t.media;
 	return O(e, "aside", {
 		className: "otn-media",
-		"aria-label": r("media")
+		"aria-label": r("media"),
+		"data-otn-dropzone": "",
+		onDragOver: (e) => e.preventDefault(),
+		onDrop: (e) => {
+			e.preventDefault(), i.uploadFiles(e.dataTransfer?.files);
+		}
 	}, O(e, "div", { className: "otn-panel-title" }, O(e, "span", null, r("media")), O(e, "span", null, String(a.length))), O(e, "form", {
 		className: "otn-media-import",
 		onSubmit: (e) => {
@@ -7266,8 +7465,7 @@ function pe(e, { state: t, client: n, t: r, store: i }) {
 		className: "otn-file-picker",
 		"data-otn-file-picker": "",
 		onChange: (e) => {
-			let t = e.target.files?.[0] ?? null, n = typeof t?.path == "string" ? t.path : "";
-			n.length > 0 ? i.importMedia([n]) : i.setError(r("filePathUnavailable")), e.target.value = "";
+			i.uploadFiles(e.target.files), e.target.value = "";
 		}
 	})), a.length === 0 ? O(e, "p", { className: "otn-empty" }, r("noMedia")) : O(e, "ul", { className: "otn-media-list" }, a.map((r) => {
 		let a = typeof r.name == "string" && r.name.length > 0 ? r.name : r.id, o = typeof r.type == "string" ? r.type : "media", s = typeof r.path == "string" ? n.assetUrl(r.path) : null;
@@ -7511,7 +7709,9 @@ function _e({ React: e, state: t, store: n, t: r }) {
 		className: `otn-inspector__tab${u === t ? " otn-inspector__tab--active" : ""}`,
 		"aria-selected": u === t,
 		"data-otn-inspector-tab": t,
-		onClick: () => d(t)
+		onClick: () => {
+			d(t), t === "advanced" && n.refreshLuts();
+		}
 	}, r(t === "properties" ? "properties" : t)))), O(e, "div", { hidden: u !== "properties" }, O(e, "div", { className: "otn-inspector__group" }, O(e, "span", { className: "otn-inspector__title" }, r("properties")), A(e, {
 		label: r("opacity"),
 		value: c.opacity,
@@ -7609,34 +7809,104 @@ function _e({ React: e, state: t, store: n, t: r }) {
 		onClick: () => {
 			n.setTrackProperties(p, { syncLocked: f.syncLocked !== !0 });
 		}
-	}, r("syncLock"))))), O(e, "div", { hidden: u !== "effects" }, O(e, Ce, {
+	}, r("syncLock"))))), O(e, "div", { hidden: u !== "effects" }, O(e, Te, {
 		React: e,
 		clip: a,
 		store: n,
 		t: r,
 		disabled: m
-	})), O(e, "div", { hidden: u !== "keyframes" }, O(e, we, {
+	})), O(e, "div", { hidden: u !== "keyframes" }, O(e, Ee, {
 		React: e,
 		state: t,
 		clip: a,
 		store: n,
 		t: r,
 		disabled: m
-	})), O(e, "div", { hidden: u !== "masks" }, O(e, Ee, {
+	})), O(e, "div", { hidden: u !== "masks" }, O(e, Oe, {
 		React: e,
 		clip: a,
 		store: n,
 		t: r,
 		disabled: m
-	})), O(e, "div", { hidden: u !== "advanced" }, O(e, be, {
+	})), O(e, "div", { hidden: u !== "advanced" }, O(e, Se, {
 		React: e,
+		state: t,
 		clip: a,
 		store: n,
 		t: r,
 		disabled: m
 	}))));
 }
-var ve = {
+function ve({ React: e, state: t, store: n, t: r }) {
+	let i = t.library;
+	return O(e, "div", {
+		className: "otn-overlay",
+		"data-otn-panel": "library"
+	}, O(e, "section", {
+		className: "otn-sheet",
+		"aria-label": r("library")
+	}, O(e, "div", { className: "otn-sheet__header" }, O(e, "h2", { className: "otn-sheet__title" }, r("library")), k(e, r("close"), () => n.closePanel(), { ariaLabel: r("close") })), O(e, "div", { className: "otn-sheet__body" }, O(e, "p", { className: "otn-sheet__hint" }, r("libraryHint")), t.libraryLoading ? O(e, "p", {
+		className: "otn-progress",
+		role: "status"
+	}, r("loading")) : null, i.length === 0 ? O(e, "p", { className: "otn-sheet__hint" }, r("libraryEmpty")) : i.map((t) => O(e, "div", {
+		key: t.id,
+		className: "otn-effect-card",
+		"data-otn-library-id": t.id
+	}, O(e, "div", { className: "otn-field__row" }, O(e, "strong", { className: "otn-inspector__track-name" }, t.name ?? t.id), O(e, "span", { className: "otn-sheet__hint" }, t.kind ?? t.type ?? ""), O(e, "button", {
+		type: "button",
+		className: "otn-btn",
+		"data-otn-action": "library-import",
+		onClick: () => {
+			n.importLibraryEntry(t.id);
+		}
+	}, r("importToProject"))), typeof t.path == "string" ? O(e, "span", { className: "otn-sheet__hint" }, t.path) : null)), O(e, "button", {
+		type: "button",
+		className: "otn-btn",
+		"data-otn-action": "library-refresh",
+		onClick: () => {
+			n.refreshLibrary();
+		}
+	}, r("refresh")))));
+}
+function ye({ React: e, state: t, store: n, t: r }) {
+	let i = t.motion;
+	function a(e) {
+		e.preventDefault();
+		let t = e.currentTarget.elements.motionTitle, r = typeof t?.value == "string" && t.value.trim().length > 0 ? t.value.trim() : "Untitled Motion";
+		n.createMotion(r), t && (t.value = "");
+	}
+	return O(e, "div", {
+		className: "otn-overlay",
+		"data-otn-panel": "motion"
+	}, O(e, "section", {
+		className: "otn-sheet",
+		"aria-label": r("motion")
+	}, O(e, "div", { className: "otn-sheet__header" }, O(e, "h2", { className: "otn-sheet__title" }, r("motion")), k(e, r("close"), () => n.closePanel(), { ariaLabel: r("close") })), O(e, "div", { className: "otn-sheet__body" }, O(e, "p", { className: "otn-sheet__hint" }, r("motionHint")), i.length === 0 ? O(e, "p", { className: "otn-sheet__hint" }, r("motionEmpty")) : i.map((t) => O(e, "div", {
+		key: t.id,
+		className: "otn-effect-card",
+		"data-otn-motion-id": t.id
+	}, O(e, "strong", { className: "otn-inspector__track-name" }, t.title ?? t.id), O(e, "span", { className: "otn-sheet__hint" }, t.revisionHash ? t.revisionHash.slice(0, 12) : ""))), O(e, "form", {
+		className: "otn-sheet__section",
+		onSubmit: a
+	}, O(e, "span", { className: "otn-sheet__section-title" }, r("createMotion")), O(e, "div", { className: "otn-field__row" }, O(e, "input", {
+		className: "otn-input",
+		name: "motionTitle",
+		placeholder: r("motionTitle"),
+		"data-otn-motion-title": ""
+	}), O(e, "button", {
+		type: "submit",
+		className: "otn-btn",
+		"data-otn-action": "motion-create"
+	}, r("createMotion")))), O(e, "button", {
+		type: "button",
+		className: "otn-btn",
+		"data-otn-action": "motion-refresh",
+		onClick: () => {
+			n.refreshMotion();
+		}
+	}, r("refresh")))));
+}
+var be = {
 	exposure: 0,
 	temperature: 0,
 	tint: 0,
@@ -7660,7 +7930,7 @@ var ve = {
 	contrast: 0,
 	saturation: 1,
 	hslSecondary: null
-}, ye = {
+}, xe = {
 	fontName: "Helvetica-Bold",
 	fontSize: 48,
 	fontScale: 1,
@@ -7706,125 +7976,125 @@ function j(e, t, n) {
 	let r = e.elements[t]?.value, i = Number(r);
 	return Number.isFinite(i) ? i : n;
 }
-function be({ React: e, clip: t, store: n, t: r, disabled: i }) {
-	let a = t.colorGrade ?? ve, o = t.textStyle ?? ye, s = t.chromaKey ?? null, c = t.lut ?? null;
+function Se({ React: e, state: t, clip: n, store: r, t: i, disabled: a }) {
+	let o = n.colorGrade ?? be, s = n.textStyle ?? xe, c = n.chromaKey ?? null, l = n.lut ?? null;
 	return O(e, "div", {
 		className: "otn-inspector__group",
 		"data-otn-advanced": ""
-	}, O(e, "span", { className: "otn-inspector__title" }, r("advanced")), O(e, "form", {
+	}, O(e, "span", { className: "otn-inspector__title" }, i("advanced")), O(e, "form", {
 		className: "otn-advanced-card",
 		"data-otn-advanced-section": "colorGrade",
 		onSubmit: (e) => {
 			e.preventDefault();
-			let r = e.currentTarget;
-			n.setColorGrade(t.id, {
-				...ve,
-				...a,
-				exposure: j(r, "exposure", a.exposure ?? 0),
-				temperature: j(r, "temperature", a.temperature ?? 0),
-				tint: j(r, "tint", a.tint ?? 0),
-				contrast: j(r, "contrast", a.contrast ?? 0),
-				saturation: j(r, "saturation", a.saturation ?? 1),
-				liftGammaGain: a.liftGammaGain ?? ve.liftGammaGain,
-				hslSecondary: a.hslSecondary ?? null
+			let t = e.currentTarget;
+			r.setColorGrade(n.id, {
+				...be,
+				...o,
+				exposure: j(t, "exposure", o.exposure ?? 0),
+				temperature: j(t, "temperature", o.temperature ?? 0),
+				tint: j(t, "tint", o.tint ?? 0),
+				contrast: j(t, "contrast", o.contrast ?? 0),
+				saturation: j(t, "saturation", o.saturation ?? 1),
+				liftGammaGain: o.liftGammaGain ?? be.liftGammaGain,
+				hslSecondary: o.hslSecondary ?? null
 			});
 		}
-	}, O(e, "span", { className: "otn-inspector__title" }, r("colorGrade")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("exposure")), O(e, "input", {
+	}, O(e, "span", { className: "otn-inspector__title" }, i("colorGrade")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("exposure")), O(e, "input", {
 		className: "otn-field__input",
 		name: "exposure",
 		type: "number",
 		step: .1,
 		min: -5,
 		max: 5,
-		defaultValue: String(a.exposure ?? 0),
+		defaultValue: String(o.exposure ?? 0),
 		"data-otn-grade-field": "exposure"
-	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("contrast")), O(e, "input", {
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("contrast")), O(e, "input", {
 		className: "otn-field__input",
 		name: "contrast",
 		type: "number",
 		step: .05,
 		min: -1,
 		max: 2,
-		defaultValue: String(a.contrast ?? 0),
+		defaultValue: String(o.contrast ?? 0),
 		"data-otn-grade-field": "contrast"
-	}))), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("temperature")), O(e, "input", {
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("temperature")), O(e, "input", {
 		className: "otn-field__input",
 		name: "temperature",
 		type: "number",
 		step: .05,
 		min: -1,
 		max: 1,
-		defaultValue: String(a.temperature ?? 0),
+		defaultValue: String(o.temperature ?? 0),
 		"data-otn-grade-field": "temperature"
-	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("tint")), O(e, "input", {
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("tint")), O(e, "input", {
 		className: "otn-field__input",
 		name: "tint",
 		type: "number",
 		step: .05,
 		min: -1,
 		max: 1,
-		defaultValue: String(a.tint ?? 0),
+		defaultValue: String(o.tint ?? 0),
 		"data-otn-grade-field": "tint"
-	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("saturation")), O(e, "input", {
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("saturation")), O(e, "input", {
 		className: "otn-field__input",
 		name: "saturation",
 		type: "number",
 		step: .05,
 		min: 0,
 		max: 3,
-		defaultValue: String(a.saturation ?? 1),
+		defaultValue: String(o.saturation ?? 1),
 		"data-otn-grade-field": "saturation"
 	}))), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
 		type: "submit",
 		className: "otn-btn",
-		disabled: i,
+		disabled: a,
 		"data-otn-action": "grade-apply"
-	}, r("apply")), t.colorGrade !== null && t.colorGrade !== void 0 ? O(e, "button", {
+	}, i("apply")), n.colorGrade !== null && n.colorGrade !== void 0 ? O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
-		disabled: i,
+		disabled: a,
 		"data-otn-action": "grade-remove",
 		onClick: () => {
-			n.setColorGrade(t.id, null);
+			r.setColorGrade(n.id, null);
 		}
-	}, r("remove")) : null)), O(e, "form", {
+	}, i("remove")) : null)), O(e, "form", {
 		className: "otn-advanced-card",
 		"data-otn-advanced-section": "textStyle",
 		onSubmit: (e) => {
 			e.preventDefault();
-			let r = e.currentTarget;
-			n.setTextStyle(t.id, {
-				...ye,
-				...o,
-				fontName: String(r.elements.fontName?.value ?? o.fontName ?? "Helvetica-Bold"),
-				fontSize: j(r, "fontSize", o.fontSize ?? 48),
-				fontScale: j(r, "fontScale", o.fontScale ?? 1),
-				alignment: String(r.elements.alignment?.value ?? o.alignment ?? "center"),
+			let t = e.currentTarget;
+			r.setTextStyle(n.id, {
+				...xe,
+				...s,
+				fontName: String(t.elements.fontName?.value ?? s.fontName ?? "Helvetica-Bold"),
+				fontSize: j(t, "fontSize", s.fontSize ?? 48),
+				fontScale: j(t, "fontScale", s.fontScale ?? 1),
+				alignment: String(t.elements.alignment?.value ?? s.alignment ?? "center"),
 				color: {
-					r: j(r, "colorR", o.color?.r ?? 1),
-					g: j(r, "colorG", o.color?.g ?? 1),
-					b: j(r, "colorB", o.color?.b ?? 1),
-					a: j(r, "colorA", o.color?.a ?? 1)
+					r: j(t, "colorR", s.color?.r ?? 1),
+					g: j(t, "colorG", s.color?.g ?? 1),
+					b: j(t, "colorB", s.color?.b ?? 1),
+					a: j(t, "colorA", s.color?.a ?? 1)
 				}
 			});
 		}
-	}, O(e, "span", { className: "otn-inspector__title" }, r("textStyle")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("fontName")), O(e, "input", {
+	}, O(e, "span", { className: "otn-inspector__title" }, i("textStyle")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("fontName")), O(e, "input", {
 		className: "otn-field__input",
 		name: "fontName",
-		defaultValue: o.fontName ?? "Helvetica-Bold",
+		defaultValue: s.fontName ?? "Helvetica-Bold",
 		"data-otn-text-field": "fontName"
-	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("fontSize")), O(e, "input", {
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("fontSize")), O(e, "input", {
 		className: "otn-field__input",
 		name: "fontSize",
 		type: "number",
 		min: 4,
 		max: 400,
-		defaultValue: String(o.fontSize ?? 48),
+		defaultValue: String(s.fontSize ?? 48),
 		"data-otn-text-field": "fontSize"
-	}))), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("alignment")), O(e, "select", {
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("alignment")), O(e, "select", {
 		className: "otn-field__input",
 		name: "alignment",
-		defaultValue: o.alignment ?? "center",
+		defaultValue: s.alignment ?? "center",
 		"data-otn-text-field": "alignment"
 	}, [
 		"left",
@@ -7833,14 +8103,14 @@ function be({ React: e, clip: t, store: n, t: r, disabled: i }) {
 	].map((t) => O(e, "option", {
 		key: t,
 		value: t
-	}, t)))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("textColor")), O(e, "div", { className: "otn-field__row" }, O(e, "input", {
+	}, t)))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("textColor")), O(e, "div", { className: "otn-field__row" }, O(e, "input", {
 		className: "otn-field__input",
 		name: "colorR",
 		type: "number",
 		min: 0,
 		max: 1,
 		step: .05,
-		defaultValue: String(o.color?.r ?? 1),
+		defaultValue: String(s.color?.r ?? 1),
 		"aria-label": "R"
 	}), O(e, "input", {
 		className: "otn-field__input",
@@ -7849,7 +8119,7 @@ function be({ React: e, clip: t, store: n, t: r, disabled: i }) {
 		min: 0,
 		max: 1,
 		step: .05,
-		defaultValue: String(o.color?.g ?? 1),
+		defaultValue: String(s.color?.g ?? 1),
 		"aria-label": "G"
 	}), O(e, "input", {
 		className: "otn-field__input",
@@ -7858,38 +8128,38 @@ function be({ React: e, clip: t, store: n, t: r, disabled: i }) {
 		min: 0,
 		max: 1,
 		step: .05,
-		defaultValue: String(o.color?.b ?? 1),
+		defaultValue: String(s.color?.b ?? 1),
 		"aria-label": "B"
 	})))), O(e, "button", {
 		type: "submit",
 		className: "otn-btn",
-		disabled: i,
+		disabled: a,
 		"data-otn-action": "text-style-apply"
-	}, r("apply"))), O(e, "form", {
+	}, i("apply"))), O(e, "form", {
 		className: "otn-advanced-card",
 		"data-otn-advanced-section": "chromaKey",
 		onSubmit: (e) => {
 			e.preventDefault();
-			let r = e.currentTarget;
-			n.setChromaKey(t.id, {
+			let t = e.currentTarget;
+			r.setChromaKey(n.id, {
 				keyColor: {
-					r: j(r, "keyR", s?.keyColor?.r ?? 0),
-					g: j(r, "keyG", s?.keyColor?.g ?? 1),
-					b: j(r, "keyB", s?.keyColor?.b ?? 0)
+					r: j(t, "keyR", c?.keyColor?.r ?? 0),
+					g: j(t, "keyG", c?.keyColor?.g ?? 1),
+					b: j(t, "keyB", c?.keyColor?.b ?? 0)
 				},
-				similarity: j(r, "similarity", s?.similarity ?? .15),
-				smoothness: j(r, "smoothness", s?.smoothness ?? .35),
-				spill: j(r, "spill", s?.spill ?? .5)
+				similarity: j(t, "similarity", c?.similarity ?? .15),
+				smoothness: j(t, "smoothness", c?.smoothness ?? .35),
+				spill: j(t, "spill", c?.spill ?? .5)
 			});
 		}
-	}, O(e, "span", { className: "otn-inspector__title" }, r("chromaKey")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("keyColor")), O(e, "div", { className: "otn-field__row" }, O(e, "input", {
+	}, O(e, "span", { className: "otn-inspector__title" }, i("chromaKey")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("keyColor")), O(e, "div", { className: "otn-field__row" }, O(e, "input", {
 		className: "otn-field__input",
 		name: "keyR",
 		type: "number",
 		min: 0,
 		max: 1,
 		step: .05,
-		defaultValue: String(s?.keyColor?.r ?? 0),
+		defaultValue: String(c?.keyColor?.r ?? 0),
 		"aria-label": "R"
 	}), O(e, "input", {
 		className: "otn-field__input",
@@ -7898,7 +8168,7 @@ function be({ React: e, clip: t, store: n, t: r, disabled: i }) {
 		min: 0,
 		max: 1,
 		step: .05,
-		defaultValue: String(s?.keyColor?.g ?? 1),
+		defaultValue: String(c?.keyColor?.g ?? 1),
 		"aria-label": "G"
 	}), O(e, "input", {
 		className: "otn-field__input",
@@ -7907,95 +8177,123 @@ function be({ React: e, clip: t, store: n, t: r, disabled: i }) {
 		min: 0,
 		max: 1,
 		step: .05,
-		defaultValue: String(s?.keyColor?.b ?? 0),
+		defaultValue: String(c?.keyColor?.b ?? 0),
 		"aria-label": "B"
-	}))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("similarity")), O(e, "input", {
+	}))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("similarity")), O(e, "input", {
 		className: "otn-field__input",
 		name: "similarity",
 		type: "number",
 		min: 0,
 		max: 1,
 		step: .01,
-		defaultValue: String(s?.similarity ?? .15),
+		defaultValue: String(c?.similarity ?? .15),
 		"data-otn-chroma-field": "similarity"
-	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("spill")), O(e, "input", {
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("spill")), O(e, "input", {
 		className: "otn-field__input",
 		name: "spill",
 		type: "number",
 		min: 0,
 		max: 1,
 		step: .01,
-		defaultValue: String(s?.spill ?? .5),
+		defaultValue: String(c?.spill ?? .5),
 		"data-otn-chroma-field": "spill"
 	}))), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
 		type: "submit",
 		className: "otn-btn",
-		disabled: i,
+		disabled: a,
 		"data-otn-action": "chroma-apply"
-	}, r("apply")), s === null ? null : O(e, "button", {
+	}, i("apply")), c === null ? null : O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
-		disabled: i,
+		disabled: a,
 		"data-otn-action": "chroma-remove",
 		onClick: () => {
-			n.setChromaKey(t.id, null);
+			r.setChromaKey(n.id, null);
 		}
-	}, r("remove")))), O(e, "form", {
+	}, i("remove")))), O(e, "form", {
 		className: "otn-advanced-card",
 		"data-otn-advanced-section": "lut",
 		onSubmit: (e) => {
 			e.preventDefault();
-			let i = e.currentTarget, a = String(i.elements.lutId?.value ?? "").trim(), o = String(i.elements.lutName?.value ?? "").trim();
-			if (a.length !== 64 || o.length === 0) {
-				n.setError(r("lutInvalid"));
+			let a = e.currentTarget, o = String(a.elements.lutSelect?.value ?? ""), s = t.luts.find((e) => e.id === o) ?? null, c = s?.id ?? String(a.elements.lutId?.value ?? "").trim(), l = s?.name ?? String(a.elements.lutName?.value ?? "").trim();
+			if (c.length !== 64 || l.length === 0) {
+				r.setError(i("lutInvalid"));
 				return;
 			}
-			n.setLut(t.id, {
-				id: a,
-				name: o,
-				intensity: j(i, "lutIntensity", 1)
+			r.setLut(n.id, {
+				id: c,
+				name: l,
+				intensity: j(a, "lutIntensity", s?.intensity ?? 1)
 			});
 		}
-	}, O(e, "span", { className: "otn-inspector__title" }, r("lut")), O(e, "p", { className: "otn-sheet__hint" }, c === null ? r("noLut") : `${c.name ?? ""} · ${c.intensity ?? ""}`), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("lutId")), O(e, "input", {
+	}, O(e, "span", { className: "otn-inspector__title" }, i("lut")), O(e, "p", { className: "otn-sheet__hint" }, l === null ? i("noLut") : `${l.name ?? ""} · ${l.intensity ?? ""}`), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("lutSelect")), O(e, "select", {
 		className: "otn-field__input",
-		name: "lutId",
-		defaultValue: c?.id ?? "",
-		"data-otn-lut-field": "id",
-		spellCheck: !1
-	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("lutIntensity")), O(e, "input", {
+		name: "lutSelect",
+		defaultValue: l?.id ?? "",
+		"data-otn-lut-select": ""
+	}, O(e, "option", { value: "" }, i("lutSelectPlaceholder")), t.luts.map((t) => O(e, "option", {
+		key: t.id,
+		value: t.id
+	}, `${t.name ?? t.id.slice(0, 12)} (${Math.round((t.bytes ?? 0) / 1024)} KB)`)))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("lutIntensity")), O(e, "input", {
 		className: "otn-field__input",
 		name: "lutIntensity",
 		type: "number",
 		min: 0,
 		max: 1,
 		step: .05,
-		defaultValue: String(c?.intensity ?? 1),
+		defaultValue: String(l?.intensity ?? 1),
 		"data-otn-lut-field": "intensity"
-	}))), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("lutName")), O(e, "input", {
-		className: "otn-field__input",
-		name: "lutName",
-		defaultValue: c?.name ?? "",
-		"data-otn-lut-field": "name"
-	})), O(e, "button", {
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
 		type: "submit",
 		className: "otn-btn",
-		disabled: i,
+		disabled: a,
 		"data-otn-action": "lut-apply"
-	}, r("apply")), c === null ? null : O(e, "button", {
+	}, i("applySelectedLut")), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
-		disabled: i,
+		disabled: t.lutsLoading,
+		"data-otn-action": "lut-refresh",
+		onClick: () => {
+			r.refreshLuts();
+		}
+	}, i("refresh")), l === null ? null : O(e, "button", {
+		type: "button",
+		className: "otn-toggle",
+		disabled: a,
 		"data-otn-action": "lut-remove",
 		onClick: () => {
-			n.setLut(t.id, null);
+			r.setLut(n.id, null);
 		}
-	}, r("remove")))));
+	}, i("remove"))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("lutUpload")), O(e, "input", {
+		type: "file",
+		accept: ".cube",
+		className: "otn-file-picker",
+		"data-otn-lut-upload": "",
+		onChange: (e) => {
+			let t = e.target.files?.[0] ?? null;
+			e.target.value = "", t !== null && r.uploadFile(t, { kind: "lut" }).then((e) => {
+				let t = e?.lut ?? null;
+				t !== null && r.setLut(n.id, t);
+			});
+		}
+	})), O(e, "details", { className: "otn-advanced-manual" }, O(e, "summary", null, i("lutManual")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("lutId")), O(e, "input", {
+		className: "otn-field__input",
+		name: "lutId",
+		defaultValue: l?.id ?? "",
+		"data-otn-lut-field": "id",
+		spellCheck: !1
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, i("lutName")), O(e, "input", {
+		className: "otn-field__input",
+		name: "lutName",
+		defaultValue: l?.name ?? "",
+		"data-otn-lut-field": "name"
+	}))))));
 }
-var xe = [
+var Ce = [
 	"grayscale",
 	"sepia",
 	"invert"
-], Se = [
+], we = [
 	{
 		property: "opacity",
 		field: "opacityTrack",
@@ -8030,7 +8328,7 @@ var xe = [
 		scalar: !1
 	}
 ];
-function Ce({ React: e, clip: t, store: n, t: r, disabled: i }) {
+function Te({ React: e, clip: t, store: n, t: r, disabled: i }) {
 	let a = Array.isArray(t.effects) ? t.effects : [];
 	function o(e) {
 		n.setClipEffects(t.id, e);
@@ -8051,7 +8349,7 @@ function Ce({ React: e, clip: t, store: n, t: r, disabled: i }) {
 	return O(e, "div", {
 		className: "otn-inspector__group",
 		"data-otn-effects": ""
-	}, O(e, "span", { className: "otn-inspector__title" }, r("effects")), O(e, "div", { className: "otn-field__row" }, xe.map((t) => O(e, "button", {
+	}, O(e, "span", { className: "otn-inspector__title" }, r("effects")), O(e, "div", { className: "otn-field__row" }, Ce.map((t) => O(e, "button", {
 		key: t,
 		type: "button",
 		className: "otn-toggle",
@@ -8091,11 +8389,11 @@ function Ce({ React: e, clip: t, store: n, t: r, disabled: i }) {
 		}
 	})))), O(e, "p", { className: "otn-sheet__hint" }, r("effectsHint")));
 }
-function we({ React: e, state: t, clip: n, store: r, t: i, disabled: a }) {
+function Ee({ React: e, state: t, clip: n, store: r, t: i, disabled: a }) {
 	return O(e, "div", {
 		className: "otn-inspector__group",
 		"data-otn-keyframes": ""
-	}, O(e, "span", { className: "otn-inspector__title" }, i("keyframes")), Se.map(({ property: o, field: s, scalar: c, value: l }) => {
+	}, O(e, "span", { className: "otn-inspector__title" }, i("keyframes")), we.map(({ property: o, field: s, scalar: c, value: l }) => {
 		let u = n[s], d = Array.isArray(u?.keyframes) ? u.keyframes : [], f = c && u !== void 0 ? se(u, t.frame) : null;
 		return O(e, "div", {
 			key: o,
@@ -8124,11 +8422,11 @@ function we({ React: e, state: t, clip: n, store: r, t: i, disabled: a }) {
 		}, i("removeKeyframe"))))), f === null ? null : O(e, "span", { className: "otn-sheet__hint" }, `${i("evaluate")} ${t.frame}: ${f.toFixed(3)}`));
 	}), O(e, "p", { className: "otn-sheet__hint" }, i("keyframesHint")));
 }
-function Te(e) {
+function De(e) {
 	let t = e?.shape?.kind;
 	return t === "circle" ? "ellipse" : t === "poly" ? "rectangle / poly" : t === "linear" ? "linear" : "mask";
 }
-function Ee({ React: e, clip: t, store: n, t: r, disabled: i }) {
+function Oe({ React: e, clip: t, store: n, t: r, disabled: i }) {
 	let a = Array.isArray(t.masks) ? t.masks : [];
 	function o(e) {
 		n.setClipMasks(t.id, e);
@@ -8200,7 +8498,7 @@ function Ee({ React: e, clip: t, store: n, t: r, disabled: i }) {
 		key: i,
 		className: "otn-effect-card",
 		"data-otn-mask-index": i
-	}, O(e, "div", { className: "otn-field__row" }, O(e, "strong", { className: "otn-inspector__track-name" }, Te(t)), O(e, "button", {
+	}, O(e, "div", { className: "otn-field__row" }, O(e, "strong", { className: "otn-inspector__track-name" }, De(t)), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
 		"aria-pressed": t.invert === !0,
@@ -8329,7 +8627,7 @@ function Ee({ React: e, clip: t, store: n, t: r, disabled: i }) {
 		}, r("apply"))) : null);
 	})())), O(e, "p", { className: "otn-sheet__hint" }, r("masksHint")));
 }
-function De({ React: e, state: t, store: n, t: r }) {
+function ke({ React: e, state: t, store: n, t: r }) {
 	let i = oe(t.timeline), [a, o] = e.useState(""), [s, c] = e.useState({
 		content: "",
 		startFrame: 0,
@@ -8449,17 +8747,17 @@ function De({ React: e, state: t, store: n, t: r }) {
 		onClick: f
 	}, r("saveCaption")))))));
 }
-var Oe = [
+var Ae = [
 	"h264",
 	"h265",
 	"prores",
 	"prores4444"
-], ke = [
+], je = [
 	"720p",
 	"1080p",
 	"4k"
 ];
-function Ae({ React: e, state: t, store: n, t: r }) {
+function Me({ React: e, state: t, store: n, t: r }) {
 	let [i, a] = e.useState({
 		outPath: "/tmp/opentake-export.mp4",
 		codec: "h264",
@@ -8507,7 +8805,7 @@ function Ae({ React: e, state: t, store: n, t: r }) {
 		value: i.codec,
 		"data-otn-export-field": "codec",
 		onChange: (e) => s("codec", e.target.value)
-	}, Oe.map((t) => O(e, "option", {
+	}, Ae.map((t) => O(e, "option", {
 		key: t,
 		value: t
 	}, t)))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("quality")), O(e, "select", {
@@ -8515,7 +8813,7 @@ function Ae({ React: e, state: t, store: n, t: r }) {
 		value: i.quality,
 		"data-otn-export-field": "quality",
 		onChange: (e) => s("quality", e.target.value)
-	}, ke.map((t) => O(e, "option", {
+	}, je.map((t) => O(e, "option", {
 		key: t,
 		value: t
 	}, t)))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("bitDepth")), O(e, "select", {
@@ -8566,7 +8864,7 @@ function Ae({ React: e, state: t, store: n, t: r }) {
 		style: { inlineSize: `${l}%` }
 	})) : null, o.active ? O(e, "span", { className: "otn-sheet__hint" }, `${o.done} / ${o.total || "?"}`) : null, o.error === null ? null : O(e, "span", { className: "otn-sheet__hint" }, o.error), o.summary === null ? null : O(e, "span", { className: "otn-sheet__hint" }, JSON.stringify(o.summary).slice(0, 500))))));
 }
-function je({ React: e, state: t, store: n, t: r }) {
+function Ne({ React: e, state: t, store: n, t: r }) {
 	e.useEffect(() => {
 		n.refreshSettings();
 	}, []);
@@ -8593,7 +8891,7 @@ function je({ React: e, state: t, store: n, t: r }) {
 		role: "status"
 	}, r("loading")) : null))));
 }
-function Me(e, { state: t, store: n, client: r, t: i }) {
+function Pe(e, { state: t, store: n, client: r, t: i }) {
 	return O(e, "div", { className: "otn-body" }, pe(e, {
 		state: t,
 		client: r,
@@ -8615,7 +8913,7 @@ function Me(e, { state: t, store: n, client: r, t: i }) {
 		t: i
 	}));
 }
-function Ne({ React: e, store: t, client: n, theme: r = "system" }) {
+function Fe({ React: e, store: t, client: n, theme: r = "system" }) {
 	if (e === null || typeof e.createElement != "function") throw TypeError("React is required");
 	if (typeof n != "object" || !n) throw TypeError("client is required");
 	let i = le(e, t), a = S(i.locale).t, o = r === "light" || r === "dark" ? r : i.theme === "light" || i.theme === "dark" ? i.theme : "system", s = i.loading || i.busy, c = e.useRef(null), [l, u] = e.useState(!1);
@@ -8695,6 +8993,18 @@ function Ne({ React: e, store: t, client: n, theme: r = "system" }) {
 	}, a("export")), O(e, "button", {
 		type: "button",
 		className: "otn-btn",
+		"data-otn-action": "open-library",
+		"aria-pressed": i.panel === "library",
+		onClick: () => t.openPanel(i.panel === "library" ? "editor" : "library")
+	}, a("library")), O(e, "button", {
+		type: "button",
+		className: "otn-btn",
+		"data-otn-action": "open-motion",
+		"aria-pressed": i.panel === "motion",
+		onClick: () => t.openPanel(i.panel === "motion" ? "editor" : "motion")
+	}, a("motion")), O(e, "button", {
+		type: "button",
+		className: "otn-btn",
 		"data-otn-action": "open-settings",
 		"aria-pressed": i.panel === "settings",
 		onClick: () => t.openPanel(i.panel === "settings" ? "editor" : "settings")
@@ -8718,22 +9028,32 @@ function Ne({ React: e, store: t, client: n, theme: r = "system" }) {
 		store: t,
 		client: n,
 		t: a
-	}) : Me(e, {
+	}) : Pe(e, {
 		state: i,
 		store: t,
 		client: n,
 		t: a
-	}), i.panel === "captions" ? O(e, De, {
+	}), i.panel === "captions" ? O(e, ke, {
 		React: e,
 		state: i,
 		store: t,
 		t: a
-	}) : null, i.panel === "export" ? O(e, Ae, {
+	}) : null, i.panel === "export" ? O(e, Me, {
 		React: e,
 		state: i,
 		store: t,
 		t: a
-	}) : null, i.panel === "settings" ? O(e, je, {
+	}) : null, i.panel === "settings" ? O(e, Ne, {
+		React: e,
+		state: i,
+		store: t,
+		t: a
+	}) : null, i.panel === "library" ? O(e, ve, {
+		React: e,
+		state: i,
+		store: t,
+		t: a
+	}) : null, i.panel === "motion" ? O(e, ye, {
 		React: e,
 		state: i,
 		store: t,
@@ -8758,24 +9078,24 @@ function Ne({ React: e, store: t, client: n, theme: r = "system" }) {
 }
 //#endregion
 //#region web/src/native/styles.js
-var Pe = "\n:host {\n  all: initial;\n  display: block;\n  box-sizing: border-box;\n  height: 100%;\n  min-height: 0;\n  color-scheme: dark;\n  font-family: \"Inter\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;\n  -webkit-font-smoothing: antialiased;\n}\n*, *::before, *::after { box-sizing: border-box; }\n.otn-root {\n  position: relative;\n  --otn-bg: var(--dsw-alias-bg-base, #0f1115);\n  --otn-panel: var(--dsw-alias-bg-elevated, #171a21);\n  --otn-panel-2: var(--dsw-alias-bg-subtle, #1e222b);\n  --otn-text: var(--dsw-alias-text-primary, #f4f5f7);\n  --otn-muted: var(--dsw-alias-text-secondary, #a6acb8);\n  --otn-border: var(--dsw-alias-border-default, rgba(255, 255, 255, .13));\n  --otn-accent: var(--dsw-alias-accent-primary, #7c5cff);\n  --otn-accent-soft: color-mix(in srgb, var(--otn-accent) 20%, transparent);\n  --otn-danger: var(--dsw-alias-status-error, #ff6b6b);\n  --otn-radius: 10px;\n  display: flex;\n  flex-direction: column;\n  inline-size: 100%;\n  block-size: 100%;\n  min-block-size: 0;\n  overflow: hidden;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font-size: 13px;\n  line-height: 1.35;\n}\n.otn-root[data-theme=\"light\"] {\n  color-scheme: light;\n  --otn-bg: var(--dsw-alias-bg-base, #f7f7f8);\n  --otn-panel: var(--dsw-alias-bg-elevated, #ffffff);\n  --otn-panel-2: var(--dsw-alias-bg-subtle, #eef0f3);\n  --otn-text: var(--dsw-alias-text-primary, #171a20);\n  --otn-muted: var(--dsw-alias-text-secondary, #5d6470);\n  --otn-border: var(--dsw-alias-border-default, rgba(20, 24, 32, .16));\n}\n.otn-root[data-theme=\"dark\"] { color-scheme: dark; }\n.otn-header {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  flex: 0 0 auto;\n  min-block-size: 44px;\n  padding: 0 14px;\n  border-block-end: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-brand { display: flex; align-items: baseline; gap: 8px; min-inline-size: 0; }\n.otn-brand__name { font-weight: 700; letter-spacing: -.02em; font-size: 14px; }\n.otn-brand__note { color: var(--otn-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.otn-spacer { flex: 1 1 auto; }\n.otn-project-path {\n  max-inline-size: 34%;\n  color: var(--otn-muted);\n  font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n.otn-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }\n.otn-btn {\n  appearance: none;\n  border: 1px solid var(--otn-border);\n  border-radius: 7px;\n  background: var(--otn-panel-2);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 5px 9px;\n  cursor: pointer;\n  min-block-size: 28px;\n}\n.otn-btn:hover:not(:disabled) { border-color: var(--otn-accent); }\n.otn-btn:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-btn:disabled { opacity: .5; cursor: default; }\n.otn-btn--primary { background: var(--otn-accent); border-color: var(--otn-accent); color: #fff; }\n.otn-btn--icon { inline-size: 28px; padding: 4px; display: inline-grid; place-items: center; }\n.otn-badge {\n  display: inline-flex;\n  gap: 5px;\n  align-items: center;\n  border: 1px solid var(--otn-border);\n  border-radius: 999px;\n  padding: 3px 8px;\n  color: var(--otn-muted);\n  font-size: 11px;\n  white-space: nowrap;\n}\n.otn-dot { inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--otn-accent); }\n.otn-dot--down { background: var(--otn-danger); }\n.otn-body { display: flex; flex: 1 1 auto; min-block-size: 0; }\n.otn-main { display: flex; flex: 1 1 auto; flex-direction: column; min-inline-size: 0; min-block-size: 0; }\n.otn-media {\n  inline-size: clamp(180px, 22%, 270px);\n  flex: 0 0 auto;\n  border-inline-end: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n  min-block-size: 0;\n  display: flex;\n  flex-direction: column;\n}\n.otn-panel-title {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  flex: 0 0 auto;\n  padding: 10px 12px;\n  border-block-end: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font-size: 11px;\n  font-weight: 600;\n  letter-spacing: .06em;\n  text-transform: uppercase;\n}\n.otn-media-list { list-style: none; margin: 0; padding: 8px; overflow: auto; display: grid; gap: 6px; min-block-size: 0; }\n.otn-media-card {\n  appearance: none;\n  inline-size: 100%;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px;\n  border: 1px solid transparent;\n  border-radius: 8px;\n  background: var(--otn-panel-2);\n  color: inherit;\n  font: inherit;\n  text-align: start;\n  cursor: pointer;\n}\n.otn-media-card:hover { border-color: var(--otn-border); }\n.otn-media-card--selected { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-media-card:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-media-thumb {\n  inline-size: 42px;\n  block-size: 30px;\n  border-radius: 5px;\n  background: var(--otn-bg);\n  object-fit: cover;\n  flex: 0 0 auto;\n}\n.otn-media-thumb--empty { display: grid; place-items: center; color: var(--otn-muted); font-size: 10px; }\n.otn-media-copy { min-inline-size: 0; display: grid; gap: 2px; }\n.otn-media-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }\n.otn-media-meta { color: var(--otn-muted); font-size: 10px; }\n.otn-empty { color: var(--otn-muted); font-size: 12px; padding: 16px; }\n.otn-preview {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  display: flex;\n  flex-direction: column;\n  background: var(--otn-bg);\n}\n.otn-preview-stage {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  display: grid;\n  place-items: center;\n  padding: 14px;\n  overflow: hidden;\n  background: radial-gradient(circle at 50% 40%, var(--otn-panel-2), var(--otn-bg) 70%);\n}\n.otn-preview-image {\n  display: block;\n  max-inline-size: 100%;\n  max-block-size: 100%;\n  inline-size: auto;\n  block-size: auto;\n  border-radius: 4px;\n  background: #000;\n  box-shadow: 0 8px 28px rgba(0, 0, 0, .35);\n}\n.otn-preview-placeholder {\n  display: grid;\n  place-items: center;\n  inline-size: min(100%, 480px);\n  aspect-ratio: 16 / 9;\n  border: 1px dashed var(--otn-border);\n  border-radius: var(--otn-radius);\n  color: var(--otn-muted);\n  font-size: 12px;\n}\n.otn-transport {\n  flex: 0 0 auto;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 7px 12px;\n  border-block-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-scrub { flex: 1 1 auto; accent-color: var(--otn-accent); min-inline-size: 60px; }\n.otn-frame-readout { color: var(--otn-muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }\n.otn-media-import { display: flex; gap: 6px; padding: 8px; border-block-end: 1px solid var(--otn-border); }\n.otn-media-import .otn-input { flex: 1 1 auto; min-inline-size: 0; min-block-size: 28px; }\n.otn-file-picker { max-inline-size: 100%; color: var(--otn-muted); font-size: 10px; }\n.otn-file-picker::file-selector-button { margin-inline-end: 6px; border: 1px solid var(--otn-border); border-radius: 5px; background: var(--otn-panel-2); color: var(--otn-text); font-size: 10px; padding: 3px 6px; }\n.otn-effect-card, .otn-advanced-card { display: grid; gap: 6px; padding: 7px; border: 1px solid var(--otn-border); border-radius: 7px; background: var(--otn-panel-2); }\n.otn-advanced-card .otn-field__row { flex-wrap: wrap; }\n.otn-mask-advanced { display: grid; gap: 4px; padding-block-start: 4px; }\n.otn-shortcut-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 12px; }\n.otn-shortcut-list li { display: flex; gap: 8px; color: var(--otn-muted); }\n.otn-shortcut-list li span:last-child { color: var(--otn-text); }\n.otn-keyframe-track { display: grid; gap: 4px; padding-block-start: 6px; border-block-start: 1px solid var(--otn-border); }\n.otn-keyframe-track:first-of-type { border-block-start: 0; padding-block-start: 0; }\n.otn-keyframe-list { display: grid; gap: 3px; }\n.otn-keyframe-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }\n.otn-keyframe-row > span:first-child { min-inline-size: 62px; color: var(--otn-muted); }\n.otn-keyframe-row > button { margin-inline-start: auto; }\n.otn-toggle--active { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-inspector {\n  inline-size: clamp(220px, 24%, 300px);\n  flex: 0 0 auto;\n  border-inline-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n  min-block-size: 0;\n  overflow: auto;\n  padding-block-end: 10px;\n}\n.otn-inspector .otn-panel-title { border-block-end: 1px solid var(--otn-border); }\n.otn-inspector__body { display: grid; gap: 12px; padding: 10px 12px; }\n.otn-inspector__tabs { display: flex; flex-wrap: wrap; gap: 4px; padding-block-end: 4px; border-block-end: 1px solid var(--otn-border); }\n.otn-inspector__tab { appearance: none; border: 1px solid var(--otn-border); border-radius: 999px; background: transparent; color: var(--otn-muted); font: inherit; font-size: 10px; padding: 3px 7px; cursor: pointer; }\n.otn-inspector__tab--active { border-color: var(--otn-accent); background: var(--otn-accent-soft); color: var(--otn-text); }\n.otn-inspector__tab:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-field { display: grid; gap: 4px; }\n.otn-field__label { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }\n.otn-field__input {\n  inline-size: 100%;\n  min-block-size: 28px;\n  border: 1px solid var(--otn-border);\n  border-radius: 6px;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 5px 7px;\n}\n.otn-field__input:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-field__row { display: flex; gap: 6px; align-items: center; }\n.otn-field__row .otn-field__input { min-inline-size: 0; }\n.otn-toggle {\n  appearance: none;\n  border: 1px solid var(--otn-border);\n  border-radius: 6px;\n  background: var(--otn-panel-2);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 11px;\n  padding: 4px 7px;\n  cursor: pointer;\n}\n.otn-toggle[aria-pressed=\"true\"] { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-toggle:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-inspector__group { display: grid; gap: 7px; padding-block-start: 10px; border-block-start: 1px solid var(--otn-border); }\n.otn-inspector__group:first-child { border-block-start: 0; padding-block-start: 0; }\n.otn-inspector__title { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }\n.otn-inspector__track-name { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }\n.otn-overlay {\n  position: absolute;\n  inset: 0;\n  z-index: 8;\n  display: flex;\n  justify-content: flex-end;\n  background: rgba(0, 0, 0, .4);\n  padding: 12px;\n}\n.otn-sheet {\n  inline-size: min(480px, 100%);\n  block-size: 100%;\n  overflow: auto;\n  border: 1px solid var(--otn-border);\n  border-radius: var(--otn-radius);\n  background: var(--otn-panel);\n  box-shadow: 0 18px 60px rgba(0, 0, 0, .4);\n}\n.otn-sheet__header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-block-end: 1px solid var(--otn-border); }\n.otn-sheet__title { flex: 1 1 auto; margin: 0; font-size: 14px; }\n.otn-sheet__body { display: grid; gap: 12px; padding: 14px; }\n.otn-sheet__section { display: grid; gap: 8px; }\n.otn-sheet__section-title { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }\n.otn-sheet__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n.otn-sheet__hint { color: var(--otn-muted); font-size: 11px; margin: 0; }\n.otn-progress-bar { inline-size: 100%; block-size: 5px; border-radius: 999px; background: var(--otn-panel-2); overflow: hidden; }\n.otn-progress-bar__fill { block-size: 100%; background: var(--otn-accent); transition: inline-size .2s ease; }\n.otn-storage-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--otn-muted); }\n.otn-storage-row__name { flex: 1 1 auto; color: var(--otn-text); }\n.otn-status-ok { color: var(--otn-accent); }\n.otn-status-bad { color: var(--otn-danger); }\n.otn-timeline {\n  flex: 0 0 38%;\n  min-block-size: 150px;\n  display: flex;\n  flex-direction: column;\n  border-block-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-timeline-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; }\n.otn-timeline-body { overflow: auto; padding: 0 10px 10px; min-block-size: 0; }\n.otn-ruler {\n  position: relative;\n  block-size: 18px;\n  margin-inline-start: 72px;\n  border-block-end: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font: 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;\n}\n.otn-ruler-tick { position: absolute; inset-block-end: 0; inline-size: 1px; block-size: 6px; background: var(--otn-border); }\n.otn-ruler-label { position: absolute; inset-block-start: 2px; transform: translateX(-50%); white-space: nowrap; }\n.otn-track-row { display: flex; align-items: stretch; min-block-size: 34px; border-block-end: 1px solid var(--otn-border); }\n.otn-track-head {\n  inline-size: 72px;\n  flex: 0 0 72px;\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  padding-inline-end: 6px;\n  color: var(--otn-muted);\n  font-size: 10px;\n  white-space: nowrap;\n  overflow: hidden;\n}\n.otn-track-lane { position: relative; flex: 1 1 auto; min-inline-size: 0; margin-block: 4px; border-radius: 4px; background: var(--otn-panel-2); }\n.otn-clip {\n  position: absolute;\n  inset-block: 3px;\n  min-inline-size: 8px;\n  border: 1px solid color-mix(in srgb, var(--otn-accent) 55%, var(--otn-border));\n  border-radius: 4px;\n  background: color-mix(in srgb, var(--otn-accent) 24%, var(--otn-panel-2));\n  color: var(--otn-text);\n  font: 10px/1.2 inherit;\n  padding: 2px 5px;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  text-align: start;\n  cursor: pointer;\n}\n.otn-clip--selected { outline: 2px solid var(--otn-accent); outline-offset: -1px; background: color-mix(in srgb, var(--otn-accent) 38%, var(--otn-panel-2)); }\n.otn-clip:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-status {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px 12px;\n  border-block-start: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font-size: 11px;\n  flex: 0 0 auto;\n}\n.otn-error {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin: 8px 12px 0;\n  padding: 7px 9px;\n  border: 1px solid color-mix(in srgb, var(--otn-danger) 55%, var(--otn-border));\n  border-radius: 7px;\n  background: color-mix(in srgb, var(--otn-danger) 12%, transparent);\n  color: var(--otn-text);\n  font-size: 12px;\n}\n.otn-error__message { flex: 1 1 auto; overflow-wrap: anywhere; }\n.otn-home {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  overflow: auto;\n  display: grid;\n  align-content: start;\n  gap: 14px;\n  padding: clamp(18px, 4vw, 44px);\n  max-inline-size: 900px;\n  inline-size: 100%;\n  margin-inline: auto;\n}\n.otn-home__title { margin: 0; font-size: clamp(24px, 4vw, 38px); line-height: 1.05; letter-spacing: -.04em; }\n.otn-home__subtitle { margin: 0; color: var(--otn-muted); max-inline-size: 66ch; }\n.otn-card { border: 1px solid var(--otn-border); border-radius: var(--otn-radius); background: var(--otn-panel); padding: 14px; }\n.otn-home__row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }\n.otn-input {\n  flex: 1 1 260px;\n  min-inline-size: 160px;\n  border: 1px solid var(--otn-border);\n  border-radius: 7px;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 6px 8px;\n  min-block-size: 30px;\n}\n.otn-input:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; color: var(--otn-muted); font-size: 12px; }\n.otn-kv__value { color: var(--otn-text); overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }\n.otn-hint { color: var(--otn-muted); font-size: 11px; margin: 0; }\n.otn-progress { color: var(--otn-muted); font-size: 11px; }\n@media (max-width: 900px) {\n  .otn-inspector { inline-size: 220px; }\n}\n@media (max-width: 720px) {\n  .otn-media { inline-size: 170px; }\n  .otn-inspector { display: none; }\n  .otn-brand__note, .otn-project-path { display: none; }\n  .otn-timeline { flex-basis: 42%; }\n  .otn-home { padding: 16px; }\n}\n@media (prefers-reduced-motion: reduce) {\n  .otn-root *, .otn-root *::before, .otn-root *::after { transition: none !important; animation: none !important; }\n}\n";
+var Ie = "\n:host {\n  all: initial;\n  display: block;\n  box-sizing: border-box;\n  height: 100%;\n  min-height: 0;\n  color-scheme: dark;\n  font-family: \"Inter\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;\n  -webkit-font-smoothing: antialiased;\n}\n*, *::before, *::after { box-sizing: border-box; }\n.otn-root {\n  position: relative;\n  --otn-bg: var(--dsw-alias-bg-base, #0f1115);\n  --otn-panel: var(--dsw-alias-bg-elevated, #171a21);\n  --otn-panel-2: var(--dsw-alias-bg-subtle, #1e222b);\n  --otn-text: var(--dsw-alias-text-primary, #f4f5f7);\n  --otn-muted: var(--dsw-alias-text-secondary, #a6acb8);\n  --otn-border: var(--dsw-alias-border-default, rgba(255, 255, 255, .13));\n  --otn-accent: var(--dsw-alias-accent-primary, #7c5cff);\n  --otn-accent-soft: color-mix(in srgb, var(--otn-accent) 20%, transparent);\n  --otn-danger: var(--dsw-alias-status-error, #ff6b6b);\n  --otn-radius: 10px;\n  display: flex;\n  flex-direction: column;\n  inline-size: 100%;\n  block-size: 100%;\n  min-block-size: 0;\n  overflow: hidden;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font-size: 13px;\n  line-height: 1.35;\n}\n.otn-root[data-theme=\"light\"] {\n  color-scheme: light;\n  --otn-bg: var(--dsw-alias-bg-base, #f7f7f8);\n  --otn-panel: var(--dsw-alias-bg-elevated, #ffffff);\n  --otn-panel-2: var(--dsw-alias-bg-subtle, #eef0f3);\n  --otn-text: var(--dsw-alias-text-primary, #171a20);\n  --otn-muted: var(--dsw-alias-text-secondary, #5d6470);\n  --otn-border: var(--dsw-alias-border-default, rgba(20, 24, 32, .16));\n}\n.otn-root[data-theme=\"dark\"] { color-scheme: dark; }\n.otn-header {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  flex: 0 0 auto;\n  min-block-size: 44px;\n  padding: 0 14px;\n  border-block-end: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-brand { display: flex; align-items: baseline; gap: 8px; min-inline-size: 0; }\n.otn-brand__name { font-weight: 700; letter-spacing: -.02em; font-size: 14px; }\n.otn-brand__note { color: var(--otn-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.otn-spacer { flex: 1 1 auto; }\n.otn-project-path {\n  max-inline-size: 34%;\n  color: var(--otn-muted);\n  font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n.otn-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }\n.otn-btn {\n  appearance: none;\n  border: 1px solid var(--otn-border);\n  border-radius: 7px;\n  background: var(--otn-panel-2);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 5px 9px;\n  cursor: pointer;\n  min-block-size: 28px;\n}\n.otn-btn:hover:not(:disabled) { border-color: var(--otn-accent); }\n.otn-btn:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-btn:disabled { opacity: .5; cursor: default; }\n.otn-btn--primary { background: var(--otn-accent); border-color: var(--otn-accent); color: #fff; }\n.otn-btn--icon { inline-size: 28px; padding: 4px; display: inline-grid; place-items: center; }\n.otn-badge {\n  display: inline-flex;\n  gap: 5px;\n  align-items: center;\n  border: 1px solid var(--otn-border);\n  border-radius: 999px;\n  padding: 3px 8px;\n  color: var(--otn-muted);\n  font-size: 11px;\n  white-space: nowrap;\n}\n.otn-dot { inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--otn-accent); }\n.otn-dot--down { background: var(--otn-danger); }\n.otn-body { display: flex; flex: 1 1 auto; min-block-size: 0; }\n.otn-main { display: flex; flex: 1 1 auto; flex-direction: column; min-inline-size: 0; min-block-size: 0; }\n.otn-media {\n  inline-size: clamp(180px, 22%, 270px);\n  flex: 0 0 auto;\n  border-inline-end: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n  min-block-size: 0;\n  display: flex;\n  flex-direction: column;\n}\n.otn-panel-title {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  flex: 0 0 auto;\n  padding: 10px 12px;\n  border-block-end: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font-size: 11px;\n  font-weight: 600;\n  letter-spacing: .06em;\n  text-transform: uppercase;\n}\n.otn-media-list { list-style: none; margin: 0; padding: 8px; overflow: auto; display: grid; gap: 6px; min-block-size: 0; }\n.otn-media-card {\n  appearance: none;\n  inline-size: 100%;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px;\n  border: 1px solid transparent;\n  border-radius: 8px;\n  background: var(--otn-panel-2);\n  color: inherit;\n  font: inherit;\n  text-align: start;\n  cursor: pointer;\n}\n.otn-media-card:hover { border-color: var(--otn-border); }\n.otn-media-card--selected { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-media-card:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-media-thumb {\n  inline-size: 42px;\n  block-size: 30px;\n  border-radius: 5px;\n  background: var(--otn-bg);\n  object-fit: cover;\n  flex: 0 0 auto;\n}\n.otn-media-thumb--empty { display: grid; place-items: center; color: var(--otn-muted); font-size: 10px; }\n.otn-media-copy { min-inline-size: 0; display: grid; gap: 2px; }\n.otn-media-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }\n.otn-media-meta { color: var(--otn-muted); font-size: 10px; }\n.otn-empty { color: var(--otn-muted); font-size: 12px; padding: 16px; }\n.otn-preview {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  display: flex;\n  flex-direction: column;\n  background: var(--otn-bg);\n}\n.otn-preview-stage {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  display: grid;\n  place-items: center;\n  padding: 14px;\n  overflow: hidden;\n  background: radial-gradient(circle at 50% 40%, var(--otn-panel-2), var(--otn-bg) 70%);\n}\n.otn-preview-image {\n  display: block;\n  max-inline-size: 100%;\n  max-block-size: 100%;\n  inline-size: auto;\n  block-size: auto;\n  border-radius: 4px;\n  background: #000;\n  box-shadow: 0 8px 28px rgba(0, 0, 0, .35);\n}\n.otn-preview-placeholder {\n  display: grid;\n  place-items: center;\n  inline-size: min(100%, 480px);\n  aspect-ratio: 16 / 9;\n  border: 1px dashed var(--otn-border);\n  border-radius: var(--otn-radius);\n  color: var(--otn-muted);\n  font-size: 12px;\n}\n.otn-transport {\n  flex: 0 0 auto;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 7px 12px;\n  border-block-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-scrub { flex: 1 1 auto; accent-color: var(--otn-accent); min-inline-size: 60px; }\n.otn-frame-readout { color: var(--otn-muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }\n.otn-media-import { display: flex; gap: 6px; padding: 8px; border-block-end: 1px solid var(--otn-border); }\n.otn-media-import .otn-input { flex: 1 1 auto; min-inline-size: 0; min-block-size: 28px; }\n.otn-file-picker { max-inline-size: 100%; color: var(--otn-muted); font-size: 10px; }\n.otn-file-picker::file-selector-button { margin-inline-end: 6px; border: 1px solid var(--otn-border); border-radius: 5px; background: var(--otn-panel-2); color: var(--otn-text); font-size: 10px; padding: 3px 6px; }\n.otn-effect-card, .otn-advanced-card { display: grid; gap: 6px; padding: 7px; border: 1px solid var(--otn-border); border-radius: 7px; background: var(--otn-panel-2); }\n.otn-advanced-card .otn-field__row { flex-wrap: wrap; }\n.otn-mask-advanced { display: grid; gap: 4px; padding-block-start: 4px; }\n.otn-shortcut-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 12px; }\n.otn-shortcut-list li { display: flex; gap: 8px; color: var(--otn-muted); }\n.otn-shortcut-list li span:last-child { color: var(--otn-text); }\n.otn-keyframe-track { display: grid; gap: 4px; padding-block-start: 6px; border-block-start: 1px solid var(--otn-border); }\n.otn-keyframe-track:first-of-type { border-block-start: 0; padding-block-start: 0; }\n.otn-keyframe-list { display: grid; gap: 3px; }\n.otn-keyframe-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }\n.otn-keyframe-row > span:first-child { min-inline-size: 62px; color: var(--otn-muted); }\n.otn-keyframe-row > button { margin-inline-start: auto; }\n.otn-toggle--active { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-inspector {\n  inline-size: clamp(220px, 24%, 300px);\n  flex: 0 0 auto;\n  border-inline-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n  min-block-size: 0;\n  overflow: auto;\n  padding-block-end: 10px;\n}\n.otn-inspector .otn-panel-title { border-block-end: 1px solid var(--otn-border); }\n.otn-inspector__body { display: grid; gap: 12px; padding: 10px 12px; }\n.otn-inspector__tabs { display: flex; flex-wrap: wrap; gap: 4px; padding-block-end: 4px; border-block-end: 1px solid var(--otn-border); }\n.otn-inspector__tab { appearance: none; border: 1px solid var(--otn-border); border-radius: 999px; background: transparent; color: var(--otn-muted); font: inherit; font-size: 10px; padding: 3px 7px; cursor: pointer; }\n.otn-inspector__tab--active { border-color: var(--otn-accent); background: var(--otn-accent-soft); color: var(--otn-text); }\n.otn-inspector__tab:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-field { display: grid; gap: 4px; }\n.otn-field__label { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }\n.otn-field__input {\n  inline-size: 100%;\n  min-block-size: 28px;\n  border: 1px solid var(--otn-border);\n  border-radius: 6px;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 5px 7px;\n}\n.otn-field__input:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-field__row { display: flex; gap: 6px; align-items: center; }\n.otn-field__row .otn-field__input { min-inline-size: 0; }\n.otn-toggle {\n  appearance: none;\n  border: 1px solid var(--otn-border);\n  border-radius: 6px;\n  background: var(--otn-panel-2);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 11px;\n  padding: 4px 7px;\n  cursor: pointer;\n}\n.otn-toggle[aria-pressed=\"true\"] { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-toggle:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-inspector__group { display: grid; gap: 7px; padding-block-start: 10px; border-block-start: 1px solid var(--otn-border); }\n.otn-inspector__group:first-child { border-block-start: 0; padding-block-start: 0; }\n.otn-inspector__title { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }\n.otn-inspector__track-name { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }\n.otn-overlay {\n  position: absolute;\n  inset: 0;\n  z-index: 8;\n  display: flex;\n  justify-content: flex-end;\n  background: rgba(0, 0, 0, .4);\n  padding: 12px;\n}\n.otn-sheet {\n  inline-size: min(480px, 100%);\n  block-size: 100%;\n  overflow: auto;\n  border: 1px solid var(--otn-border);\n  border-radius: var(--otn-radius);\n  background: var(--otn-panel);\n  box-shadow: 0 18px 60px rgba(0, 0, 0, .4);\n}\n.otn-sheet__header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-block-end: 1px solid var(--otn-border); }\n.otn-sheet__title { flex: 1 1 auto; margin: 0; font-size: 14px; }\n.otn-sheet__body { display: grid; gap: 12px; padding: 14px; }\n.otn-sheet__section { display: grid; gap: 8px; }\n.otn-sheet__section-title { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }\n.otn-sheet__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n.otn-sheet__hint { color: var(--otn-muted); font-size: 11px; margin: 0; }\n.otn-progress-bar { inline-size: 100%; block-size: 5px; border-radius: 999px; background: var(--otn-panel-2); overflow: hidden; }\n.otn-progress-bar__fill { block-size: 100%; background: var(--otn-accent); transition: inline-size .2s ease; }\n.otn-storage-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--otn-muted); }\n.otn-storage-row__name { flex: 1 1 auto; color: var(--otn-text); }\n.otn-status-ok { color: var(--otn-accent); }\n.otn-status-bad { color: var(--otn-danger); }\n.otn-timeline {\n  flex: 0 0 38%;\n  min-block-size: 150px;\n  display: flex;\n  flex-direction: column;\n  border-block-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-timeline-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; }\n.otn-timeline-body { overflow: auto; padding: 0 10px 10px; min-block-size: 0; }\n.otn-ruler {\n  position: relative;\n  block-size: 18px;\n  margin-inline-start: 72px;\n  border-block-end: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font: 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;\n}\n.otn-ruler-tick { position: absolute; inset-block-end: 0; inline-size: 1px; block-size: 6px; background: var(--otn-border); }\n.otn-ruler-label { position: absolute; inset-block-start: 2px; transform: translateX(-50%); white-space: nowrap; }\n.otn-track-row { display: flex; align-items: stretch; min-block-size: 34px; border-block-end: 1px solid var(--otn-border); }\n.otn-track-head {\n  inline-size: 72px;\n  flex: 0 0 72px;\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  padding-inline-end: 6px;\n  color: var(--otn-muted);\n  font-size: 10px;\n  white-space: nowrap;\n  overflow: hidden;\n}\n.otn-track-lane { position: relative; flex: 1 1 auto; min-inline-size: 0; margin-block: 4px; border-radius: 4px; background: var(--otn-panel-2); }\n.otn-clip {\n  position: absolute;\n  inset-block: 3px;\n  min-inline-size: 8px;\n  border: 1px solid color-mix(in srgb, var(--otn-accent) 55%, var(--otn-border));\n  border-radius: 4px;\n  background: color-mix(in srgb, var(--otn-accent) 24%, var(--otn-panel-2));\n  color: var(--otn-text);\n  font: 10px/1.2 inherit;\n  padding: 2px 5px;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  text-align: start;\n  cursor: pointer;\n}\n.otn-clip--selected { outline: 2px solid var(--otn-accent); outline-offset: -1px; background: color-mix(in srgb, var(--otn-accent) 38%, var(--otn-panel-2)); }\n.otn-clip:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-status {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px 12px;\n  border-block-start: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font-size: 11px;\n  flex: 0 0 auto;\n}\n.otn-error {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin: 8px 12px 0;\n  padding: 7px 9px;\n  border: 1px solid color-mix(in srgb, var(--otn-danger) 55%, var(--otn-border));\n  border-radius: 7px;\n  background: color-mix(in srgb, var(--otn-danger) 12%, transparent);\n  color: var(--otn-text);\n  font-size: 12px;\n}\n.otn-error__message { flex: 1 1 auto; overflow-wrap: anywhere; }\n.otn-home {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  overflow: auto;\n  display: grid;\n  align-content: start;\n  gap: 14px;\n  padding: clamp(18px, 4vw, 44px);\n  max-inline-size: 900px;\n  inline-size: 100%;\n  margin-inline: auto;\n}\n.otn-home__title { margin: 0; font-size: clamp(24px, 4vw, 38px); line-height: 1.05; letter-spacing: -.04em; }\n.otn-home__subtitle { margin: 0; color: var(--otn-muted); max-inline-size: 66ch; }\n.otn-card { border: 1px solid var(--otn-border); border-radius: var(--otn-radius); background: var(--otn-panel); padding: 14px; }\n.otn-home__row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }\n.otn-input {\n  flex: 1 1 260px;\n  min-inline-size: 160px;\n  border: 1px solid var(--otn-border);\n  border-radius: 7px;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 6px 8px;\n  min-block-size: 30px;\n}\n.otn-input:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; color: var(--otn-muted); font-size: 12px; }\n.otn-kv__value { color: var(--otn-text); overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }\n.otn-hint { color: var(--otn-muted); font-size: 11px; margin: 0; }\n.otn-progress { color: var(--otn-muted); font-size: 11px; }\n@media (max-width: 900px) {\n  .otn-inspector { inline-size: 220px; }\n}\n@media (max-width: 720px) {\n  .otn-media { inline-size: 170px; }\n  .otn-inspector { display: none; }\n  .otn-brand__note, .otn-project-path { display: none; }\n  .otn-timeline { flex-basis: 42%; }\n  .otn-home { padding: 16px; }\n}\n@media (prefers-reduced-motion: reduce) {\n  .otn-root *, .otn-root *::before, .otn-root *::after { transition: none !important; animation: none !important; }\n}\n";
 //#endregion
 //#region web/src/native/mount.js
-function Fe(e) {
+function Le(e) {
 	if (typeof e != "object" || !e || typeof e.createRoot != "function") throw TypeError("ReactDOM.createRoot is required");
 }
-function Ie({ host: e, React: t, ReactDOM: n, client: r, locale: i = "en", theme: a = "system", pollIntervalMs: o = 0, autoInitialize: s = !0, timers: c = void 0, onReady: l = void 0 } = {}) {
+function Re({ host: e, React: t, ReactDOM: n, client: r, locale: i = "en", theme: a = "system", pollIntervalMs: o = 0, autoInitialize: s = !0, timers: c = void 0, onReady: l = void 0 } = {}) {
 	if (typeof e != "object" || !e || typeof e.attachShadow != "function") throw TypeError("a host element with attachShadow is required");
 	if (typeof t != "object" || !t || typeof t.createElement != "function") throw TypeError("React with createElement is required");
 	if (typeof r != "object" || !r || typeof r.timeline != "function") throw TypeError("engine client is required");
-	Fe(n);
+	Le(n);
 	let u = e.ownerDocument;
 	if (u === null || typeof u.createElement != "function") throw TypeError("host.ownerDocument.createElement is required");
 	let d = e.shadowRoot ?? e.attachShadow({ mode: "open" });
 	if (d === null || typeof d.appendChild != "function") throw TypeError("open ShadowRoot could not be created");
 	for (; d.firstChild !== null && d.firstChild !== void 0;) d.removeChild(d.firstChild);
 	let f = u.createElement("style");
-	f.textContent = Pe, f.setAttribute?.("data-otn-styles", ""), d.appendChild(f);
+	f.textContent = Ie, f.setAttribute?.("data-otn-styles", ""), d.appendChild(f);
 	let p = u.createElement("div");
 	p.className = "otn-shadow-root", d.appendChild(p);
 	let m = ce({
@@ -8785,7 +9105,7 @@ function Ie({ host: e, React: t, ReactDOM: n, client: r, locale: i = "en", theme
 		setIntervalImpl: c?.setInterval,
 		clearIntervalImpl: c?.clearInterval
 	}), h = n.createRoot(p);
-	h.render(t.createElement(Ne, {
+	h.render(t.createElement(Fe, {
 		React: t,
 		store: m,
 		client: r,
@@ -8810,8 +9130,8 @@ function Ie({ host: e, React: t, ReactDOM: n, client: r, locale: i = "en", theme
 }
 //#endregion
 //#region web/src/native/browser-entry.js
-var Le = "/opentake-studio-route-b/app/native-editor/native-editor.js";
-function Re({ host: e, base: t = "/opentake-studio-route-b", locale: n = "en", theme: r = "system", pollIntervalMs: i = 0, fetchImpl: a = globalThis.fetch, timers: o = void 0, autoInitialize: s = !0, onReady: c = void 0 } = {}) {
+var ze = "/opentake-studio-route-b/app/native-editor/native-editor.js";
+function Be({ host: e, base: t = "/opentake-studio-route-b", locale: n = "en", theme: r = "system", pollIntervalMs: i = 0, fetchImpl: a = globalThis.fetch, timers: o = void 0, autoInitialize: s = !0, onReady: c = void 0 } = {}) {
 	if (typeof AbortController != "function") throw Error("AbortController is required");
 	let l = new AbortController(), u = b({
 		base: t,
@@ -8819,7 +9139,7 @@ function Re({ host: e, base: t = "/opentake-studio-route-b", locale: n = "en", t
 		signal: l.signal
 	}), d;
 	try {
-		d = Ie({
+		d = Re({
 			host: e,
 			React: g,
 			ReactDOM: { createRoot: _.createRoot },
@@ -8846,5 +9166,5 @@ function Re({ host: e, base: t = "/opentake-studio-route-b", locale: n = "en", t
 	};
 }
 //#endregion
-var ze = _.createRoot;
-export { Le as BUNDLE_PATH, g as React, b as createEngineClient, ze as createRoot, Re as mountNative, Ie as mountNativeEditor };
+var Ve = _.createRoot;
+export { ze as BUNDLE_PATH, g as React, b as createEngineClient, Ve as createRoot, Be as mountNative, Re as mountNativeEditor };

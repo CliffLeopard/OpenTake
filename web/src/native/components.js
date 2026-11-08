@@ -112,7 +112,14 @@ function HomeView({ React, state, store, client, t }) {
 
 function MediaPanel(React, { state, client, t, store }) {
   const items = state.media;
-  return h(React, 'aside', { className: 'otn-media', 'aria-label': t('media') },
+  return h(React, 'aside', {
+    className: 'otn-media', 'aria-label': t('media'), 'data-otn-dropzone': '',
+    onDragOver: (event) => event.preventDefault(),
+    onDrop: (event) => {
+      event.preventDefault();
+      void store.uploadFiles(event.dataTransfer?.files);
+    },
+  },
     h(React, 'div', { className: 'otn-panel-title' },
       h(React, 'span', null, t('media')),
       h(React, 'span', null, String(items.length)),
@@ -136,10 +143,7 @@ function MediaPanel(React, { state, client, t, store }) {
         className: 'otn-file-picker',
         'data-otn-file-picker': '',
         onChange: (event) => {
-          const file = event.target.files?.[0] ?? null;
-          const absolutePath = typeof file?.path === 'string' ? file.path : '';
-          if (absolutePath.length > 0) void store.importMedia([absolutePath]);
-          else store.setError(t('filePathUnavailable'));
+          void store.uploadFiles(event.target.files);
           event.target.value = '';
         },
       }),
@@ -357,7 +361,7 @@ function InspectorPanel({ React, state, store, t }) {
         ['properties', 'effects', 'keyframes', 'masks', 'advanced'].map((name) => h(React, 'button', {
           key: name, type: 'button', role: 'tab', className: `otn-inspector__tab${tab === name ? ' otn-inspector__tab--active' : ''}`,
           'aria-selected': tab === name, 'data-otn-inspector-tab': name,
-          onClick: () => setTab(name),
+          onClick: () => { setTab(name); if (name === 'advanced') void store.refreshLuts(); },
         }, t(name === 'properties' ? 'properties' : name))),
       ),
       h(React, 'div', { hidden: tab !== 'properties' },
@@ -404,7 +408,66 @@ function InspectorPanel({ React, state, store, t }) {
       h(React, 'div', { hidden: tab !== 'effects' }, h(React, EffectsSection, { React, clip, store, t, disabled })),
       h(React, 'div', { hidden: tab !== 'keyframes' }, h(React, KeyframesSection, { React, state, clip, store, t, disabled })),
       h(React, 'div', { hidden: tab !== 'masks' }, h(React, MasksSection, { React, clip, store, t, disabled })),
-      h(React, 'div', { hidden: tab !== 'advanced' }, h(React, AdvancedSection, { React, clip, store, t, disabled })),
+      h(React, 'div', { hidden: tab !== 'advanced' }, h(React, AdvancedSection, { React, state, clip, store, t, disabled })),
+    ),
+  );
+}
+
+function LibraryPanel({ React, state, store, t }) {
+  const entries = state.library;
+  return h(React, 'div', { className: 'otn-overlay', 'data-otn-panel': 'library' },
+    h(React, 'section', { className: 'otn-sheet', 'aria-label': t('library') },
+      h(React, 'div', { className: 'otn-sheet__header' },
+        h(React, 'h2', { className: 'otn-sheet__title' }, t('library')),
+        button(React, t('close'), () => store.closePanel(), { ariaLabel: t('close') }),
+      ),
+      h(React, 'div', { className: 'otn-sheet__body' },
+        h(React, 'p', { className: 'otn-sheet__hint' }, t('libraryHint')),
+        state.libraryLoading ? h(React, 'p', { className: 'otn-progress', role: 'status' }, t('loading')) : null,
+        entries.length === 0 ? h(React, 'p', { className: 'otn-sheet__hint' }, t('libraryEmpty')) : entries.map((entry) => h(React, 'div', { key: entry.id, className: 'otn-effect-card', 'data-otn-library-id': entry.id },
+          h(React, 'div', { className: 'otn-field__row' },
+            h(React, 'strong', { className: 'otn-inspector__track-name' }, entry.name ?? entry.id),
+            h(React, 'span', { className: 'otn-sheet__hint' }, entry.kind ?? entry.type ?? ''),
+            h(React, 'button', { type: 'button', className: 'otn-btn', 'data-otn-action': 'library-import', onClick: () => { void store.importLibraryEntry(entry.id); } }, t('importToProject')),
+          ),
+          typeof entry.path === 'string' ? h(React, 'span', { className: 'otn-sheet__hint' }, entry.path) : null,
+        )),
+        h(React, 'button', { type: 'button', className: 'otn-btn', 'data-otn-action': 'library-refresh', onClick: () => { void store.refreshLibrary(); } }, t('refresh')),
+      ),
+    ),
+  );
+}
+
+function MotionPanel({ React, state, store, t }) {
+  const documents = state.motion;
+  function create(event) {
+    event.preventDefault();
+    const input = event.currentTarget.elements.motionTitle;
+    const title = typeof input?.value === 'string' && input.value.trim().length > 0 ? input.value.trim() : 'Untitled Motion';
+    void store.createMotion(title);
+    if (input) input.value = '';
+  }
+  return h(React, 'div', { className: 'otn-overlay', 'data-otn-panel': 'motion' },
+    h(React, 'section', { className: 'otn-sheet', 'aria-label': t('motion') },
+      h(React, 'div', { className: 'otn-sheet__header' },
+        h(React, 'h2', { className: 'otn-sheet__title' }, t('motion')),
+        button(React, t('close'), () => store.closePanel(), { ariaLabel: t('close') }),
+      ),
+      h(React, 'div', { className: 'otn-sheet__body' },
+        h(React, 'p', { className: 'otn-sheet__hint' }, t('motionHint')),
+        documents.length === 0 ? h(React, 'p', { className: 'otn-sheet__hint' }, t('motionEmpty')) : documents.map((document) => h(React, 'div', { key: document.id, className: 'otn-effect-card', 'data-otn-motion-id': document.id },
+          h(React, 'strong', { className: 'otn-inspector__track-name' }, document.title ?? document.id),
+          h(React, 'span', { className: 'otn-sheet__hint' }, document.revisionHash ? document.revisionHash.slice(0, 12) : ''),
+        )),
+        h(React, 'form', { className: 'otn-sheet__section', onSubmit: create },
+          h(React, 'span', { className: 'otn-sheet__section-title' }, t('createMotion')),
+          h(React, 'div', { className: 'otn-field__row' },
+            h(React, 'input', { className: 'otn-input', name: 'motionTitle', placeholder: t('motionTitle'), 'data-otn-motion-title': '' }),
+            h(React, 'button', { type: 'submit', className: 'otn-btn', 'data-otn-action': 'motion-create' }, t('createMotion')),
+          ),
+        ),
+        h(React, 'button', { type: 'button', className: 'otn-btn', 'data-otn-action': 'motion-refresh', onClick: () => { void store.refreshMotion(); } }, t('refresh')),
+      ),
     ),
   );
 }
@@ -431,7 +494,7 @@ function formNumber(form, name, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function AdvancedSection({ React, clip, store, t, disabled }) {
+function AdvancedSection({ React, state, clip, store, t, disabled }) {
   const grade = clip.colorGrade ?? GRADE_DEFAULT;
   const textStyle = clip.textStyle ?? TEXT_STYLE_DEFAULT;
   const chroma = clip.chromaKey ?? null;
@@ -548,25 +611,46 @@ function AdvancedSection({ React, clip, store, t, disabled }) {
       onSubmit: (event) => {
         event.preventDefault();
         const form = event.currentTarget;
-        const id = String(form.elements.lutId?.value ?? '').trim();
-        const name = String(form.elements.lutName?.value ?? '').trim();
+        const selectedId = String(form.elements.lutSelect?.value ?? '');
+        const selected = state.luts.find((entry) => entry.id === selectedId) ?? null;
+        const id = selected?.id ?? String(form.elements.lutId?.value ?? '').trim();
+        const name = selected?.name ?? String(form.elements.lutName?.value ?? '').trim();
         if (id.length !== 64 || name.length === 0) {
           store.setError(t('lutInvalid'));
           return;
         }
-        void store.setLut(clip.id, { id, name, intensity: formNumber(form, 'lutIntensity', 1) });
+        void store.setLut(clip.id, { id, name, intensity: formNumber(form, 'lutIntensity', selected?.intensity ?? 1) });
       },
     },
       h(React, 'span', { className: 'otn-inspector__title' }, t('lut')),
       h(React, 'p', { className: 'otn-sheet__hint' }, lut === null ? t('noLut') : `${lut.name ?? ''} · ${lut.intensity ?? ''}`),
       h(React, 'div', { className: 'otn-field__row' },
-        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutId')), h(React, 'input', { className: 'otn-field__input', name: 'lutId', defaultValue: lut?.id ?? '', 'data-otn-lut-field': 'id', spellCheck: false })),
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutSelect')), h(React, 'select', { className: 'otn-field__input', name: 'lutSelect', defaultValue: lut?.id ?? '', 'data-otn-lut-select': '' },
+          h(React, 'option', { value: '' }, t('lutSelectPlaceholder')),
+          state.luts.map((entry) => h(React, 'option', { key: entry.id, value: entry.id }, `${entry.name ?? entry.id.slice(0, 12)} (${Math.round((entry.bytes ?? 0) / 1024)} KB)`)),
+        )),
         h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutIntensity')), h(React, 'input', { className: 'otn-field__input', name: 'lutIntensity', type: 'number', min: 0, max: 1, step: 0.05, defaultValue: String(lut?.intensity ?? 1), 'data-otn-lut-field': 'intensity' })),
       ),
       h(React, 'div', { className: 'otn-field__row' },
-        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutName')), h(React, 'input', { className: 'otn-field__input', name: 'lutName', defaultValue: lut?.name ?? '', 'data-otn-lut-field': 'name' })),
-        h(React, 'button', { type: 'submit', className: 'otn-btn', disabled, 'data-otn-action': 'lut-apply' }, t('apply')),
+        h(React, 'button', { type: 'submit', className: 'otn-btn', disabled, 'data-otn-action': 'lut-apply' }, t('applySelectedLut')),
+        h(React, 'button', { type: 'button', className: 'otn-toggle', disabled: state.lutsLoading, 'data-otn-action': 'lut-refresh', onClick: () => { void store.refreshLuts(); } }, t('refresh')),
         lut !== null ? h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'data-otn-action': 'lut-remove', onClick: () => { void store.setLut(clip.id, null); } }, t('remove')) : null,
+      ),
+      h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutUpload')), h(React, 'input', { type: 'file', accept: '.cube', className: 'otn-file-picker', 'data-otn-lut-upload': '', onChange: (event) => {
+        const file = event.target.files?.[0] ?? null;
+        event.target.value = '';
+        if (file === null) return;
+        void store.uploadFile(file, { kind: 'lut' }).then((result) => {
+          const reference = result?.lut ?? null;
+          if (reference !== null) void store.setLut(clip.id, reference);
+        });
+      } })),
+      h(React, 'details', { className: 'otn-advanced-manual' },
+        h(React, 'summary', null, t('lutManual')),
+        h(React, 'div', { className: 'otn-field__row' },
+          h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutId')), h(React, 'input', { className: 'otn-field__input', name: 'lutId', defaultValue: lut?.id ?? '', 'data-otn-lut-field': 'id', spellCheck: false })),
+          h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutName')), h(React, 'input', { className: 'otn-field__input', name: 'lutName', defaultValue: lut?.name ?? '', 'data-otn-lut-field': 'name' })),
+        ),
       ),
     ),
   );
@@ -1073,6 +1157,20 @@ export function NativeEditorView({ React, store, client, theme = 'system' }) {
         h(React, 'button', {
           type: 'button',
           className: 'otn-btn',
+          'data-otn-action': 'open-library',
+          'aria-pressed': state.panel === 'library',
+          onClick: () => store.openPanel(state.panel === 'library' ? 'editor' : 'library'),
+        }, t('library')),
+        h(React, 'button', {
+          type: 'button',
+          className: 'otn-btn',
+          'data-otn-action': 'open-motion',
+          'aria-pressed': state.panel === 'motion',
+          onClick: () => store.openPanel(state.panel === 'motion' ? 'editor' : 'motion'),
+        }, t('motion')),
+        h(React, 'button', {
+          type: 'button',
+          className: 'otn-btn',
           'data-otn-action': 'open-settings',
           'aria-pressed': state.panel === 'settings',
           onClick: () => store.openPanel(state.panel === 'settings' ? 'editor' : 'settings'),
@@ -1097,6 +1195,8 @@ export function NativeEditorView({ React, store, client, theme = 'system' }) {
     state.panel === 'captions' ? h(React, CaptionsPanel, { React, state, store, t }) : null,
     state.panel === 'export' ? h(React, ExportPanel, { React, state, store, t }) : null,
     state.panel === 'settings' ? h(React, SettingsPanel, { React, state, store, t }) : null,
+    state.panel === 'library' ? h(React, LibraryPanel, { React, state, store, t }) : null,
+    state.panel === 'motion' ? h(React, MotionPanel, { React, state, store, t }) : null,
     shortcutsOpen ? h(React, 'div', { className: 'otn-overlay', 'data-otn-panel': 'shortcuts' },
       h(React, 'section', { className: 'otn-sheet', 'aria-label': t('shortcutsHelp') },
         h(React, 'div', { className: 'otn-sheet__header' },

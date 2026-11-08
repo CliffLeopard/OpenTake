@@ -114,6 +114,36 @@ export function createEngineClient({ base = '/opentake-studio-route-b', fetchImp
     },
     exportStatus: () => request('/engine/export/status'),
     playbackStatus: () => request('/engine/playback/status'),
+    listLuts: () => request('/engine/luts'),
+    uploadFile: async (file, { kind = 'media', name = undefined } = {}) => {
+      if (file === null || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
+        throw new TypeError('uploadFile requires a browser File');
+      }
+      const fileName = typeof name === 'string' && name.length > 0 ? name : (typeof file.name === 'string' ? file.name : 'upload.bin');
+      const url = `${root}/engine/upload?name=${encodeURIComponent(fileName)}&kind=${kind === 'lut' ? 'lut' : 'media'}`;
+      const response = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: file,
+        signal,
+      });
+      const text = typeof response.text === 'function' ? await response.text() : '';
+      let payload = null;
+      try { payload = text.length > 0 ? JSON.parse(text) : null; } catch { payload = null; }
+      if (!response.ok) {
+        throw new EngineRequestError(payload?.error?.message ?? `upload failed with HTTP ${response.status}`, {
+          status: response.status ?? 0,
+          code: payload?.error?.code ?? 'upload-failed',
+          url,
+        });
+      }
+      return payload;
+    },
+    libraryList: (category = null) => request('/engine/invoke', { method: 'POST', body: { cmd: 'library_list', args: category === null ? {} : { category } } }),
+    libraryImportToProject: (id) => request('/engine/invoke', { method: 'POST', body: { cmd: 'library_import_to_project', args: { id } } }),
+    motionDocuments: () => request('/engine/invoke', { method: 'POST', body: { cmd: 'motion_document_list', args: {} } }),
+    motionCreate: (title) => request('/engine/invoke', { method: 'POST', body: { cmd: 'motion_document_create', args: { request: { title } } } }),
+    motionRead: (documentId) => request('/engine/invoke', { method: 'POST', body: { cmd: 'motion_document_read', args: { documentId } } }),
     importMedia: (paths) => {
       if (!Array.isArray(paths) || paths.some((item) => typeof item !== 'string')) {
         throw new TypeError('importMedia requires an array of paths');

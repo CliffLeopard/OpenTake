@@ -41,10 +41,17 @@ Bounded milestone implemented:
 - Playback: play/pause/stop/seek through existing `playback_start`,
   `playback_pause`, `playback_seek`, `playback_stop` and
   `/engine/playback/status`; preview frame follows playback.
-- Media import: path-entry import through `/engine/import-media` and media
-  library refresh; a native file input is offered but browsers do not expose an
-  absolute path, so it reports the limitation and leaves path entry as the
-  usable route (no drag/drop upload route exists).
+- Media import: path-entry import through `/engine/import-media`, plus a native
+  dropzone/file picker via the new Host `POST /engine/upload` endpoint (raw bytes,
+  temp file, then engine import) and a `.cube` LUT upload path. Path entry stays
+  as fallback.
+- Library: read-only global library list via `library_list`, import-to-project
+  via `library_import_to_project`.
+- Motion: native list/create using `motion_document_list` /
+  `motion_document_create`; full Motion Studio authoring remains iframe-only.
+- LUT picker: `GET /engine/luts` lists project `media/luts/*.cube` assets with
+  display-name sidecars; selecting a LUT applies it via `setLut`; upload writes
+  the validated `.cube` into the project by SHA-256 id.
 - Keyboard shortcuts: scoped to the native root — Space play/pause, arrows seek,
   Shift+arrows nudge, Delete removes, Cmd/Ctrl+Z/Shift+Z undo/redo, Cmd/Ctrl+S
   save, Cmd/Ctrl+E export, `?` shortcut-help overlay.
@@ -76,13 +83,13 @@ Bounded milestone implemented:
 node --test plugins/opentake-studio-route-b/native-editor/test/native-editor.test.mjs
 ```
 
-Current result: 19 tests pass (IPC routes/payloads, errors, store lifecycle,
+Current result: 20 tests pass (IPC routes/payloads, errors, store lifecycle,
 move/undo, failure retention, locale, CSS isolation, mount/unmount, entry abort,
 defensive DTO helpers, served bundle production contract, inspector/track apply
 commands, export request shape/progress, settings/storage mutation, effects/
 masks/keyframes commands, caption create/update, media import + playback,
-advanced color/LUT/chroma/text/remove commands, locale key parity and
-keyframe/caption helpers).
+advanced color/LUT/chroma/text/remove commands, LUT upload/library/motion
+routes, locale key parity and keyframe/caption helpers).
 
 ```bash
 node --test plugins/opentake-studio-route-b/test/ui-mount.test.mjs
@@ -90,7 +97,7 @@ node --test plugins/opentake-studio-route-b/test/ui-mount.test.mjs
 
 The DSH shell harness still has 11 passing tests, including the native/iframe
 toggle, default iframe body and native host presence, dictionary parity and
-bundle URL. Combined native + shell suite: **30/30**.
+bundle URL. Combined native + shell suite: **31/31**.
 
 ## Bundle build and serving
 
@@ -99,7 +106,7 @@ node plugins/opentake-studio-route-b/native-editor/build-bundle.mjs
 ```
 
 Output: `plugins/opentake-studio-route-b/web/native-editor/native-editor.js`
-(ES module, React 18 + ReactDOM bundled, production build, ~301 KB / ~76.9 KB
+(ES module, React 18 + ReactDOM bundled, production build, ~312 KB / ~78.7 KB
 gzip). The existing Host static route serves it as:
 
 ```
@@ -150,6 +157,20 @@ DSH integration below uses the real Host routes.
 The bundle re-exports `mountNative`; it creates its own engine client and
 `AbortController`, so switching back to iframe aborts in-flight `/engine`
 requests and unmounts React/ShadowRoot resources.
+
+## Host upload/LUT routes
+
+- `GET /engine/luts` — lists project `media/luts/*.cube` assets. `{items:[{id,
+  name, bytes, intensity}], projectPath}`; display names come from a `${id}.json`
+  sidecar written on upload.
+- `POST /engine/upload?name=<file>&kind=media|lut` — raw request body (not
+  multipart); same `connection.requestRejection` fence. Media is written to a
+  unique temp directory, probed/imported by the existing engine route; LUTs must
+  be `.cube`, under 16 MB, contain `LUT_3D_SIZE`, and are written atomically to
+  the project `media/luts/<sha256>.cube` plus a name sidecar. Media upload limit
+  is 256 MB. Responses: `{kind:"media", catalog}` or `{kind:"lut", lut, luts}`.
+- The native dropzone/file picker and `.cube` upload use this route; path entry
+  remains available for hosts without file upload.
 
 ## Live CDP verification
 
@@ -205,9 +226,23 @@ Verified against the authenticated DSH Web GUI at **http://127.0.0.1:56474/**
   absolute path, so it reports `filePathUnavailable` and path entry remains the
   usable import route. Drag/drop upload is not available without a Host upload
   endpoint.
+- LUT upload: created a `verify-lut.cube` browser File, set the native LUT file
+  input via DataTransfer, and uploaded through `POST /engine/upload?kind=lut`;
+  the live engine clip returned `lut:{id:"e23e…",name:"verify-lut",intensity:1}`,
+  `/engine/luts` returned the asset, and the native select offered it by display
+  name. A second upload confirmed the sidecar name (`named-lut`).
+- Media upload: fetched a preview PNG, wrapped it in a browser File and used the
+  native media file input; `/engine/media` gained `uploaded-colorbar` (original
+  filename preserved) and the media panel updated.
+- Library: native Library panel listed two global entries, imported one, and
+  `/engine/media` grew from 2 to 3 items.
+- Motion: native Motion panel created `Native Motion Verify`; the live
+  `motion_document_list` returned the new document.
+- Keyboard/advanced/export/effects/caption/playback verification from the
+  previous milestone remains valid; no native exceptions beyond DSH’s existing
+  window-size message.
 - Fallback: switched back to `Iframe 编辑器`; iframe `display:block`, native host
-  `display:none`, ShadowRoot children 0. Then toggled native again and it
-  remounted cleanly.
+  `display:none`, ShadowRoot children 0.
 - No native-editor exceptions; only DSH's pre-existing
   `Failed to apply window size` console message.
 - Screenshot: `/tmp/native-editor-export-live.png` (native export sheet over
@@ -218,7 +253,7 @@ Verified against the authenticated DSH Web GUI at **http://127.0.0.1:56474/**
 
 - React/ReactDOM are bundled (not externalized) in the served artifact, so the
   shell does not depend on a second React module-table entry; the rebuilt bundle
-  is ~301 KB / ~76.9 KB gzip.
+  is ~312 KB / ~78.7 KB gzip.
 - The toggle is opt-in; iframe remains default until the native milestone is
   accepted. Do not switch the default without a follow-up.
 - DSH theme changes are inherited through tokens; there is no explicit live
@@ -250,8 +285,9 @@ shim and asset/dialog/event behavior are untouched.
   shortcuts are implemented; the full app shortcut set is still iframe-only.
 - Motion studio, library and agent panels: no native routes/components in this
   slice; they remain explicit iframe-only surfaces.
-- Account/storage settings beyond the bounded status panel, motion studio,
-  agent panel, library.
+- Account/storage settings beyond the bounded status panel, full Motion Studio
+  authoring, agent panel, full Library management UI (native is read-only plus
+  import-to-project).
 - Existing app stores, event sync and all Tauri-specific commands. The native
   prototype intentionally has its own small store and a bounded UI.
 - The existing iframe remains the only path that currently renders the complete
@@ -271,9 +307,12 @@ shim and asset/dialog/event behavior are untouched.
   playback status rather than using a real timeline/media event stream.
 - **Advanced LUT:** the LUT form requires a real project LUT asset/64-hex id;
   there is no LUT picker route in this slice.
-- **File picker/drag-drop:** the DSH Web browser does not expose an absolute
-  file path for File objects and there is no upload route, so only path entry can
-  feed `/engine/import-media`; the native file input reports this limitation.
+- **Upload security/limits:** the Host upload route is same-origin and fenced,
+  but it writes temp/project files and accepts up to 256 MB; keep the path-entry
+  fallback and do not expose it beyond the trusted local DSH profile. LUT upload
+  is basic `LUT_3D_SIZE` validation, not full CUBE semantic validation.
+- **Library/Motion depth:** native Library is read-only plus import-to-project;
+  native Motion only lists/creates documents and has no full panel editor.
 - **Bounded panel behavior:** effects are limited to the engine registry;
   captions use one default style and only content/timing edits; masks support
   rectangle/polygon and ellipse plus feather/invert but not the pen tool or

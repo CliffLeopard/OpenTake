@@ -63,6 +63,12 @@ function makeFetch(routes = {}) {
     if (path.endsWith('/engine/export/status')) return jsonResponse({ active: false, done: 120, total: 120, operationId: 'native-export' });
     if (path.endsWith('/engine/playback/status')) return jsonResponse({ active: true, paused: false, frame: 7, terminal: false, fps: 30 });
     if (path.endsWith('/engine/import-media')) return jsonResponse({ items: [...MEDIA.items, { id: 'media-3', name: 'Imported', type: 'image', duration: 1 }] });
+    if (path.endsWith('/engine/luts')) return jsonResponse({ items: [{ id: 'b'.repeat(64), name: 'Project LUT', bytes: 2048, intensity: 1 }], projectPath: '/tmp/demo.opentake' });
+    if (path.endsWith('/engine/upload')) {
+      const requestUrl = new URL(url, 'http://localhost');
+      if (requestUrl.searchParams.get('kind') === 'lut') return jsonResponse({ kind: 'lut', lut: { id: 'c'.repeat(64), name: 'Uploaded LUT', intensity: 1 }, luts: { items: [{ id: 'c'.repeat(64), name: 'Uploaded LUT', bytes: 4096, intensity: 1 }] } });
+      return jsonResponse({ kind: 'media', catalog: { items: [...MEDIA.items, { id: 'uploaded', name: 'Uploaded', type: 'image', duration: 1 }] } });
+    }
     if (path.endsWith('/engine/invoke')) {
       let payload = {};
       try { payload = JSON.parse(init.body); } catch { payload = {}; }
@@ -75,6 +81,11 @@ function makeFetch(routes = {}) {
       if (cmd === 'export_video') return jsonResponse({ outputFile: args.req?.outPath ?? '/tmp/out.mp4', fps: 30, durationFrames: 120 });
       if (cmd === 'cancel_export') return jsonResponse(null);
       if (cmd === 'playback_start' || cmd === 'playback_pause' || cmd === 'playback_seek' || cmd === 'playback_stop') return jsonResponse(null);
+      if (cmd === 'library_list') return jsonResponse([{ id: 'lib-1', name: 'Library clip', kind: 'video' }]);
+      if (cmd === 'library_import_to_project') return jsonResponse({ id: 'media-4', name: 'Library clip' });
+      if (cmd === 'motion_document_list') return jsonResponse([{ id: 'motion-1', title: 'Title', revisionHash: 'a'.repeat(64) }]);
+      if (cmd === 'motion_document_create') return jsonResponse({ summary: { id: 'motion-2', title: args.request?.title ?? 'Untitled' } });
+      if (cmd === 'motion_document_read') return jsonResponse({ summary: { id: 'motion-1', title: 'Title' }, html: '<main></main>', css: '' });
       return jsonResponse({ error: { code: 'unknown-command', message: `mock invoke ${cmd}` } }, 400);
     }
     if (path.endsWith('/engine/undo')) return jsonResponse({ changed: true, actionName: 'Undo' });
@@ -573,6 +584,37 @@ test('native media import and playback commands use live engine routes', async (
   await store.pause();
   assert.equal(store.getSnapshot().playback.paused, true);
   store.dispose();
+});
+
+test('native LUT upload/picker, media upload, library and motion surfaces use live routes', async () => {
+  const { fetchImpl, calls } = makeFetch();
+  const store = createNativeEditorStore({
+    client: createEngineClient({ fetchImpl }),
+    setIntervalImpl: () => 1,
+    clearIntervalImpl: () => {},
+  });
+  await store.initialize();
+  const luts = await store.refreshLuts();
+  assert.equal(luts.items[0].name, 'Project LUT');
+  assert.equal(store.getSnapshot().luts.length, 1);
+
+  const file = { name: 'look.cube', arrayBuffer: async () => new Uint8Array([1, 2, 3]) };
+  const uploaded = await store.uploadFile(file, { kind: 'lut' });
+  assert.equal(uploaded.lut.id, 'c'.repeat(64));
+  assert.equal(store.getSnapshot().luts[0].name, 'Uploaded LUT');
+  const uploadCall = calls.find((entry) => entry.url.includes('/engine/upload'));
+  assert.match(uploadCall.url, /name=look\.cube/);
+  assert.match(uploadCall.url, /kind=lut/);
+
+  await store.refreshLibrary();
+  assert.equal(store.getSnapshot().library[0].name, 'Library clip');
+  await store.importLibraryEntry('lib-1');
+  assert.equal(store.getSnapshot().media.length, 2);
+
+  await store.refreshMotion();
+  assert.equal(store.getSnapshot().motion[0].title, 'Title');
+  await store.createMotion('New title');
+  assert.equal(store.getSnapshot().motion[0].title, 'Title');
 });
 
 test('caption/keyframe helpers tolerate empty and interpolate scalar tracks', () => {
