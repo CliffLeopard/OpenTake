@@ -346,7 +346,7 @@ All scripts only read implementation files and write under the OS temp dir
 - Providers are wired into Host image/speech/video generation; 10-bit H.265 is
   wired into the addon/Host export path (verified Main10 yuv420p10le).
 - Video stabilization, EBU R128 loudness and denoise preparation/apply are wired through the addon/Host and verified.
-- Playback and HDR-tone-map/ducking remain isolated modules; their parity rows
-  remain Partial.
+- Playback now has a native cpal clock and a multipart PNG stream endpoint;
+  frame cadence is composite-bound. HDR-tone-map/ducking remain isolated modules.
 - Windows/Linux builds and signing remain blocked by missing toolchains,
   wgpu dx12/vulkan features and signing identities.

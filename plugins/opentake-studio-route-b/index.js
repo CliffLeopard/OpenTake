@@ -1388,6 +1388,43 @@ export function apply(ctx) {
         }
         return;
       }
+      if (sub === '/engine/playback/stream' && req.method === 'GET') {
+        const status = playbackStatus();
+        if (status.active !== true) {
+          sendJson(res, 409, { error: { code: 'not-playing', message: 'start playback before opening the stream' } });
+          return;
+        }
+        const requestUrl = new URL(req.url ?? '/', 'http://localhost');
+        const maxSize = Math.max(160, Math.min(1920, Number.parseInt(requestUrl.searchParams.get('maxSize') ?? '1280', 10) || 1280));
+        const frameLimit = Math.max(1, Math.min(1800, Number.parseInt(requestUrl.searchParams.get('frames') ?? '300', 10) || 300));
+        const boundary = 'routebframe';
+        let closed = false;
+        res.statusCode = 200;
+        res.setHeader('content-type', `multipart/x-mixed-replace; boundary=${boundary}`);
+        res.setHeader('cache-control', 'no-store');
+        res.setHeader('connection', 'close');
+        res.flushHeaders?.();
+        req.on('close', () => { closed = true; });
+        const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        (async () => {
+          let sent = 0;
+          try {
+            while (!closed && sent < frameLimit) {
+              const current = playbackStatus();
+              if (current.active !== true || current.paused === true) break;
+              const payload = JSON.parse(ensureEngine().compositeFrame(current.frame, maxSize));
+              const bytes = Buffer.from(payload.dataUrl.split(',')[1], 'base64');
+              res.write(`--${boundary}\r\nContent-Type: image/png\r\nContent-Length: ${bytes.length}\r\n\r\n`);
+              res.write(bytes);
+              res.write('\r\n');
+              sent += 1;
+              await delay(Math.max(8, Math.round(1000 / Math.max(1, current.fps))));
+            }
+          } catch { /* client went away or frame failed */ }
+          try { res.end(`--${boundary}--\r\n`); } catch { /* already closed */ }
+        })();
+        return;
+      }
       if (sub === '/engine/preview/frame' && req.method === 'GET') {
         const requestUrl = new URL(req.url ?? '/', 'http://localhost');
         const frame = Number.parseInt(requestUrl.searchParams.get('frame') ?? '0', 10) || 0;

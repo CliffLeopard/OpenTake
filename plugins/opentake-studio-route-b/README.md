@@ -79,4 +79,5 @@ not runtime-tested on this machine.
   body is still the existing iframe build.
 
 - Host playback now starts the addon cpal audio master clock; the mixed WAV
-  route is withheld while native audio is active.
+  route is withheld while native audio is active, and
+  `/engine/playback/stream` serves a multipart PNG stream driven by that clock.
