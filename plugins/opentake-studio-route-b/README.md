@@ -50,7 +50,8 @@ not runtime-tested on this machine.
 - Media import/probe/list/relink/proxy, direct video preview, thumbnails, video/image/text/
   Lottie (.json/.lottie) GPU composite, and H.264/H.265/ProRes export with a linear audio
   mixdown (including clip volume/fade envelopes; transparent ProRes 4444) work.
-  The global asset library lists/favorites/imports entries. Caption cues export
+  The global asset library lists/favorites/imports entries; project media can be
+  favorited/unfavorited and mirrored into it. Caption cues export
   to SRT/VTT; XMEML/EDL/OTIO/FCPXML interchange export is bridged. Provider
   ASR (OpenAI-compatible verbose JSON) can transcribe and generate captions;
   configure `OPENTAKE_ASR_URL`/`OPENAI_API_KEY`. Basic streaming playback is

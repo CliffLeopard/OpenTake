@@ -44,6 +44,8 @@ by the DSH Host through N-API.
   (verified H.264+AAC).
 - Home/recent-project sync enriches UI entries with name, modified time and a
   missing flag (verified through the Host IPC).
+- Project media favorites toggle into the global library and persist the manifest
+  favorite/global-id mapping; verified favorite true/false with library sync.
 - Global library list/favorite/categorize/rename/delete and import-to-project are
   bridged through `opentake-media::library::LibraryStore`; favorite/list/import
   were verified.

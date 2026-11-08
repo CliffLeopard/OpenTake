@@ -906,6 +906,77 @@ impl Engine {
         json(&serde_json::json!({ "outPath": path, "cueCount": cue_count }))
     }
 
+    /// Favorite/unfavorite one project asset: mirror it into the global library
+    /// and persist the manifest favorite mapping. Returns the updated catalog.
+    #[napi]
+    pub fn toggle_favorite(&self, media_id: String, favorite: bool) -> Result<String> {
+        let snapshot = self.core.get_timeline();
+        let project_dir = self
+            .core
+            .project_dir()
+            .ok_or_else(|| Error::from_reason("save the project before changing global favorites"))?;
+        let entry = self
+            .core
+            .media()
+            .entries
+            .iter()
+            .find(|entry| entry.id == media_id)
+            .cloned()
+            .ok_or_else(|| Error::from_reason(format!("media asset not found: {media_id}")))?;
+        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        if favorite {
+            let source = resolve_media_path(&entry, Some(&project_dir))
+                .ok_or_else(|| Error::from_reason("media source could not be resolved"))?;
+            if !source.is_file() {
+                return Err(Error::from_reason("media source is offline; relink before favoriting"));
+            }
+            let kind = match entry.kind {
+                ClipType::Video => "video",
+                ClipType::Audio => "audio",
+                ClipType::Image => "image",
+                ClipType::Lottie => "lottie",
+                _ => "other",
+            };
+            let favorited_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs_f64())
+                .unwrap_or(0.0);
+            let library_entry = store
+                .favorite(&FavoriteRequest {
+                    source: &source,
+                    kind,
+                    category: None,
+                    favorited_at,
+                    thumb: None,
+                })
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+            self.core
+                .set_media_global_favorite_for_project(
+                    snapshot.project_epoch,
+                    &project_dir,
+                    &media_id,
+                    Some(library_entry.id),
+                )
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+            self.core
+                .set_media_favorite_for_project(snapshot.project_epoch, &project_dir, &[media_id.clone()], true)
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+        } else {
+            let manifest = self.core.media();
+            let library_id = manifest.library_favorite_id(&media_id).map(str::to_string);
+            if let Some(id) = library_id {
+                let _ = store.remove(&id);
+            }
+            self.core
+                .set_media_global_favorite_for_project(snapshot.project_epoch, &project_dir, &media_id, None)
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+            self.core
+                .set_media_favorite_for_project(snapshot.project_epoch, &project_dir, &[media_id], false)
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+        }
+        json(&media_list_json(&self.core))
+    }
+
     /// Global library entries (optionally filtered; empty string = all).
     #[napi]
     pub fn library_list(&self, category: Option<String>) -> Result<String> {

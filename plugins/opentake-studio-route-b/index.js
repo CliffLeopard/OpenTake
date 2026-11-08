@@ -29,7 +29,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v22.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v23.node');
 }
 
 function loadAddon() {
@@ -363,6 +363,10 @@ export function apply(ctx) {
         ));
       case 'library_import_to_project':
         return JSON.parse(state.engine.libraryImportToProject(String(args.id ?? '')));
+      case 'toggle_favorite':
+        return JSON.parse(state.engine.toggleFavorite(String(args.assetId ?? ''), args.favorite === true));
+      case 'sync_project_favorites':
+        return { media: mediaWithThumbnails(), migratedLegacyAssetIds: [], failures: [] };
       case 'library_list':
         return JSON.parse(state.engine.libraryList(typeof args.category === 'string' ? args.category : null));
       case 'library_favorite':
@@ -986,6 +990,21 @@ export function apply(ctx) {
     },
     async (args) => {
       const value = JSON.parse(ensureEngine().exportSubtitles(args.path, args.format ?? 'srt'));
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_toggle_favorite',
+    'Favorite/unfavorite a project asset and mirror it into the global library.',
+    {
+      type: 'object',
+      properties: { mediaRef: { type: 'string' }, favorite: { type: 'boolean' } },
+      required: ['mediaRef', 'favorite'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().toggleFavorite(args.mediaRef, args.favorite));
       return { text: JSON.stringify(value), data: value };
     },
   );
