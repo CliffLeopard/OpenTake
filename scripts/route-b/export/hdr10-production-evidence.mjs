@@ -334,6 +334,34 @@ console.log(JSON.stringify({ transformedHdrExport: transformed }, null, 2));
 
 // False-HDR guard: an SDR-only project must be rejected before any encoder is
 // spawned. Without this, tagging SDR pixels as HDR10 would be a false claim.
+// Nested sequence: one compound level over the HDR source.
+const nestedEngine = new Engine();
+nestedEngine.newProjectAt(path.join(outDir, 'hdr-nested.opentake'));
+const nestedClip = sourceClip(nestedEngine);
+nestedEngine.apply(JSON.stringify({ type: 'createNestedSequence', name: 'HDR Compound', clipIds: [nestedClip.id] }));
+const nested = exportOnce(nestedEngine, path.join(outDir, 'production_hdr10_nested.mp4'), true);
+console.log(JSON.stringify({ nestedHdrExport: nested }, null, 2));
+
+// Basic linear effects: invert.
+const effectsEngine = new Engine();
+effectsEngine.newProjectAt(path.join(outDir, 'hdr-effects.opentake'));
+const effectsClip = sourceClip(effectsEngine);
+effectsEngine.apply(JSON.stringify({ type: 'setEffects', clipIds: [effectsClip.id], effects: [{ name: 'invert', params: { amount: 1 }, enabled: true }] }));
+const effects = exportOnce(effectsEngine, path.join(outDir, 'production_hdr10_effects.mp4'), true);
+console.log(JSON.stringify({ effectsHdrExport: effects }, null, 2));
+
+// Chroma key: key the neutral grey bars.
+const chromaEngine = new Engine();
+chromaEngine.newProjectAt(path.join(outDir, 'hdr-chroma.opentake'));
+const chromaClip = sourceClip(chromaEngine);
+chromaEngine.apply(JSON.stringify({
+  type: 'setChromaKey',
+  clipIds: [chromaClip.id],
+  chromaKey: { keyColor: { r: 0.5, g: 0.5, b: 0.5 }, similarity: 0.8, smoothness: 0.1, spill: 0 },
+}));
+const chroma = exportOnce(chromaEngine, path.join(outDir, 'production_hdr10_chroma.mp4'), true);
+console.log(JSON.stringify({ chromaHdrExport: chroma }, null, 2));
+
 const falseEngine = new Engine();
 falseEngine.newProjectAt(path.join(outDir, 'false-hdr.opentake'));
 const falseCatalog = JSON.parse(falseEngine.importMedia([sdrSourcePath]));
@@ -366,5 +394,5 @@ console.log(JSON.stringify({ falseHdrRejected, falseHdrMessage }));
 
 writeFileSync(
   path.join(outDir, 'production-export.json'),
-  JSON.stringify({ hdr, sdr, overlays, transformed, keyframed, masked, cropped, graded, hlg, falseHdrRejected, falseHdrMessage }, null, 2),
+  JSON.stringify({ hdr, sdr, overlays, transformed, keyframed, masked, cropped, graded, hlg, nested, effects, chroma, falseHdrRejected, falseHdrMessage }, null, 2),
 );
