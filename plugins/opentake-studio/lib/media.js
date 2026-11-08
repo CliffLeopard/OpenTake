@@ -12,6 +12,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { accessSync, constants as fsConstants, statSync } from 'node:fs';
 import { copyFile, link, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { inflateRawSync } from 'node:zlib';
 import path from 'node:path';
 
 const VIDEO_EXTENSIONS = new Set([
@@ -545,14 +546,108 @@ function lottieMetadata(data) {
   };
 }
 
+const ZIP_EOCD_SIGNATURE = 0x06054b50;
+const ZIP_CENTRAL_SIGNATURE = 0x02014b50;
+const ZIP_LOCAL_SIGNATURE = 0x04034b50;
+
+/** Extract one regular file from a ZIP buffer using only Node built-ins. */
+function readZipEntry(buffer, matcher) {
+  let eocd = -1;
+  for (let offset = buffer.length - 22; offset >= Math.max(0, buffer.length - 65557); offset -= 1) {
+    if (buffer.readUInt32LE(offset) === ZIP_EOCD_SIGNATURE) {
+      eocd = offset;
+      break;
+    }
+  }
+  if (eocd < 0) throw new MediaError('Lottie container is not a valid ZIP archive', 'unsupported-media');
+  const count = buffer.readUInt16LE(eocd + 10);
+  const directoryOffset = buffer.readUInt32LE(eocd + 16);
+  if (directoryOffset >= buffer.length) {
+    throw new MediaError('Lottie container ZIP directory is out of bounds', 'unsupported-media');
+  }
+  let cursor = directoryOffset;
+  for (let index = 0; index < count; index += 1) {
+    if (cursor + 46 > buffer.length || buffer.readUInt32LE(cursor) !== ZIP_CENTRAL_SIGNATURE) break;
+    const flags = buffer.readUInt16LE(cursor + 8);
+    const method = buffer.readUInt16LE(cursor + 10);
+    const compressedSize = buffer.readUInt32LE(cursor + 20);
+    const uncompressedSize = buffer.readUInt32LE(cursor + 24);
+    const nameLength = buffer.readUInt16LE(cursor + 28);
+    const extraLength = buffer.readUInt16LE(cursor + 30);
+    const commentLength = buffer.readUInt16LE(cursor + 32);
+    const localOffset = buffer.readUInt32LE(cursor + 42);
+    const name = buffer.toString('utf8', cursor + 46, cursor + 46 + nameLength);
+    cursor += 46 + nameLength + extraLength + commentLength;
+    if ((flags & 0x1) !== 0) continue; // encrypted entry
+    if (!matcher(name)) continue;
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) {
+      throw new MediaError('Lottie container uses unsupported ZIP64 entries', 'unsupported-media');
+    }
+    if (uncompressedSize > MAX_LOTTIE_JSON_BYTES) {
+      throw new MediaError('Lottie animation in container is too large', 'unsupported-media');
+    }
+    if (localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== ZIP_LOCAL_SIGNATURE) {
+      throw new MediaError('Lottie container has an invalid ZIP local header', 'unsupported-media');
+    }
+    const localNameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    if (dataStart + compressedSize > buffer.length) {
+      throw new MediaError('Lottie container entry is truncated', 'unsupported-media');
+    }
+    const raw = buffer.subarray(dataStart, dataStart + compressedSize);
+    let data;
+    if (method === 0) data = Buffer.from(raw);
+    else if (method === 8) {
+      try {
+        data = inflateRawSync(raw, { maxOutputLength: MAX_LOTTIE_JSON_BYTES });
+      } catch (error) {
+        throw new MediaError('Lottie container deflate entry is invalid', 'unsupported-media', { cause: error });
+      }
+    } else {
+      throw new MediaError(`Lottie container uses unsupported ZIP compression ${method}`, 'unsupported-media');
+    }
+    return { name, data };
+  }
+  throw new MediaError('Lottie container has no animation JSON entry', 'unsupported-media');
+}
+
+/**
+ * Read and validate a Lottie animation from a `.json` or `.lottie` file.
+ * @returns {Promise<{ animation: object, animationPath: string, sizeBytes: number }>}
+ */
+export async function readLottieAnimation(filePath) {
+  const extension = extensionOf(filePath);
+  const info = await stat(filePath).catch(() => null);
+  if (info === null || !info.isFile()) {
+    throw new MediaError(`Lottie file does not exist: ${filePath}`, 'io-error');
+  }
+  if (info.size > 64 * 1024 * 1024) {
+    throw new MediaError(`Lottie file is too large to read (${info.size} bytes)`, 'unsupported-media');
+  }
+  const buffer = await readFile(filePath);
+  let animationText;
+  let animationPath;
+  if (extension === 'lottie') {
+    const entry = readZipEntry(buffer, (name) => /(^|\/)animations\/[^/]+\.json$/i.test(name));
+    animationText = entry.data.toString('utf8');
+    animationPath = entry.name;
+  } else {
+    animationText = buffer.toString('utf8');
+    animationPath = path.basename(filePath);
+  }
+  let animation;
+  try {
+    animation = JSON.parse(animationText);
+  } catch (error) {
+    throw new MediaError(`Invalid JSON in Lottie file: ${filePath}`, 'probe-failed', { cause: error });
+  }
+  lottieMetadata(animation);
+  return { animation, animationPath, sizeBytes: info.size };
+}
+
 async function probeLottieMedia(filePath, info) {
   const extension = extensionOf(filePath);
-  if (extension === 'lottie') {
-    throw new MediaError(
-      "'.lottie' containers are not supported yet; export the animation as bodymovin JSON (.json) instead",
-      'unsupported-media',
-    );
-  }
   if (info.size > MAX_LOTTIE_JSON_BYTES) {
     throw new MediaError(
       `Lottie JSON is too large to probe (${info.size} bytes; limit ${MAX_LOTTIE_JSON_BYTES})`,
@@ -560,19 +655,8 @@ async function probeLottieMedia(filePath, info) {
     );
   }
 
-  let text;
-  try {
-    text = await readFile(filePath, 'utf8');
-  } catch (error) {
-    throw new MediaError(`Could not read Lottie JSON: ${filePath}`, 'io-error', { cause: error });
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    throw new MediaError(`Invalid JSON in Lottie file: ${filePath}`, 'probe-failed', { cause: error });
-  }
+  void extension;
+  const { animation: parsed } = await readLottieAnimation(filePath);
 
   const metadata = lottieMetadata(parsed);
   return {

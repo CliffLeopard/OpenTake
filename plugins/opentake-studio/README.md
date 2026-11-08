@@ -173,8 +173,9 @@ Importing only fills the media library; it does not add clips to the timeline.
   frame (pauses playback), with the frame counter visible.
 - **Lottie**: import bodymovin `.json` animations, preview them in the editor,
   and export them by rendering per-frame PNGs in the browser and compositing
-  them through ffmpeg. The vendored lottie-web player is MIT-licensed. `.lottie`
-  ZIP containers are not supported yet.
+  them through ffmpeg. Both bodymovin `.json` and `.lottie` ZIP containers (with
+  `animations/*.json`) are supported; the vendored lottie-web player is
+  MIT-licensed.
 - **Crop**: normalized per-clip crop applied before transform/effects, with
   preview and export support.
 - **Masks**: rect/ellipse clip masks with feather and invert, preview and export;

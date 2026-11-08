@@ -216,7 +216,7 @@ window.__ModuleLoader__.load({
 		}
 
 		async function fetchLottieJson(media) {
-			const response = await fetch(mediaFileUrl(media.id));
+			const response = await fetch(`${ROUTE}/media/lottie-json/${encodeURIComponent(media.id)}`);
 			if (!response.ok) throw new Error(`lottie-json-${response.status}`);
 			return response.json();
 		}

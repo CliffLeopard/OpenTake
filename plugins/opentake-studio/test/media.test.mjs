@@ -632,7 +632,7 @@ it('rejects invalid JSON, non-Lottie JSON and .lottie containers clearly', async
   await assert.rejects(
     probeMedia(lottieZipPath),
     (error) => error instanceof MediaError &&
-      error.code === 'unsupported-media' && /\.lottie/.test(error.message),
+      error.code === 'unsupported-media' && /ZIP|Lottie container/.test(error.message),
   );
 });
 

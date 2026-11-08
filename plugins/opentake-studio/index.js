@@ -31,6 +31,7 @@ import {
   mediaMimeType,
   probeMedia,
   proxyFilePath,
+  readLottieAnimation,
   resolveTools,
 } from './lib/media.js';
 import { defaultExtensionForCodec, runExport } from './lib/export.js';
@@ -666,6 +667,19 @@ export function apply(ctx) {
     await rm(proxyFilePath(state.paths.root, media), { force: true }).catch(() => {});
     await rm(path.join(state.paths.root, 'thumbnails', `${media.id}.jpg`), { force: true }).catch(() => {});
     return result;
+  }
+
+  async function serveLottieJson(res, mediaId) {
+    const project = ensureProject();
+    const media = findMedia(project, mediaId);
+    if (media === null || media.kind !== 'lottie') {
+      throw new RouteError('Lottie media not found', 'media-not-found', 404);
+    }
+    const { animation } = await readLottieAnimation(mediaFilePath(state.paths.root, media));
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
+    res.end(JSON.stringify(animation));
   }
 
   async function serveMediaProxy(req, res, mediaId) {
@@ -1404,6 +1418,10 @@ export function apply(ctx) {
       }
       if (sub.startsWith('/media/proxy/') && (req.method === 'GET' || req.method === 'HEAD')) {
         await serveMediaProxy(req, res, safeDecode(sub.slice('/media/proxy/'.length), 'media id'));
+        return;
+      }
+      if (sub.startsWith('/media/lottie-json/') && req.method === 'GET') {
+        await serveLottieJson(res, safeDecode(sub.slice('/media/lottie-json/'.length), 'media id'));
         return;
       }
       if (sub.startsWith('/media/file/') && (req.method === 'GET' || req.method === 'HEAD')) {
