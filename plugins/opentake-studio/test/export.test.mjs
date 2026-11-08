@@ -61,6 +61,8 @@ let blueMedia = null;
 let greenMedia = null;
 let splitMedia = null;
 let audioMedia = null;
+let voiceMedia = null;
+let musicMedia = null;
 let phase2Project = null;
 
 function mediaEntry(overrides = {}) {
@@ -391,6 +393,18 @@ before(async () => {
     path.join(sourceDir, 'split.png'),
   ]);
 
+  // Distinct voice/music tones for the ducking export test.
+  await runFfmpeg([
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+    path.join(sourceDir, 'voice.m4a'),
+  ]);
+  await runFfmpeg([
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'sine=frequency=880:duration=2',
+    path.join(sourceDir, 'music.m4a'),
+  ]);
+
   exportProjectRoot = path.join(exportTemp, 'project');
   await mkdir(exportProjectRoot, { recursive: true });
   const imported = await importToProject({
@@ -487,6 +501,8 @@ before(async () => {
   greenMedia = byName.get('greenposter.png');
   splitMedia = byName.get('split.png');
   audioMedia = byName.get('sound.m4a');
+  voiceMedia = byName.get('voice.m4a');
+  musicMedia = byName.get('music.m4a');
 
   // True dissolve between red (0..30 frames, 1s) and blue (trimStart 10,
   // 30..60) with 10 transition frames (5 per side), plus a 45-degree rotated
@@ -2316,4 +2332,202 @@ it('exports mask alpha and blend modes with pixel sampling', { skip: toolSkip },
     quietDb < loudDb - 6,
     `track volume 0.25 should lower mean volume (loud ${loudDb} dB, quiet ${quietDb} dB)`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9: audio ducking
+// ---------------------------------------------------------------------------
+
+function audioMediaEntry(id, name) {
+  return mediaEntry({
+    id, name, kind: 'audio', fileName: `${name}.m4a`,
+    durationFrames: 300, sourceDurationSeconds: 10,
+    width: null, height: null, hasAudio: true,
+  });
+}
+
+function audioTrackFor(id, role, ducking, clips, volume = 1) {
+  return {
+    id, type: 'audio', name: id, muted: false, hidden: false, volume, role, ducking, clips,
+  };
+}
+
+function audioClipFor(id, mediaId, durationFrames = 30) {
+  return makeClip({ id, type: 'audio', mediaId, startFrame: 0, durationFrames });
+}
+
+it('builds a voice bus and sidechain-compresses a ducking music track', () => {
+  const project = makeProject({
+    media: [audioMediaEntry('media-voice', 'voice'), audioMediaEntry('media-music', 'music')],
+    clips: [],
+    extraTracks: [
+      audioTrackFor('t-voice', 'voice', false, [audioClipFor('vc', 'media-voice')]),
+      audioTrackFor('t-music', 'music', true, [audioClipFor('mc', 'media-music')]),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+
+  assert.ok(filter.includes('[a0]asplit=2[voiceKey0][voiceFinal]'), filter);
+  assert.ok(
+    filter.includes(
+      '[a1][voiceKey0]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=300:makeup=1[ducked0]',
+    ),
+    filter,
+  );
+  assert.ok(
+    filter.includes('[voiceFinal][ducked0]amix=inputs=2:normalize=0:duration=longest,aresample=48000[aout]'),
+    filter,
+  );
+});
+
+it('splits the voice bus once per ducking track', () => {
+  const project = makeProject({
+    media: [
+      audioMediaEntry('media-voice', 'voice'),
+      audioMediaEntry('media-music', 'music'),
+      audioMediaEntry('media-sfx', 'sfx'),
+    ],
+    clips: [],
+    extraTracks: [
+      audioTrackFor('t-voice', 'voice', false, [audioClipFor('vc', 'media-voice')]),
+      audioTrackFor('t-music', 'music', true, [audioClipFor('mc', 'media-music')]),
+      audioTrackFor('t-sfx', 'sfx', true, [audioClipFor('sc', 'media-sfx')]),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+
+  assert.ok(filter.includes('[a0]asplit=3[voiceKey0][voiceKey1][voiceFinal]'), filter);
+  assert.ok(filter.includes('[a1][voiceKey0]sidechaincompress='), filter);
+  assert.ok(filter.includes('[a2][voiceKey1]sidechaincompress='), filter);
+  assert.ok(
+    filter.includes('[voiceFinal][ducked0][ducked1]amix=inputs=3:normalize=0:duration=longest,aresample=48000[aout]'),
+    filter,
+  );
+});
+
+it('keeps the flat audio mix when there is no voice audio', () => {
+  const noVoice = makeProject({
+    media: [audioMediaEntry('media-music', 'music')],
+    clips: [],
+    extraTracks: [
+      audioTrackFor('t-music', 'music', true, [audioClipFor('mc', 'media-music')]),
+    ],
+  });
+  const noVoiceFilter = filterOf(buildPhase(noVoice));
+  assert.ok(!noVoiceFilter.includes('sidechaincompress'), noVoiceFilter);
+  assert.ok(!noVoiceFilter.includes('asplit'), noVoiceFilter);
+  assert.ok(noVoiceFilter.includes('[a0]amix=inputs=1:normalize=0:duration=longest,aresample=48000[aout]'));
+
+  const mutedVoice = makeProject({
+    media: [audioMediaEntry('media-voice', 'voice'), audioMediaEntry('media-music', 'music')],
+    clips: [],
+    extraTracks: [
+      audioTrackFor('t-voice', 'voice', false, [audioClipFor('vc', 'media-voice')]),
+      audioTrackFor('t-music', 'music', true, [audioClipFor('mc', 'media-music')]),
+    ],
+  });
+  mutedVoice.tracks[1].muted = true;
+  const mutedFilter = filterOf(buildPhase(mutedVoice));
+  assert.ok(!mutedFilter.includes('sidechaincompress'), 'muted voice does not duck');
+  assert.ok(!mutedFilter.includes('asplit'));
+  assert.ok(mutedFilter.includes('amix=inputs=1:normalize=0'));
+
+  const noDucking = makeProject({
+    media: [audioMediaEntry('media-voice', 'voice'), audioMediaEntry('media-music', 'music')],
+    clips: [],
+    extraTracks: [
+      audioTrackFor('t-voice', 'voice', false, [audioClipFor('vc', 'media-voice')]),
+      audioTrackFor('t-music', 'music', false, [audioClipFor('mc', 'media-music')]),
+    ],
+  });
+  const noDuckingFilter = filterOf(buildPhase(noDucking));
+  assert.ok(!noDuckingFilter.includes('sidechaincompress'));
+  assert.ok(noDuckingFilter.includes('[a0][a1]amix=inputs=2:normalize=0:duration=longest,aresample=48000[aout]'));
+});
+
+it('mixes multiple voice clips into one bus before ducking', () => {
+  const project = makeProject({
+    media: [audioMediaEntry('media-voice', 'voice'), audioMediaEntry('media-music', 'music')],
+    clips: [],
+    extraTracks: [
+      audioTrackFor('t-voice', 'voice', false, [
+        makeClip({ id: 'v1', type: 'audio', mediaId: 'media-voice', startFrame: 0, durationFrames: 15 }),
+        makeClip({ id: 'v2', type: 'audio', mediaId: 'media-voice', startFrame: 15, durationFrames: 15 }),
+      ]),
+      audioTrackFor('t-music', 'music', true, [audioClipFor('mc', 'media-music')]),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+  assert.ok(
+    filter.includes('[a0][a1]amix=inputs=2:normalize=0:duration=longest,aresample=48000[a3]'),
+    filter,
+  );
+  assert.ok(filter.includes('[a3]asplit=2[voiceKey0][voiceFinal]'), filter);
+  assert.ok(filter.includes('[a2][voiceKey0]sidechaincompress='), filter);
+});
+
+it('ducks from a hidden video track that still carries voice audio', () => {
+  const project = makeProject({
+    media: [mediaEntry({ hasAudio: true }), audioMediaEntry('media-music', 'music')],
+    clips: [
+      makeClip({ id: 'hidden-voice', type: 'video', mediaId: 'media-video', startFrame: 0, durationFrames: 30 }),
+    ],
+    extraTracks: [
+      audioTrackFor('t-music', 'music', true, [audioClipFor('mc', 'media-music')]),
+    ],
+  });
+  project.tracks[0].hidden = true;
+  project.tracks[0].role = 'voice';
+  const filter = filterOf(buildPhase(project));
+  assert.ok(filter.includes('[a0]asplit=2[voiceKey0][voiceFinal]'), filter);
+  assert.ok(filter.includes('[a1][voiceKey0]sidechaincompress='), filter);
+});
+
+it('exports ducked voice/music audio and verifies the volume drop', { skip: toolSkip }, async () => {
+  const buildProject = (ducking) => makeProject({
+    media: [voiceMedia, musicMedia],
+    clips: [],
+    extraTracks: [
+      audioTrackFor(
+        'duck-voice', 'voice', false,
+        [makeClip({ id: 'duck-vc', type: 'audio', mediaId: voiceMedia.id, startFrame: 0, durationFrames: 30 })],
+      ),
+      audioTrackFor(
+        'duck-music', 'music', ducking,
+        [makeClip({ id: 'duck-mc', type: 'audio', mediaId: musicMedia.id, startFrame: 0, durationFrames: 30 })],
+      ),
+    ],
+  });
+
+  const referencePath = path.join(exportTemp, 'duck-reference.mp4');
+  const duckedPath = path.join(exportTemp, 'duck-applied.mp4');
+  await runExport({
+    project: buildProject(false),
+    projectRoot: exportProjectRoot,
+    outputPath: referencePath,
+  });
+  await runExport({
+    project: buildProject(true),
+    projectRoot: exportProjectRoot,
+    outputPath: duckedPath,
+  });
+
+  const probe = await probeMedia(duckedPath);
+  assert.equal(probe.kind, 'video');
+  assert.equal(probe.hasAudio, true);
+  assert.ok(probe.durationSeconds > 0.5 && probe.durationSeconds < 1.5);
+
+  const parsed = JSON.parse(await runFfprobe([
+    '-v', 'error', '-print_format', 'json', '-show_streams', duckedPath,
+  ]));
+  assert.ok(parsed.streams.some((stream) => stream.codec_type === 'video'));
+  assert.ok(parsed.streams.some((stream) => stream.codec_type === 'audio'));
+
+  const referenceDb = await meanVolumeDb(referencePath);
+  const duckedDb = await meanVolumeDb(duckedPath);
+  assert.ok(
+    duckedDb < referenceDb - 1,
+    `ducking should reduce mean volume (reference ${referenceDb} dB, ducked ${duckedDb} dB)`,
+  );
+  assert.ok(duckedDb > -60, 'the ducked mix stays audible');
 });

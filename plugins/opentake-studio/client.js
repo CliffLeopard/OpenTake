@@ -140,12 +140,50 @@ window.__ModuleLoader__.load({
 			return `${ROUTE}/library/thumb/${encodeURIComponent(itemId)}`;
 		}
 
-		function libraryItemsQuery(query, kind, favoritesOnly) {
+		function libraryItemsQuery(query, kind, favoritesOnly, folderId) {
 			const params = [];
 			if (typeof query === 'string' && query.trim().length > 0) params.push(`query=${encodeURIComponent(query.trim())}`);
 			if (kind !== undefined && kind !== 'all' && kind !== '') params.push(`kind=${encodeURIComponent(kind)}`);
 			if (favoritesOnly) params.push('favorite=true');
+			if (folderId === null) params.push('folderId=root');
+			else if (typeof folderId === 'string' && folderId.length > 0) params.push(`folderId=${encodeURIComponent(folderId)}`);
 			return params.length > 0 ? `library?${params.join('&')}` : 'library';
+		}
+
+		function libraryFolderChildren(folders, parentId) {
+			const list = Array.isArray(folders) ? folders : [];
+			return list
+				.filter((folder) => folder && typeof folder.id === 'string' && (folder.parentId ?? null) === (parentId ?? null))
+				.sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
+		}
+
+		function libraryFolderOptions(folders) {
+			const list = Array.isArray(folders) ? folders : [];
+			const result = [];
+			const visited = new Set();
+			const walk = (parentId, depth) => {
+				for (const folder of libraryFolderChildren(list, parentId)) {
+					if (visited.has(folder.id)) continue;
+					visited.add(folder.id);
+					result.push({ id: folder.id, name: folder.name || folder.id, depth });
+					walk(folder.id, depth + 1);
+				}
+			};
+			walk(null, 0);
+			for (const folder of list) {
+				if (!visited.has(folder.id)) {
+					visited.add(folder.id);
+					result.push({ id: folder.id, name: folder.name || folder.id, depth: 0 });
+				}
+			}
+			return result;
+		}
+
+		function libraryFolderName(folders, folderId) {
+			if (folderId === null || folderId === undefined) return null;
+			const list = Array.isArray(folders) ? folders : [];
+			const folder = list.find((entry) => entry && entry.id === folderId);
+			return folder ? folder.name || folder.id : null;
 		}
 
 		function slugify(value) {
@@ -305,6 +343,21 @@ window.__ModuleLoader__.load({
 		}
 
 		const BLEND_MODES = ['normal', 'screen', 'multiply', 'overlay', 'darken', 'lighten', 'add', 'difference'];
+		const TRACK_ROLES = ['voice', 'music', 'sfx', 'other'];
+		const DUCK_ATTENUATION = 0.35;
+
+		function trackRoleOf(track) {
+			return track && TRACK_ROLES.includes(track.role) ? track.role : 'other';
+		}
+
+		function isDuckableRole(role) {
+			return role === 'music' || role === 'sfx';
+		}
+
+		function trackDuckingOf(track) {
+			return Boolean(track && track.ducking === true && isDuckableRole(trackRoleOf(track)));
+		}
+
 		const CANVAS_BLEND_MODES = Object.freeze({
 			normal: 'source-over',
 			screen: 'screen',
@@ -1459,6 +1512,16 @@ window.__ModuleLoader__.load({
 .ots-media-tab[data-active="true"]{border-bottom-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary);font-weight:600}
 .ots-library-panel{display:flex;flex-direction:column;gap:8px;min-width:0}
 .ots-library-toolbar{display:flex;flex-direction:column;gap:5px}
+.ots-library-folders{background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;margin-bottom:6px;padding:4px 5px}
+.ots-library-folder-head{align-items:center;display:flex;gap:4px;justify-content:space-between;padding:1px 2px 3px}
+.ots-folder-list{display:flex;flex-direction:column;gap:1px;max-height:168px;overflow:auto}
+.ots-folder-row{align-items:center;border-radius:4px;display:flex;gap:2px;min-width:0;padding:1px 3px}
+.ots-folder-row[data-active="true"]{background:var(--dsw-alias-bg-layer-2)}
+.ots-folder-row:hover .ots-folder-actions,.ots-folder-row:focus-within .ots-folder-actions{opacity:1}
+.ots-folder-toggle{align-items:center;background:none;border:0;color:var(--dsw-alias-label-secondary);cursor:pointer;display:inline-flex;flex:0 0 auto;font-size:9px;height:15px;justify-content:center;padding:0;width:14px}
+.ots-folder-name{background:none;border:0;color:var(--dsw-alias-label-primary);cursor:pointer;flex:1 1 auto;font-family:inherit;font-size:10.5px;min-width:0;overflow:hidden;padding:0 1px;text-align:left;text-overflow:ellipsis;white-space:nowrap}
+.ots-folder-actions{display:flex;flex:0 0 auto;gap:1px;opacity:0}
+.ots-folder-actions .ots-mini{font-size:9px;height:16px;padding:0 3px}
 .ots-library-search-row{display:grid;gap:4px;grid-template-columns:minmax(0,1fr) auto auto}
 .ots-library-search-row .ots-input,.ots-library-search-row .ots-select{height:24px;font-size:11px}
 .ots-library-actions-row{align-items:center;display:flex;flex-wrap:wrap;gap:4px}
@@ -1515,6 +1578,11 @@ window.__ModuleLoader__.load({
 .ots-generate-provider{align-items:center;display:grid;font-size:9.5px;gap:4px;grid-template-columns:auto minmax(0,1fr) auto}
 .ots-generate-provider-name{color:var(--dsw-alias-label-secondary)}
 .ots-generate-provider-id{color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-vision-panel{background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;display:flex;flex-direction:column;gap:3px;margin-bottom:7px;max-height:190px;overflow:auto;padding:6px 7px}
+.ots-vision-row{border-bottom:.5px solid var(--dsw-alias-border-l1);display:flex;flex-direction:column;gap:1px;padding:2px 0}
+.ots-vision-row:last-child{border-bottom:0}
+.ots-vision-name{color:var(--dsw-alias-label-primary);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-vision-desc{color:var(--dsw-alias-label-secondary);display:-webkit-box;font-size:9.5px;line-height:1.35;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}
 .ots-generate-error{color:var(--dsw-alias-state-error-primary);font-size:10.5px;line-height:1.4;margin:0;overflow-wrap:anywhere}
 .ots-generate-actions{display:flex;gap:5px;justify-content:flex-end}
 .ots-generate textarea{min-height:54px}
@@ -1610,6 +1678,16 @@ window.__ModuleLoader__.load({
 .ots-export-custom{display:grid;gap:6px;grid-template-columns:1fr 1fr;grid-column:1/-1}
 .ots-track-name{color:var(--dsw-alias-label-secondary);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ots-track-kind{color:var(--dsw-alias-label-secondary);font-size:10px;letter-spacing:.25px;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-track-badges{display:flex;flex:0 0 auto;gap:1px}
+.ots-track-role-badge,.ots-track-duck-badge{background:var(--dsw-alias-bg-layer-2);border-radius:3px;color:var(--dsw-alias-label-secondary);font-size:7.5px;line-height:11px;padding:0 2px}
+.ots-track-duck-badge{background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base)}
+.ots-track-mix-row{align-items:center;display:flex;gap:3px;min-width:0}
+.ots-track-role{align-items:center;display:flex;flex:0 0 auto;gap:2px}
+.ots-track-role-select{font-size:8.5px;height:16px;padding:0 1px;width:46px}
+.ots-track-ducking{font-size:8.5px;height:16px;padding:0 3px}
+.ots-track-ducking[data-active="true"]{background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base)}
+.ots-track-mix-row .ots-track-volume{flex:1 1 auto}
+
 .ots-track-lane{flex:0 0 auto;position:relative;background:var(--dsw-alias-bg-base);background-image:linear-gradient(to right,var(--dsw-alias-border-l2) .5px,transparent .5px);background-size:calc(var(--ots-grid,60px)) 100%;cursor:default}
 .ots-track-lane:hover{background-color:var(--dsw-alias-bg-layer-1)}
 .ots-clip{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:5px;cursor:grab;display:flex;align-items:center;height:40px;margin-top:6px;min-width:2px;overflow:hidden;position:absolute;top:0;user-select:none}
@@ -2161,6 +2239,60 @@ window.__ModuleLoader__.load({
 			'blend.add': 'Add',
 			'blend.difference': 'Difference',
 			'timeline.trackVolume': 'Track volume',
+			'library.folders': 'Folders',
+			'library.newFolder': 'New folder',
+			'library.allFolders': 'All',
+			'library.rootFolder': 'Root',
+			'library.expandFolder': 'Expand folder',
+			'library.collapseFolder': 'Collapse folder',
+			'library.renameFolder': 'Rename folder',
+			'library.deleteFolder': 'Delete folder',
+			'library.createFolderTitle': 'New folder',
+			'library.renameFolderTitle': 'Rename folder',
+			'library.folderName': 'Folder name',
+			'library.folderParent': 'Parent folder',
+			'library.createFolder': 'Create',
+			'library.deleteFolderTitle': 'Delete folder',
+			'library.deleteFolderHint': 'Child folders and items are moved to the parent folder.',
+			'library.deleteFolderConfirm': 'Delete folder',
+			'library.move': 'Move to folder',
+			'library.moveTitle': 'Move to folder',
+			'library.moveTo': 'Destination',
+			'library.moveConfirm': 'Move',
+			'library.moved': 'Moved {name}.',
+			'library.folderCreated': 'Folder created.',
+			'library.folderUpdated': 'Folder updated.',
+			'library.folderDeleted': 'Folder deleted.',
+			'timeline.trackRole': 'Track role',
+			'timeline.ducking': 'Ducking',
+			'timeline.duckingHint': 'Attenuate this track while a voice-role track has audio at the playhead.',
+			'role.voice': 'Voice',
+			'role.music': 'Music',
+			'role.sfx': 'SFX',
+			'role.other': 'Other',
+			'role.short.voice': 'V',
+			'role.short.music': 'M',
+			'role.short.sfx': 'S',
+			'role.short.other': 'O',
+			'generate.videoProvider': 'Video',
+			'generate.videoTitle': 'Generate video',
+			'generate.videoPrompt': 'Video prompt',
+			'generate.videoPromptPlaceholder': 'Describe the shot to generate…',
+			'generate.aspectRatio': 'Aspect ratio',
+			'generate.duration': 'Duration',
+			'generate.duration5': '5 seconds',
+			'generate.duration10': '10 seconds',
+			'generate.videoAction': 'Generate video',
+			'generate.videoDone': 'Video generated and added to the project media.',
+			'vision.title': 'Visual descriptions',
+			'vision.index': 'Describe',
+			'vision.indexTitle': 'Describe this visual with the configured vision model (adds it to search).',
+			'vision.indexing': 'Describing…',
+			'vision.indexed': 'Visual description added for {name}.',
+			'vision.error': 'Visual indexing failed: {message}',
+			'vision.hint': 'Configure OPENAI_API_KEY (or a DSH credential) on the Host to describe and search visuals.',
+			'vision.refresh': 'Refresh',
+			'search.vision': 'Visual matches',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -2634,6 +2766,60 @@ window.__ModuleLoader__.load({
 			'blend.add': '相加',
 			'blend.difference': '差值',
 			'timeline.trackVolume': '轨道音量',
+			'library.folders': '文件夹',
+			'library.newFolder': '新建文件夹',
+			'library.allFolders': '全部',
+			'library.rootFolder': '根目录',
+			'library.expandFolder': '展开文件夹',
+			'library.collapseFolder': '收起文件夹',
+			'library.renameFolder': '重命名文件夹',
+			'library.deleteFolder': '删除文件夹',
+			'library.createFolderTitle': '新建文件夹',
+			'library.renameFolderTitle': '重命名文件夹',
+			'library.folderName': '文件夹名称',
+			'library.folderParent': '上级文件夹',
+			'library.createFolder': '创建',
+			'library.deleteFolderTitle': '删除文件夹',
+			'library.deleteFolderHint': '子文件夹和项目会移动到上级文件夹。',
+			'library.deleteFolderConfirm': '删除文件夹',
+			'library.move': '移动到文件夹',
+			'library.moveTitle': '移动到文件夹',
+			'library.moveTo': '目标位置',
+			'library.moveConfirm': '移动',
+			'library.moved': '已移动 {name}。',
+			'library.folderCreated': '文件夹已创建。',
+			'library.folderUpdated': '文件夹已更新。',
+			'library.folderDeleted': '文件夹已删除。',
+			'timeline.trackRole': '轨道角色',
+			'timeline.ducking': '闪避',
+			'timeline.duckingHint': '播放头处有人声轨道音频时，自动降低本轨道音量。',
+			'role.voice': '人声',
+			'role.music': '音乐',
+			'role.sfx': '音效',
+			'role.other': '其他',
+			'role.short.voice': '人',
+			'role.short.music': '乐',
+			'role.short.sfx': '效',
+			'role.short.other': '他',
+			'generate.videoProvider': '视频',
+			'generate.videoTitle': '生成视频',
+			'generate.videoPrompt': '视频提示词',
+			'generate.videoPromptPlaceholder': '描述要生成的镜头…',
+			'generate.aspectRatio': '画幅比例',
+			'generate.duration': '时长',
+			'generate.duration5': '5 秒',
+			'generate.duration10': '10 秒',
+			'generate.videoAction': '生成视频',
+			'generate.videoDone': '视频已生成并添加到工程媒体。',
+			'vision.title': '视觉描述',
+			'vision.index': '描述',
+			'vision.indexTitle': '使用已配置的视觉模型描述该画面，并加入搜索。',
+			'vision.indexing': '正在描述…',
+			'vision.indexed': '已添加 {name} 的视觉描述。',
+			'vision.error': '视觉索引失败：{message}',
+			'vision.hint': '请在 Host 上配置 OPENAI_API_KEY（或 DSH 凭据）以描述和搜索画面。',
+			'vision.refresh': '刷新',
+			'search.vision': '视觉匹配',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -2953,9 +3139,15 @@ window.__ModuleLoader__.load({
 		function LibraryPanel(props) {
 			const { t, pickDirectory, onState, showNotice, ffmpegAvailable, projectAvailable } = props;
 			const [items, setItems] = React.useState([]);
+			const [folders, setFolders] = React.useState([]);
 			const [query, setQuery] = React.useState('');
 			const [kind, setKind] = React.useState('all');
 			const [favoritesOnly, setFavoritesOnly] = React.useState(false);
+			const [selectedFolderId, setSelectedFolderId] = React.useState(undefined);
+			const [expandedFolders, setExpandedFolders] = React.useState(() => new Set());
+			const [folderDialog, setFolderDialog] = React.useState(null);
+			const [deletingFolder, setDeletingFolder] = React.useState(null);
+			const [moving, setMoving] = React.useState(null);
 			const [loading, setLoading] = React.useState(true);
 			const [error, setError] = React.useState(null);
 			const [importing, setImporting] = React.useState(false);
@@ -2971,9 +3163,11 @@ window.__ModuleLoader__.load({
 			};
 
 			const fetchLibrary = async () => {
-				const data = await hostRequest(libraryItemsQuery(query, kind, favoritesOnly));
+				const data = await hostRequest(libraryItemsQuery(query, kind, favoritesOnly, selectedFolderId));
 				const nextItems = data && Array.isArray(data.items) ? data.items : [];
+				const nextFolders = data && Array.isArray(data.folders) ? data.folders : [];
 				setItems(nextItems);
+				setFolders(nextFolders);
 				return data;
 			};
 
@@ -2989,7 +3183,7 @@ window.__ModuleLoader__.load({
 					.finally(() => {
 						if (importSeq.current === seq) setLoading(false);
 					});
-			}, [query, kind, favoritesOnly]);
+			}, [query, kind, favoritesOnly, selectedFolderId]);
 
 			const reload = async () => {
 				setError(null);
@@ -3012,7 +3206,9 @@ window.__ModuleLoader__.load({
 				setImporting(true);
 				setError(null);
 				try {
-					const data = await hostPost('library/import', { path: folderPath });
+					const body = { path: folderPath };
+					if (typeof selectedFolderId === 'string') body.folderId = selectedFolderId;
+					const data = await hostPost('library/import', body);
 					const imported = data && Array.isArray(data.imported) ? data.imported.length : 0;
 					const skipped = data && Array.isArray(data.skipped) ? data.skipped.length : 0;
 					setImportPath(null);
@@ -3112,6 +3308,202 @@ window.__ModuleLoader__.load({
 					setBusyId(null);
 				}
 			};
+
+			const openCreateFolder = () => {
+				setFolderDialog({
+					mode: 'create',
+					id: null,
+					name: '',
+					parentId: typeof selectedFolderId === 'string' ? selectedFolderId : null,
+					error: null,
+				});
+			};
+			const openRenameFolder = (folder) => {
+				setFolderDialog({
+					mode: 'rename',
+					id: folder.id,
+					name: folder.name || '',
+					parentId: folder.parentId ?? null,
+					error: null,
+				});
+			};
+			const saveFolder = async () => {
+				if (!folderDialog) return;
+				const name = String(folderDialog.name || '').trim();
+				if (name.length === 0) {
+					setFolderDialog(Object.assign({}, folderDialog, { error: t('library.nameRequired') }));
+					return;
+				}
+				setFolderDialog(Object.assign({}, folderDialog, { error: null }));
+				try {
+					if (folderDialog.mode === 'create') {
+						const body = { name };
+						if (typeof folderDialog.parentId === 'string' && folderDialog.parentId.length > 0) body.parentId = folderDialog.parentId;
+						await hostPost('library/folders/create', body);
+						showNotice(t('library.folderCreated'));
+					} else {
+						await hostPost('library/folders/update', {
+							id: folderDialog.id,
+							patch: { name, parentId: folderDialog.parentId ?? null },
+						});
+						showNotice(t('library.folderUpdated'));
+					}
+					setFolderDialog(null);
+					await reload();
+				} catch (issue) {
+					setFolderDialog(Object.assign({}, folderDialog, { error: errorText(issue) }));
+				}
+			};
+			const confirmDeleteFolder = async () => {
+				if (!deletingFolder) return;
+				const target = deletingFolder;
+				setDeletingFolder(null);
+				setError(null);
+				try {
+					const data = await hostPost('library/folders/delete', { id: target.id });
+					const deleted = data && data.folder ? data.folder : target;
+					if (selectedFolderId === target.id) {
+						setSelectedFolderId(typeof deleted.parentId === 'string' ? deleted.parentId : null);
+					}
+					showNotice(t('library.folderDeleted'));
+					await reload();
+				} catch (issue) {
+					setError(errorText(issue));
+				}
+			};
+			const saveMove = async () => {
+				if (!moving) return;
+				const target = moving.item;
+				try {
+					await hostPost('library/move', { id: target.id, folderId: moving.folderId ?? null });
+					setMoving(null);
+					showNotice(t('library.moved', { name: target.name }));
+					await reload();
+				} catch (issue) {
+					setMoving(Object.assign({}, moving, { error: errorText(issue) }));
+				}
+			};
+			const toggleFolder = (folderId) => {
+				setExpandedFolders((previous) => {
+					const next = new Set(previous);
+					if (next.has(folderId)) next.delete(folderId);
+					else next.add(folderId);
+					return next;
+				});
+			};
+			const folderOptions = libraryFolderOptions(folders);
+			const renderSpecialFolder = (label, value) =>
+				h(
+					'div',
+					{ className: 'ots-folder-row', 'data-active': selectedFolderId === value ? 'true' : 'false' },
+					h('span', { className: 'ots-folder-toggle' }, '•'),
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'ots-folder-name',
+							onClick: () => setSelectedFolderId(value),
+							title: label,
+						},
+						label,
+					),
+				);
+			const renderFolderNode = (folder, depth) => {
+				const children = libraryFolderChildren(folders, folder.id);
+				const expanded = expandedFolders.has(folder.id);
+				return h(
+					React.Fragment,
+					{ key: folder.id },
+					h(
+						'div',
+						{
+							className: 'ots-folder-row',
+							'data-active': selectedFolderId === folder.id ? 'true' : 'false',
+							style: { paddingLeft: `${4 + depth * 10}px` },
+						},
+						children.length > 0
+							? h(
+									'button',
+									{
+										type: 'button',
+										className: 'ots-folder-toggle',
+										title: expanded ? t('library.collapseFolder') : t('library.expandFolder'),
+										'aria-label': expanded ? t('library.collapseFolder') : t('library.expandFolder'),
+										onClick: () => toggleFolder(folder.id),
+									},
+									expanded ? '▾' : '▸',
+								)
+							: h('span', { className: 'ots-folder-toggle' }, '·'),
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'ots-folder-name',
+								title: folder.name,
+								onClick: () => setSelectedFolderId(folder.id),
+							},
+							folder.name || folder.id,
+						),
+						h(
+							'div',
+							{ className: 'ots-folder-actions' },
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'ots-mini',
+									title: t('library.renameFolder'),
+									'aria-label': t('library.renameFolder'),
+									'data-folder-id': folder.id,
+									onClick: () => openRenameFolder(folder),
+								},
+								'✎',
+							),
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'ots-mini',
+									'data-danger': 'true',
+									title: t('library.deleteFolder'),
+									'aria-label': t('library.deleteFolder'),
+									'data-folder-id': folder.id,
+									onClick: () => setDeletingFolder(folder),
+								},
+								'×',
+							),
+						),
+					),
+					expanded ? children.map((child) => renderFolderNode(child, depth + 1)) : null,
+				);
+			};
+			const folderTree = h(
+				'div',
+				{ className: 'ots-library-folders' },
+				h(
+					'div',
+					{ className: 'ots-library-folder-head' },
+					h('span', { className: 'ots-library-group-title' }, t('library.folders')),
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'ots-mini',
+							title: t('library.newFolder'),
+							'aria-label': t('library.newFolder'),
+							onClick: openCreateFolder,
+						},
+						'+',
+					),
+				),
+				h(
+					'div',
+					{ className: 'ots-folder-list' },
+					renderSpecialFolder(t('library.allFolders'), undefined),
+					renderSpecialFolder(t('library.rootFolder'), null),
+					libraryFolderChildren(folders, null).map((folder) => renderFolderNode(folder, 0)),
+				),
+			);
 
 			const toolbar = h(
 				'div',
@@ -3242,6 +3634,18 @@ window.__ModuleLoader__.load({
 													onClick: () => void addToProject(item),
 												},
 												busyId === item.id ? t('library.working') : t('library.addToProject'),
+											),
+											h(
+												'button',
+												{
+													type: 'button',
+													className: 'ots-mini',
+													title: t('library.move'),
+													'aria-label': t('library.move'),
+													disabled: busyId === item.id,
+													onClick: () => setMoving({ item, folderId: item.folderId ?? null, error: null }),
+												},
+												'↪',
 											),
 											h(
 												'button',
@@ -3412,14 +3816,161 @@ window.__ModuleLoader__.load({
 						)
 					: null;
 
+			const folderDialogElement = folderDialog
+				? h(
+						'div',
+						{
+							className: 'ots-modal-backdrop ots-modal-fixed',
+							role: 'dialog',
+							'aria-modal': 'true',
+							'aria-label': folderDialog.mode === 'create' ? t('library.createFolderTitle') : t('library.renameFolderTitle'),
+							onPointerDown: (event) => {
+								if (event.target === event.currentTarget) setFolderDialog(null);
+							},
+						},
+						h(
+							'div',
+							{ className: 'ots-modal' },
+							h('h2', { className: 'ots-modal-title' }, folderDialog.mode === 'create' ? t('library.createFolderTitle') : t('library.renameFolderTitle')),
+							h(
+								'div',
+								{ className: 'ots-modal-body' },
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('library.folderName')),
+									h('input', {
+										className: 'ots-input',
+										type: 'text',
+										value: folderDialog.name,
+										'aria-label': t('library.folderName'),
+										onChange: (event) => setFolderDialog(Object.assign({}, folderDialog, { name: event.target.value })),
+									}),
+								),
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('library.folderParent')),
+									h(
+										'select',
+										{
+											className: 'ots-select',
+											value: folderDialog.parentId ?? '',
+											'aria-label': t('library.folderParent'),
+											onChange: (event) =>
+												setFolderDialog(
+													Object.assign({}, folderDialog, { parentId: event.target.value === '' ? null : event.target.value }),
+												),
+										},
+										h('option', { value: '' }, t('library.rootFolder')),
+										folderOptions
+											.filter((folder) => folderDialog.mode !== 'rename' || folder.id !== folderDialog.id)
+											.map((folder) =>
+												h('option', { key: folder.id, value: folder.id }, `${'  '.repeat(folder.depth)}${folder.name}`),
+											),
+									),
+								),
+								folderDialog.error ? h('p', { className: 'ots-modal-error', role: 'alert' }, folderDialog.error) : null,
+							),
+							h(
+								'div',
+								{ className: 'ots-modal-actions' },
+								h(Btn, { variant: 'ghost', onClick: () => setFolderDialog(null) }, t('actions.cancel')),
+								h(
+									Btn,
+									{ variant: 'primary', onClick: saveFolder },
+									folderDialog.mode === 'create' ? t('library.createFolder') : t('library.save'),
+								),
+							),
+						),
+					)
+				: null;
+			const deleteFolderDialog = deletingFolder
+				? h(
+						'div',
+						{
+							className: 'ots-modal-backdrop ots-modal-fixed',
+							role: 'dialog',
+							'aria-modal': 'true',
+							'aria-label': t('library.deleteFolderTitle'),
+							onPointerDown: (event) => {
+								if (event.target === event.currentTarget) setDeletingFolder(null);
+							},
+						},
+						h(
+							'div',
+							{ className: 'ots-modal' },
+							h('h2', { className: 'ots-modal-title' }, t('library.deleteFolderTitle')),
+							h('p', { className: 'ots-modal-hint' }, deletingFolder.name),
+							h('p', { className: 'ots-modal-hint' }, t('library.deleteFolderHint')),
+							h(
+								'div',
+								{ className: 'ots-modal-actions' },
+								h(Btn, { variant: 'ghost', onClick: () => setDeletingFolder(null) }, t('actions.cancel')),
+								h(Btn, { variant: 'primary', onClick: confirmDeleteFolder }, t('library.deleteFolderConfirm')),
+							),
+						),
+					)
+				: null;
+			const moveDialog = moving
+				? h(
+						'div',
+						{
+							className: 'ots-modal-backdrop ots-modal-fixed',
+							role: 'dialog',
+							'aria-modal': 'true',
+							'aria-label': t('library.moveTitle'),
+							onPointerDown: (event) => {
+								if (event.target === event.currentTarget) setMoving(null);
+							},
+						},
+						h(
+							'div',
+							{ className: 'ots-modal' },
+							h('h2', { className: 'ots-modal-title' }, t('library.moveTitle')),
+							h('p', { className: 'ots-modal-hint' }, moving.item.name),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('library.moveTo')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: moving.folderId ?? '',
+										'aria-label': t('library.moveTo'),
+										onChange: (event) =>
+											setMoving(Object.assign({}, moving, { folderId: event.target.value === '' ? null : event.target.value })),
+									},
+									h('option', { value: '' }, t('library.rootFolder')),
+									folderOptions.map((folder) =>
+										h('option', { key: folder.id, value: folder.id }, `${'  '.repeat(folder.depth)}${folder.name}`),
+									),
+								),
+							),
+							moving.error ? h('p', { className: 'ots-modal-error', role: 'alert' }, moving.error) : null,
+							h(
+								'div',
+								{ className: 'ots-modal-actions' },
+								h(Btn, { variant: 'ghost', onClick: () => setMoving(null) }, t('actions.cancel')),
+								h(Btn, { variant: 'primary', onClick: saveMove }, t('library.moveConfirm')),
+							),
+						),
+					)
+				: null;
+
 			return h(
 				'div',
 				{ className: 'ots-library-panel' },
+				folderTree,
 				toolbar,
 				grid,
 				editDialog,
 				deleteDialog,
 				importDialog,
+				folderDialogElement,
+				deleteFolderDialog,
+				moveDialog,
 			);
 		}
 
@@ -3483,8 +4034,9 @@ window.__ModuleLoader__.load({
 								),
 							),
 						);
-			const mediaResults = results ? results.filter((result) => result.kind !== 'transcript') : [];
+			const mediaResults = results ? results.filter((result) => result.kind !== 'transcript' && result.kind !== 'vision') : [];
 			const transcriptResults = results ? results.filter((result) => result.kind === 'transcript') : [];
+			const visionResults = results ? results.filter((result) => result.kind === 'vision') : [];
 			return h(
 				'div',
 				{ className: 'ots-search' },
@@ -3515,6 +4067,7 @@ window.__ModuleLoader__.load({
 								'div',
 								{ className: 'ots-search-results' },
 								renderGroup(t('search.transcripts'), transcriptResults),
+								renderGroup(t('search.vision'), visionResults),
 								renderGroup(t('search.media'), mediaResults),
 							)
 					: null,
@@ -3652,6 +4205,9 @@ window.__ModuleLoader__.load({
 			const [providers, setProviders] = React.useState(generation || null);
 			const [imagePrompt, setImagePrompt] = React.useState('');
 			const [imageSize, setImageSize] = React.useState('1024x1024');
+			const [videoPrompt, setVideoPrompt] = React.useState('');
+			const [videoAspect, setVideoAspect] = React.useState('16:9');
+			const [videoDuration, setVideoDuration] = React.useState('5');
 			const [speechText, setSpeechText] = React.useState('');
 			const [voice, setVoice] = React.useState('alloy');
 			const [speechModel, setSpeechModel] = React.useState('');
@@ -3673,9 +4229,14 @@ window.__ModuleLoader__.load({
 			const current = providers || generation || null;
 			const imageInfo = current && current.image ? current.image : null;
 			const speechInfo = current && current.speech ? current.speech : null;
+			const videoInfo = current && current.video ? current.video : null;
 			const imageConfigured = !imageInfo || imageInfo.configured !== false;
 			const speechConfigured = !speechInfo || speechInfo.configured !== false;
-			const anyMissing = (imageInfo && imageInfo.configured === false) || (speechInfo && speechInfo.configured === false);
+			const videoConfigured = !videoInfo || videoInfo.configured !== false;
+			const anyMissing =
+				(imageInfo && imageInfo.configured === false) ||
+				(speechInfo && speechInfo.configured === false) ||
+				(videoInfo && videoInfo.configured === false);
 			const renderProvider = (label, info) =>
 				h(
 					'div',
@@ -3703,6 +4264,27 @@ window.__ModuleLoader__.load({
 					if (typeof onState === 'function') onState(payload);
 					setImagePrompt('');
 					showNotice(t('generate.imageDone'));
+					if (typeof onGenerated === 'function') onGenerated();
+				} catch (issue) {
+					setError(t('generate.error', { message: issue && issue.message ? issue.message : String(issue) }));
+				} finally {
+					setBusy(null);
+				}
+			};
+			const runVideo = async () => {
+				const prompt = videoPrompt.trim();
+				if (prompt.length === 0 || busy !== null) return;
+				setBusy('video');
+				setError(null);
+				try {
+					const payload = await hostPost('generate/video', {
+						prompt,
+						aspectRatio: videoAspect,
+						duration: videoDuration,
+					});
+					if (typeof onState === 'function') onState(payload);
+					setVideoPrompt('');
+					showNotice(t('generate.videoDone'));
 					if (typeof onGenerated === 'function') onGenerated();
 				} catch (issue) {
 					setError(t('generate.error', { message: issue && issue.message ? issue.message : String(issue) }));
@@ -3741,6 +4323,7 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'ots-generate-title' }, t('generate.providers')),
 					),
 					renderProvider(t('generate.imageProvider'), imageInfo),
+					renderProvider(t('generate.videoProvider'), videoInfo),
 					renderProvider(t('generate.speechProvider'), speechInfo),
 					!current ? h('p', { className: 'ots-note' }, t('generate.unknown')) : null,
 					anyMissing ? h('p', { className: 'ots-note', 'data-warn': 'true' }, t('generate.hint')) : null,
@@ -3797,6 +4380,79 @@ window.__ModuleLoader__.load({
 								onClick: runImage,
 							},
 							busy === 'image' ? t('generate.working') : t('generate.imageAction'),
+						),
+					),
+				),
+				h(
+					'div',
+					{ className: 'ots-generate-card' },
+					h(
+						'div',
+						{ className: 'ots-generate-head' },
+						h('span', { className: 'ots-generate-title' }, t('generate.videoTitle')),
+						h(
+							'span',
+							{ className: 'ots-pill', 'data-ok': videoConfigured ? 'true' : 'false' },
+							h('span', { className: 'ots-pill-dot' }),
+							videoConfigured ? t('generate.configured') : t('generate.notConfigured'),
+						),
+					),
+					h('textarea', {
+						className: 'ots-textarea',
+						value: videoPrompt,
+						placeholder: t('generate.videoPromptPlaceholder'),
+						'aria-label': t('generate.videoPrompt'),
+						onChange: (event) => setVideoPrompt(event.target.value),
+					}),
+					h(
+						'div',
+						{ className: 'ots-field-grid' },
+						h(
+							'label',
+							{ className: 'ots-field' },
+							h('span', { className: 'ots-field-label' }, t('generate.aspectRatio')),
+							h(
+								'select',
+								{
+									className: 'ots-select',
+									value: videoAspect,
+									'aria-label': t('generate.aspectRatio'),
+									onChange: (event) => setVideoAspect(event.target.value),
+								},
+								['16:9', '9:16', '1:1'].map((value) => h('option', { key: value, value }, value)),
+							),
+						),
+						h(
+							'label',
+							{ className: 'ots-field' },
+							h('span', { className: 'ots-field-label' }, t('generate.duration')),
+							h(
+								'select',
+								{
+									className: 'ots-select',
+									value: videoDuration,
+									'aria-label': t('generate.duration'),
+									onChange: (event) => setVideoDuration(event.target.value),
+								},
+								[
+									{ value: '5', label: t('generate.duration5') },
+									{ value: '10', label: t('generate.duration10') },
+								].map((option) => h('option', { key: option.value, value: option.value }, option.label)),
+							),
+						),
+					),
+					h(
+						'div',
+						{ className: 'ots-generate-actions' },
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'ots-btn ots-btn-primary',
+								disabled: busy !== null || videoPrompt.trim().length === 0 || !videoConfigured,
+								onClick: runVideo,
+							},
+							busy === 'video' ? t('generate.working') : t('generate.videoAction'),
 						),
 					),
 				),
@@ -3895,6 +4551,9 @@ window.__ModuleLoader__.load({
 			const [transcribingId, setTranscribingId] = React.useState(null);
 			const [transcribeError, setTranscribeError] = React.useState(null);
 			const [transcriptPreview, setTranscriptPreview] = React.useState(null);
+			const [visionRecords, setVisionRecords] = React.useState([]);
+			const [visionBusyId, setVisionBusyId] = React.useState(null);
+			const [visionError, setVisionError] = React.useState(null);
 			const media = project ? project.media : [];
 			const fps = project ? project.fps : 30;
 			const asrReady = !asr || asrConfigured(asr);
@@ -3940,6 +4599,35 @@ window.__ModuleLoader__.load({
 					onDropFiles(event.dataTransfer.files);
 				}
 			};
+			const visionReady = !generation || !generation.image || generation.image.configured !== false;
+			const loadVision = async () => {
+				try {
+					const data = await hostRequest('vision');
+					setVisionRecords(data && Array.isArray(data.records) ? data.records : []);
+				} catch (issue) {
+					/* vision is optional; keep the panel usable */
+				}
+			};
+			React.useEffect(() => {
+				void loadVision();
+			}, []);
+			const indexVision = async (item) => {
+				if (visionBusyId !== null) return;
+				setVisionBusyId(item.id);
+				setVisionError(null);
+				try {
+					const data = await hostPost('vision/index', { mediaId: item.id });
+					const record = data && data.record ? data.record : null;
+					if (record) {
+						setVisionRecords((previous) => [record, ...previous.filter((entry) => entry.mediaId !== record.mediaId)]);
+					}
+					showNotice(t('vision.indexed', { name: item.name }));
+				} catch (issue) {
+					setVisionError(t('vision.error', { message: issue && issue.message ? issue.message : String(issue) }));
+				} finally {
+					setVisionBusyId(null);
+				}
+			};
 			const transcriptPreviewPanel = transcriptPreview
 				? h(
 						'div',
@@ -3972,6 +4660,29 @@ window.__ModuleLoader__.load({
 							: h('p', { className: 'ots-note' }, t('transcribe.noTranscriptPreview')),
 					)
 				: null;
+			const visionPanel =
+				visionRecords.length > 0 || visionError || !visionReady
+					? h(
+							'div',
+							{ className: 'ots-vision-panel' },
+							h(
+								'div',
+								{ className: 'ots-subhead' },
+								h('span', { className: 'ots-section-title' }, t('vision.title')),
+								h(Btn, { variant: 'ghost', onClick: () => void loadVision() }, t('vision.refresh')),
+							),
+							!visionReady ? h('p', { className: 'ots-note' }, t('vision.hint')) : null,
+							visionError ? h('div', { className: 'ots-generate-error', role: 'alert' }, visionError) : null,
+							visionRecords.map((record) =>
+								h(
+									'div',
+									{ className: 'ots-vision-row', key: record.mediaId },
+									h('span', { className: 'ots-vision-name', title: record.mediaName }, record.mediaName || record.mediaId || ''),
+									h('span', { className: 'ots-vision-desc' }, record.description || ''),
+								),
+							),
+						)
+					: null;
 			const projectContent =
 				media.length === 0
 					? h(
@@ -4037,34 +4748,54 @@ window.__ModuleLoader__.load({
 											),
 										),
 									),
-									item.kind === 'video' || item.kind === 'audio'
+									item.kind === 'video' || item.kind === 'audio' || item.kind === 'image'
 										? h(
 												'div',
 												{ className: 'ots-media-actions' },
-												h(
-													'button',
-													{
-														type: 'button',
-														className: 'ots-mini',
-														disabled: transcribingId !== null || !asrReady,
-														title: asrReady ? t('transcribe.actionTitle') : t('transcribe.asrHint', { keyRef: asrKeyRef(asr) }),
-														onClick: () => void runTranscribe(item, true),
-													},
-													transcribingId === item.id ? t('transcribe.busy') : t('transcribe.action'),
-												),
-												h(
-													'button',
-													{
-														type: 'button',
-														className: 'ots-mini',
-														disabled: transcribingId !== null || !asrReady,
-														title: t('transcribe.onlyTitle'),
-														'aria-label': t('transcribe.onlyTitle'),
-														onClick: () => void runTranscribe(item, false),
-													},
-													'T',
-												),
-											)
+												item.kind === 'video' || item.kind === 'audio'
+													? h(
+															React.Fragment,
+															null,
+															h(
+																'button',
+																{
+																	type: 'button',
+																	className: 'ots-mini',
+																	disabled: transcribingId !== null || !asrReady,
+																	title: asrReady ? t('transcribe.actionTitle') : t('transcribe.asrHint', { keyRef: asrKeyRef(asr) }),
+																	onClick: () => void runTranscribe(item, true),
+																},
+																transcribingId === item.id ? t('transcribe.busy') : t('transcribe.action'),
+																),
+																h(
+																	'button',
+																	{
+																		type: 'button',
+																		className: 'ots-mini',
+																		disabled: transcribingId !== null || !asrReady,
+																		title: t('transcribe.onlyTitle'),
+																		'aria-label': t('transcribe.onlyTitle'),
+																		onClick: () => void runTranscribe(item, false),
+																	},
+																	'T',
+																),
+														)
+													: null,
+												item.kind === 'video' || item.kind === 'image'
+													? h(
+															'button',
+															{
+																type: 'button',
+																className: 'ots-mini',
+																disabled: visionBusyId !== null || !visionReady,
+																title: visionReady ? t('vision.indexTitle') : t('vision.hint'),
+																'aria-label': t('vision.index'),
+																onClick: () => void indexVision(item),
+															},
+															visionBusyId === item.id ? t('vision.indexing') : t('vision.index'),
+														)
+													: null,
+												)
 										: null,
 								),
 							),
@@ -4194,6 +4925,7 @@ window.__ModuleLoader__.load({
 													})
 												: null,
 											transcriptPreviewPanel,
+											visionPanel,
 											projectContent,
 											uploading
 												? h('div', { className: 'ots-panel-sub', role: 'status' }, uploading)
@@ -5819,6 +6551,48 @@ window.__ModuleLoader__.load({
 		// Timeline
 		// -------------------------------------------------------------------
 
+		function TrackRoleControl(props) {
+			const { t, track, onUpdateTrack } = props;
+			const role = trackRoleOf(track);
+			const ducking = trackDuckingOf(track);
+			const duckable = isDuckableRole(role);
+			const changeRole = (nextRole) => {
+				const patch = { role: nextRole };
+				if (!isDuckableRole(nextRole) && track.ducking === true) patch.ducking = false;
+				onUpdateTrack(track.id, patch);
+			};
+			return h(
+				'span',
+				{ className: 'ots-track-role' },
+				h(
+					'select',
+					{
+						className: 'ots-select ots-track-role-select',
+						value: role,
+						'aria-label': t('timeline.trackRole'),
+						title: t('timeline.trackRole'),
+						onChange: (event) => changeRole(event.target.value),
+					},
+					TRACK_ROLES.map((value) => h('option', { key: value, value }, t(`role.${value}`))),
+				),
+				duckable
+					? h(
+							'button',
+							{
+								type: 'button',
+								className: 'ots-mini ots-track-ducking',
+								'data-active': ducking ? 'true' : 'false',
+								'aria-pressed': ducking ? 'true' : 'false',
+								'aria-label': t('timeline.ducking'),
+								title: t('timeline.duckingHint'),
+								onClick: () => onUpdateTrack(track.id, { ducking: !ducking }),
+							},
+							'D',
+						)
+					: null,
+			);
+		}
+
 		function TrackVolumeControl(props) {
 			const { t, track, onUpdateTrack } = props;
 			const [value, setValue] = React.useState(() => clamp(finiteNumber(track.volume, 1), 0, 2));
@@ -6202,6 +6976,8 @@ window.__ModuleLoader__.load({
 				const muted = track.muted === true;
 				const hidden = track.hidden === true;
 				const typeLabel = t(track.type === 'audio' ? 'timeline.audioTrack' : 'timeline.videoTrack');
+				const role = trackRoleOf(track);
+				const ducking = trackDuckingOf(track);
 				const stateSuffix = [muted ? t('timeline.muted') : null, hidden ? t('timeline.hidden') : null]
 					.filter(Boolean)
 					.join(' · ');
@@ -6245,6 +7021,18 @@ window.__ModuleLoader__.load({
 									},
 									track.name || typeLabel,
 								),
+						h(
+							'span',
+							{ className: 'ots-track-badges' },
+							h(
+								'span',
+								{ className: 'ots-track-role-badge', title: t(`role.${role}`) },
+								t(`role.short.${role}`),
+							),
+							ducking
+								? h('span', { className: 'ots-track-duck-badge', title: t('timeline.ducking') }, 'D')
+								: null,
+						),
 						h(
 							'div',
 							{ className: 'ots-track-actions' },
@@ -6304,7 +7092,12 @@ window.__ModuleLoader__.load({
 						{ className: 'ots-track-kind', title: `${typeLabel} · ${t('timeline.clipCount', { count: track.clips.length })}${stateSuffix ? ` · ${stateSuffix}` : ''}` },
 						`${typeLabel} · ${t('timeline.clipCount', { count: track.clips.length })}${stateSuffix ? ` · ${stateSuffix}` : ''}`,
 					),
-					h(TrackVolumeControl, { t, track, onUpdateTrack }),
+					h(
+						'div',
+						{ className: 'ots-track-mix-row' },
+						h(TrackRoleControl, { t, track, onUpdateTrack }),
+						h(TrackVolumeControl, { t, track, onUpdateTrack }),
+					),
 					confirmTrackId === track.id
 						? h(
 								'div',
@@ -7182,6 +7975,19 @@ window.__ModuleLoader__.load({
 				const currentProject = projectRef.current;
 				if (!currentProject) return;
 				const active = activeClipsAt(currentProject, frame);
+				const voiceActive = active.some((row) => {
+					const track = row.track;
+					const clip = row.clip;
+					if (!track || trackRoleOf(track) !== 'voice' || track.muted === true) return false;
+					const media = findMedia(currentProject, clip.mediaId);
+					if (!media) return false;
+					if (!(clip.type === 'audio' || (clip.type === 'video' && media.hasAudio))) return false;
+					return (
+						clipPropertyAt(clip, 'volume', clipRelativeFrame(clip, frame), finiteNumber(clip.volume, 1)) *
+							clipFadeFactor(clip, frame) >
+						0.001
+					);
+				});
 				const audioByMedia = new Map();
 				const videoByMedia = new Map();
 				for (const row of active) {
@@ -7204,13 +8010,15 @@ window.__ModuleLoader__.load({
 						if (audioEntry) {
 							const audioClip = audioEntry.clip;
 							const trackVolume = clamp(finiteNumber(audioEntry.track && audioEntry.track.volume, 1), 0, 2);
+							const ducked = voiceActive && trackDuckingOf(audioEntry.track);
 							const desired = clipSourceSeconds(audioClip, frame, rate);
 							const audioSpeed = clipSpeedOf(audioClip);
 							const audioVolume = clamp01(
 								clipPropertyAt(audioClip, 'volume', clipRelativeFrame(audioClip, frame), finiteNumber(audioClip.volume, 1)) *
 									clipFadeFactor(audioClip, frame) *
 									monitorVolumeRef.current *
-									trackVolume,
+									trackVolume *
+									(ducked ? DUCK_ATTENUATION : 1),
 							);
 							audio.volume = audioVolume;
 							try {

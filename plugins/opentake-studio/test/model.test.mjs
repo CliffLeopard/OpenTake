@@ -4417,3 +4417,148 @@ describe('track volume', () => {
     assert.deepEqual(findTrack(noop, 't-video').clips.map((clip) => clip.id), ['c1']);
   });
 });
+
+// ===========================================================================
+// Phase 9: track role and ducking (voice/music/sfx/other).
+// ===========================================================================
+
+describe('track role and ducking', () => {
+  it('defaults role to other and ducking to false', () => {
+    const project = fixture();
+    for (const track of project.tracks) {
+      assert.equal(track.role, 'other');
+      assert.equal(track.ducking, false);
+    }
+    const normalized = normalizeProject({
+      tracks: [{ id: 't', type: 'audio', clips: [] }],
+    });
+    assert.equal(normalized.tracks[0].role, 'other');
+    assert.equal(normalized.tracks[0].ducking, false);
+  });
+
+  it('migrates old projects that predate role/ducking', () => {
+    const project = normalizeProject(rawProject());
+    for (const track of project.tracks) {
+      assert.equal(track.role, 'other');
+      assert.equal(track.ducking, false);
+    }
+  });
+
+  it('sets every role and toggles ducking, honouring false', () => {
+    let project = fixture();
+    for (const role of ['voice', 'music', 'sfx', 'other']) {
+      project = applyOperation(project, { type: 'update-track', trackId: 't-audio', role });
+      assert.equal(findTrack(project, 't-audio').role, role);
+    }
+    assert.equal(findTrack(project, 't-video').role, 'other');
+
+    project = applyOperation(project, { type: 'update-track', trackId: 't-audio', role: 'music', ducking: true });
+    assert.equal(findTrack(project, 't-audio').ducking, true);
+    project = applyOperation(project, { type: 'update-track', trackId: 't-audio', ducking: false });
+    assert.equal(findTrack(project, 't-audio').ducking, false);
+  });
+
+  it('combines role/ducking with the other track fields, preserving the rest', () => {
+    let project = fixture();
+    project = applyOperation(project, {
+      type: 'update-track',
+      trackId: 't-audio',
+      name: 'Music Bed',
+      muted: true,
+      hidden: true,
+      volume: 0.5,
+      role: 'music',
+      ducking: true,
+    });
+    assert.deepEqual(
+      (({ name, muted, hidden, volume, role, ducking }) => ({ name, muted, hidden, volume, role, ducking }))(
+        findTrack(project, 't-audio'),
+      ),
+      { name: 'Music Bed', muted: true, hidden: true, volume: 0.5, role: 'music', ducking: true },
+    );
+    // Partial update keeps role/ducking.
+    project = applyOperation(project, { type: 'update-track', trackId: 't-audio', volume: 1.25 });
+    const track = findTrack(project, 't-audio');
+    assert.equal(track.volume, 1.25);
+    assert.equal(track.role, 'music');
+    assert.equal(track.ducking, true);
+    // No-op keeps role/ducking.
+    const noop = applyOperation(project, { type: 'update-track', trackId: 't-audio' });
+    assert.equal(findTrack(noop, 't-audio').role, 'music');
+    assert.equal(findTrack(noop, 't-audio').ducking, true);
+  });
+
+  it('rejects invalid role/ducking values and unknown tracks', () => {
+    const project = fixture();
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 't-audio', role: 'dialogue' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 't-audio', role: '' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 't-audio', ducking: 'yes' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 'ghost', role: 'voice' }),
+      'track-not-found',
+    );
+  });
+
+  it('normalizes valid fields, strips unknown ones and rejects bad data', () => {
+    const raw = mutatedRaw((value) => {
+      value.tracks[0].role = 'music';
+      value.tracks[0].ducking = true;
+      value.tracks[0].bogus = true;
+    });
+    const project = normalizeProject(raw);
+    assert.equal(project.tracks[0].role, 'music');
+    assert.equal(project.tracks[0].ducking, true);
+    assert.equal('bogus' in project.tracks[0], false);
+    assert.deepEqual(normalizeProject(project), project);
+    expectModelError(
+      () => normalizeProject({ tracks: [{ id: 't', type: 'audio', clips: [], role: 'dialogue' }] }),
+      'invalid-track',
+    );
+    expectModelError(
+      () => normalizeProject({ tracks: [{ id: 't', type: 'audio', clips: [], ducking: 1 }] }),
+      'invalid-track',
+    );
+  });
+
+  it('survives clip edits, track reorder and is pure', () => {
+    let project = fixture();
+    project = applyOperation(project, {
+      type: 'update-track',
+      trackId: 't-audio',
+      role: 'music',
+      ducking: true,
+    });
+    project = addClip(project, {
+      clipId: 'aud',
+      mediaId: 'm-audio',
+      trackId: 't-audio',
+      startFrame: 0,
+      durationFrames: 50,
+    });
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'aud', durationFrames: 25 });
+    project = applyOperation(project, { type: 'reorder-tracks', trackId: 't-audio', toIndex: 0 });
+    const track = findTrack(project, 't-audio');
+    assert.equal(track.role, 'music');
+    assert.equal(track.ducking, true);
+    assert.equal(track.clips.length, 1);
+
+    const snapshot = JSON.stringify(project);
+    const operation = { type: 'update-track', trackId: 't-audio', role: 'voice', ducking: false };
+    const operationBefore = JSON.stringify(operation);
+    const next = applyOperation(project, operation);
+    assert.equal(JSON.stringify(project), snapshot);
+    assert.equal(JSON.stringify(operation), operationBefore);
+    assert.equal(findTrack(next, 't-audio').role, 'voice');
+    assert.equal(findTrack(next, 't-audio').ducking, false);
+    assert.deepEqual(normalizeProject(next), next);
+  });
+});

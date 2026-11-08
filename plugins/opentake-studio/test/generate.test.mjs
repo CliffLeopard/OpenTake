@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createProject } from '../lib/model.js';
-import { generateImage, generateSpeech, generationProviders } from '../lib/generate.js';
+import { generateImage, generateSpeech, generateVideo, generationProviders } from '../lib/generate.js';
 
 const exec = promisify(execFile);
 const FFMPEG = process.env.OPENTAKE_STUDIO_FFMPEG ?? 'ffmpeg';
@@ -115,5 +115,81 @@ test('reports generation-unavailable without a credential', async () => {
     );
   } finally {
     if (saved !== undefined) process.env.OPENAI_API_KEY = saved;
+  }
+});
+
+test('generates a video through a fal.ai queue endpoint', skip, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'ots-generate-'));
+  const fixture = path.join(root, 'video.mp4');
+  await exec(FFMPEG, [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'testsrc=size=160x90:rate=30:duration=1',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', fixture,
+  ]);
+  const videoBytes = await readFile(fixture);
+  let origin = '';
+  const server = createServer((request, response) => {
+    if (request.method === 'POST' && request.url.startsWith('/fal-ai/')) {
+      const chunks = [];
+      request.on('data', (chunk) => chunks.push(chunk));
+      request.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        assert.equal(body.prompt, 'a moving camera');
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({
+          request_id: 'req-1',
+          status_url: `${origin}/status/req-1`,
+          response_url: `${origin}/result/req-1`,
+        }));
+      });
+      return;
+    }
+    if (request.url.startsWith('/status/')) {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ status: 'COMPLETED' }));
+      return;
+    }
+    if (request.url.startsWith('/result/')) {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ video: { url: `${origin}/download/video.mp4` } }));
+      return;
+    }
+    if (request.url === '/download/video.mp4') {
+      response.writeHead(200, { 'content-type': 'video/mp4', 'content-length': videoBytes.length });
+      response.end(videoBytes);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  origin = `http://127.0.0.1:${port}`;
+  const saved = {
+    base: process.env.OPENTAKE_STUDIO_FAL_BASE_URL,
+    key: process.env.FAL_KEY,
+  };
+  process.env.OPENTAKE_STUDIO_FAL_BASE_URL = origin;
+  process.env.FAL_KEY = 'fal-test-key';
+  try {
+    const project = createProject({ name: 'Video', fps: 30 });
+    const media = await generateVideo({
+      ctx: fakeCtx(),
+      project,
+      projectRoot: root,
+      prompt: 'a moving camera',
+      duration: '1',
+    });
+    assert.equal(media.kind, 'video');
+    assert.equal(media.width, 160);
+    assert.equal(media.durationFrames, 30);
+    assert.ok(media.sizeBytes > 0);
+  } finally {
+    if (saved.base === undefined) delete process.env.OPENTAKE_STUDIO_FAL_BASE_URL;
+    else process.env.OPENTAKE_STUDIO_FAL_BASE_URL = saved.base;
+    if (saved.key === undefined) delete process.env.FAL_KEY;
+    else process.env.FAL_KEY = saved.key;
+    await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
   }
 });

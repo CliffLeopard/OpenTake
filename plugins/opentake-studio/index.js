@@ -33,12 +33,16 @@ import { defaultExtensionForCodec, runExport } from './lib/export.js';
 import { captionClipFromSegments, parseSubtitles, projectCaptionSegments, serializeSubtitles } from './lib/captions.js';
 import {
   addLibraryItemToProject,
+  createLibraryFolder,
+  deleteLibraryFolder,
   deleteLibraryItem,
   ensureLibraryThumbnail,
   importFolderToLibrary,
   libraryAssetPath,
   libraryPaths,
   listLibrary,
+  moveLibraryItem,
+  updateLibraryFolder,
   updateLibraryItem,
 } from './lib/library.js';
 import {
@@ -48,7 +52,8 @@ import {
   transcriptToCaptionSegments,
   transcriptionSettings,
 } from './lib/transcribe.js';
-import { generateImage, generateSpeech, generationProviders } from './lib/generate.js';
+import { generateImage, generateSpeech, generateVideo, generationProviders } from './lib/generate.js';
+import { indexMediaVision, readVisionIndex } from './lib/vision.js';
 
 export const name = 'opentake-studio';
 export const inject = ['tools', 'webServer', 'connection'];
@@ -734,6 +739,8 @@ export function apply(ctx) {
         muted: track.muted,
         hidden: track.hidden,
         ...(track.volume === undefined ? {} : { volume: track.volume }),
+        ...(track.role === undefined ? {} : { role: track.role }),
+        ...(track.ducking === undefined ? {} : { ducking: track.ducking }),
         clips: track.clips.map((clip) => ({
           id: clip.id,
           type: clip.type,
@@ -904,7 +911,10 @@ export function apply(ctx) {
     if (typeof folder !== 'string' || folder.trim().length === 0) {
       throw new RouteError('A library import needs an absolute folder path', 'invalid-input');
     }
-    const result = await importFolderToLibrary({ folderPath: path.resolve(folder) });
+    const result = await importFolderToLibrary({
+      folderPath: path.resolve(folder),
+      folderId: typeof input.folderId === 'string' ? input.folderId : undefined,
+    });
     return { items: result.library.items, imported: result.imported, skipped: result.skipped };
   }
 
@@ -948,6 +958,19 @@ export function apply(ctx) {
     return applyOperations([{ type: 'add-media', media }]);
   }
 
+  async function generateProjectVideo(input) {
+    const project = ensureProject();
+    const media = await generateVideo({
+      ctx,
+      project,
+      projectRoot: state.paths.root,
+      prompt: input.prompt,
+      aspectRatio: input.aspectRatio,
+      duration: input.duration,
+    });
+    return applyOperations([{ type: 'add-media', media }]);
+  }
+
   async function generateProjectSpeech(input) {
     const project = ensureProject();
     const media = await generateSpeech({
@@ -987,6 +1010,13 @@ export function apply(ctx) {
     return { transcript, state: resultState };
   }
 
+  async function indexProjectMediaVision(input) {
+    const project = ensureProject();
+    const media = findMedia(project, input.mediaId);
+    if (media === null) throw new RouteError('Unknown media id', 'invalid-input');
+    return indexMediaVision({ ctx, projectRoot: state.paths.root, media });
+  }
+
   async function searchProject(query) {
     const project = ensureProject();
     const needle = String(query ?? '').trim().toLowerCase();
@@ -995,6 +1025,17 @@ export function apply(ctx) {
     for (const media of project.media) {
       if (media.name.toLowerCase().includes(needle)) {
         results.push({ kind: 'media', mediaId: media.id, name: media.name, snippet: media.name });
+      }
+    }
+    const vision = await readVisionIndex(state.paths.root);
+    for (const record of vision) {
+      if (record.description.toLowerCase().includes(needle)) {
+        results.push({
+          kind: 'vision',
+          mediaId: record.mediaId,
+          name: record.mediaName,
+          snippet: record.description,
+        });
       }
     }
     const transcripts = await readTranscripts(state.paths.root);
@@ -1126,10 +1167,12 @@ export function apply(ctx) {
       case 'ffmpeg-unavailable':
       case 'asr-unavailable':
       case 'generation-unavailable':
+      case 'vision-unavailable':
       case 'encoder-unavailable':
         return 503;
       case 'asr-failed':
       case 'generation-failed':
+      case 'vision-failed':
         return 502;
       case 'invalid-input':
       case 'invalid-project':
@@ -1168,12 +1211,37 @@ export function apply(ctx) {
           kind: query.get('kind') ?? undefined,
           favorite: query.get('favorite') === null ? undefined : query.get('favorite') === 'true',
           category: query.get('category') ?? undefined,
+          folderId: query.get('folderId') === null ? undefined : query.get('folderId') === 'root' ? null : query.get('folderId'),
         });
-        sendJson(res, 200, { items: result.items, root: result.root });
+        sendJson(res, 200, { items: result.items, folders: result.folders, root: result.root });
         return;
       }
       if (sub === '/library/import' && req.method === 'POST') {
         sendJson(res, 200, await importLibraryFolder(await readBoundedJson(req)));
+        return;
+      }
+      if (sub === '/library/folders/create' && req.method === 'POST') {
+        const body = await readBoundedJson(req);
+        const folder = await createLibraryFolder({ name: body.name, parentId: body.parentId });
+        sendJson(res, 200, { ok: true, folder });
+        return;
+      }
+      if (sub === '/library/folders/update' && req.method === 'POST') {
+        const body = await readBoundedJson(req);
+        const folder = await updateLibraryFolder({ folderId: body.id, patch: body.patch });
+        sendJson(res, 200, { ok: true, folder });
+        return;
+      }
+      if (sub === '/library/folders/delete' && req.method === 'POST') {
+        const body = await readBoundedJson(req);
+        const folder = await deleteLibraryFolder({ folderId: body.id });
+        sendJson(res, 200, { ok: true, folder });
+        return;
+      }
+      if (sub === '/library/move' && req.method === 'POST') {
+        const body = await readBoundedJson(req);
+        const item = await moveLibraryItem({ itemId: body.id, folderId: body.folderId ?? null });
+        sendJson(res, 200, { ok: true, item });
         return;
       }
       if (sub === '/library/update' && req.method === 'POST') {
@@ -1260,8 +1328,22 @@ export function apply(ctx) {
         sendJson(res, 200, await generateProjectImage(await readBoundedJson(req)));
         return;
       }
+      if (sub === '/generate/video' && req.method === 'POST') {
+        sendJson(res, 200, await generateProjectVideo(await readBoundedJson(req)));
+        return;
+      }
       if (sub === '/generate/tts' && req.method === 'POST') {
         sendJson(res, 200, await generateProjectSpeech(await readBoundedJson(req)));
+        return;
+      }
+      if (sub === '/vision/index' && req.method === 'POST') {
+        const body = await readBoundedJson(req);
+        const record = await indexProjectMediaVision(body);
+        sendJson(res, 200, { record });
+        return;
+      }
+      if (sub === '/vision' && req.method === 'GET') {
+        sendJson(res, 200, { records: await readVisionIndex(ensureProject() && state.paths.root) });
         return;
       }
       if (sub === '/transcribe' && req.method === 'POST') {
@@ -1432,6 +1514,8 @@ export function apply(ctx) {
         muted: { type: 'boolean' },
         hidden: { type: 'boolean' },
         volume: { type: 'number' },
+        role: { type: 'string', enum: ['voice', 'music', 'sfx', 'other'] },
+        ducking: { type: 'boolean' },
       },
       required: ['trackId'],
       additionalProperties: false,
@@ -1442,6 +1526,8 @@ export function apply(ctx) {
       if (args.muted !== undefined) operation.muted = args.muted;
       if (args.hidden !== undefined) operation.hidden = args.hidden;
       if (args.volume !== undefined) operation.volume = args.volume;
+      if (args.role !== undefined) operation.role = args.role;
+      if (args.ducking !== undefined) operation.ducking = args.ducking;
       const result = await applyOperations([operation]);
       return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
     },
@@ -1551,6 +1637,21 @@ export function apply(ctx) {
   );
 
   registerTool(
+    'opentake_studio_index_media_vision',
+    'Describe an image/video thumbnail with the configured vision provider and store it for search.',
+    {
+      type: 'object',
+      properties: { mediaId: { type: 'string' } },
+      required: ['mediaId'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const record = await indexProjectMediaVision(args);
+      return { text: record.description, data: { record } };
+    },
+  );
+
+  registerTool(
     'opentake_studio_search',
     'Search project media names and stored transcripts for a literal query.',
     {
@@ -1576,6 +1677,25 @@ export function apply(ctx) {
     },
     async (args) => {
       const result = await generateProjectImage(args);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_generate_video',
+    'Generate a short video with the configured fal.ai model and add it to the current project.',
+    {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string' },
+        aspectRatio: { type: 'string' },
+        duration: { type: 'string' },
+      },
+      required: ['prompt'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await generateProjectVideo(args);
       return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
     },
   );
@@ -1675,6 +1795,66 @@ export function apply(ctx) {
     async (args) => {
       const item = await deleteLibraryItem({ itemId: args.id });
       return { text: 'Library item deleted', data: { item } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_library_create_folder',
+    'Create a folder in the global media library.',
+    {
+      type: 'object',
+      properties: { name: { type: 'string' }, parentId: { type: 'string' } },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const folder = await createLibraryFolder({ name: args.name, parentId: args.parentId });
+      return { text: JSON.stringify(folder), data: { folder } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_library_update_folder',
+    'Rename a library folder or move it under another folder.',
+    {
+      type: 'object',
+      properties: { id: { type: 'string' }, patch: { type: 'object' } },
+      required: ['id', 'patch'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const folder = await updateLibraryFolder({ folderId: args.id, patch: args.patch });
+      return { text: JSON.stringify(folder), data: { folder } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_library_delete_folder',
+    'Delete a library folder, moving its items and child folders to its parent.',
+    {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const folder = await deleteLibraryFolder({ folderId: args.id });
+      return { text: 'Folder deleted', data: { folder } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_library_move',
+    'Move a library item into a folder (or root with null).',
+    {
+      type: 'object',
+      properties: { id: { type: 'string' }, folderId: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const item = await moveLibraryItem({ itemId: args.id, folderId: args.folderId ?? null });
+      return { text: JSON.stringify(item), data: { item } };
     },
   );
 

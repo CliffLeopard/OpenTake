@@ -57,6 +57,13 @@
  *     `normal` is unchanged. True xfade transitions also exclude blended clips.
  *   - track volume: `Track.volume` (0..2, default 1) multiplies every audio
  *     chain on that track after clip volume/keyframes; `muted` still wins.
+ *   - audio ducking: `Track.role` ('voice'|'music'|'sfx'|'other') and
+ *     `Track.ducking`. Audio labels are collected per track; all voice-role
+ *     tracks are mixed into a voice bus, and every non-voice track with
+ *     `ducking: true` is mixed per track and run through `sidechaincompress`
+ *     keyed by that voice bus (asplit into one copy per ducking track plus one
+ *     for the final mix). Without a voice/ducking pair the legacy flat amix is
+ *     preserved exactly.
  *   - rotation: static `transform.rotation` is applied with `rotate` on an
  *     expanded transparent canvas and then fitted back inside the transform
  *     box (letterboxed, centered). Rotation keyframes are NOT supported in
@@ -421,6 +428,14 @@ function normalizeBlendMode(value) {
 function blendFilterMode(value) {
   const mode = normalizeBlendMode(value);
   return mode === 'normal' ? null : BLEND_MODE_MAP[mode];
+}
+
+const TRACK_ROLES = new Set(['voice', 'music', 'sfx', 'other']);
+
+/** Track role for audio ducking (DESIGN §13); unknown/missing -> 'other'. */
+function normalizeTrackRole(track) {
+  const role = typeof track?.role === 'string' ? track.role.toLowerCase() : 'other';
+  return TRACK_ROLES.has(role) ? role : 'other';
 }
 
 /** Track volume is 0..2, default 1 (mute handled separately). */
@@ -1260,7 +1275,18 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
   let inputIndex = 1;
 
   const chains = [];
-  const audioLabels = [];
+  const audioGroups = new Map();
+  const getAudioGroup = (track) => {
+    const key = track !== null && typeof track === 'object' && typeof track.id === 'string'
+      ? track.id
+      : '__untracked__';
+    let group = audioGroups.get(key);
+    if (group === undefined) {
+      group = { track, labels: [] };
+      audioGroups.set(key, group);
+    }
+    return group;
+  };
   let baseLabel = '0:v';
   let counter = 0;
   let audioCounter = 0;
@@ -1302,7 +1328,13 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     }
   };
 
-  const addAudioChain = (clip, index, speed, trackVolume = 1) => {
+  const nextAudioLabel = () => {
+    const label = `a${audioCounter}`;
+    audioCounter += 1;
+    return label;
+  };
+
+  const addAudioChain = (clip, index, speed, trackVolume = 1, group = null) => {
     const duration = clipDurationFrames(clip);
     const durationSecondsForClip = framesToSeconds(duration, fps);
     const sourceSeconds = framesToSeconds(duration * speed, fps);
@@ -1326,10 +1358,9 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     const startMilliseconds = Math.max(0, Math.round(framesToSeconds(clip.startFrame ?? 0, fps) * 1000));
     parts.push(`adelay=${startMilliseconds}:all=1`);
 
-    const label = `a${audioCounter}`;
-    audioCounter += 1;
+    const label = nextAudioLabel();
     chains.push(`[${index}:a]${parts.join(',')}[${label}]`);
-    audioLabels.push(label);
+    if (group !== null) group.labels.push(label);
   };
 
   const addVisualOverlay = (clip, index, speed) => {
@@ -1552,6 +1583,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     // `amix` sums to a linear audio crossfade.
     if (from.track.muted !== true) {
       const trackVolume = normalizeTrackVolume(from.track);
+      const audioGroup = getAudioGroup(from.track);
       const addCrossfadeAudio = (clip, index, layerFrames, leadFrames, delayedStartFrames, outgoing) => {
         const media = findMedia(project, clip.mediaId);
         if (media === null || media.hasAudio !== true) return;
@@ -1580,10 +1612,9 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
         appendClipVolume(parts, clip, trackVolume);
         const delay = Math.max(0, Math.round(framesToSeconds(delayedStartFrames, fps) * 1000));
         parts.push(`adelay=${delay}:all=1`);
-        const audioLabel = `a${audioCounter}`;
-        audioCounter += 1;
+        const audioLabel = nextAudioLabel();
         chains.push(`[${index}:a]${parts.join(',')}[${audioLabel}]`);
-        audioLabels.push(audioLabel);
+        audioGroup.labels.push(audioLabel);
       };
 
       addCrossfadeAudio(clipA, indexA, layerFramesA, 0, Number(clipA.startFrame) || 0, true);
@@ -1701,6 +1732,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     if (track.type === 'audio') {
       if (trackMuted) continue;
       const trackVolume = normalizeTrackVolume(track);
+      const audioGroup = getAudioGroup(track);
       for (const clip of clips) {
         if (clip?.type !== 'audio') continue;
         const media = findMedia(project, clip.mediaId);
@@ -1713,13 +1745,14 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
           ['-ss', formatSeconds(trimSeconds), '-t', formatSeconds(sourceSeconds)],
           mediaFilePath(root, media),
         );
-        addAudioChain(clip, index, speed, trackVolume);
+        addAudioChain(clip, index, speed, trackVolume, audioGroup);
       }
       continue;
     }
 
     if (track.type !== 'video') continue;
     const trackVolume = normalizeTrackVolume(track);
+    const audioGroup = getAudioGroup(track);
 
     for (const clip of clips) {
       if (clip === null || typeof clip !== 'object') continue;
@@ -1762,7 +1795,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
       const index = addInput(prefix, mediaFilePath(root, media));
 
       if (wantsVisual) addVisualOverlay(clip, index, speed);
-      if (wantsAudio) addAudioChain(clip, index, speed, trackVolume);
+      if (wantsAudio) addAudioChain(clip, index, speed, trackVolume, audioGroup);
     }
   }
 
@@ -1774,10 +1807,87 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     chains.push('[0:v]null[vout]');
   }
 
-  if (audioLabels.length > 0) {
-    const mixedInputs = audioLabels.map((label) => `[${label}]`).join('');
+  const audioGroupsList = [...audioGroups.values()].filter((group) => group.labels.length > 0);
+  let finalAudioLabels = [];
+
+  if (audioGroupsList.length > 0) {
+    const groups = audioGroupsList.map((group) => ({
+      ...group,
+      role: normalizeTrackRole(group.track),
+      ducking: group.track !== null && typeof group.track === 'object' && group.track.ducking === true,
+    }));
+    const voiceGroups = groups.filter((group) => group.role === 'voice');
+    const duckingGroups = groups.filter((group) => group.role !== 'voice' && group.ducking);
+
+    if (voiceGroups.length > 0 && duckingGroups.length > 0) {
+      // Voice bus consumed by every ducking compressor.
+      const voiceLabels = voiceGroups.flatMap((group) => group.labels);
+      let voiceBus;
+      if (voiceLabels.length === 1) {
+        voiceBus = voiceLabels[0];
+      } else {
+        voiceBus = nextAudioLabel();
+        chains.push(
+          `${voiceLabels.map((label) => `[${label}]`).join('')}` +
+          `amix=inputs=${voiceLabels.length}:normalize=0:duration=longest,aresample=48000[${voiceBus}]`,
+        );
+      }
+
+      const voiceCopies = [];
+      for (let index = 0; index < duckingGroups.length; index += 1) {
+        voiceCopies.push(`voiceKey${index}`);
+      }
+      const voiceFinal = 'voiceFinal';
+      const allVoiceCopies = [...voiceCopies, voiceFinal];
+      chains.push(
+        `[${voiceBus}]asplit=${allVoiceCopies.length}` +
+        `${allVoiceCopies.map((label) => `[${label}]`).join('')}`,
+      );
+
+      const duckedByGroup = new Map();
+      duckingGroups.forEach((group, index) => {
+        let trackMix;
+        if (group.labels.length === 1) {
+          trackMix = group.labels[0];
+        } else {
+          trackMix = nextAudioLabel();
+          chains.push(
+            `${group.labels.map((label) => `[${label}]`).join('')}` +
+            `amix=inputs=${group.labels.length}:normalize=0:duration=longest,aresample=48000[${trackMix}]`,
+          );
+        }
+        const ducked = `ducked${index}`;
+        chains.push(
+          `[${trackMix}][${voiceCopies[index]}]` +
+          'sidechaincompress=threshold=0.05:ratio=8:attack=20:release=300:makeup=1' +
+          `[${ducked}]`,
+        );
+        duckedByGroup.set(group, ducked);
+      });
+
+      let voiceIncluded = false;
+      for (const group of groups) {
+        if (group.role === 'voice') {
+          if (!voiceIncluded) {
+            finalAudioLabels.push(voiceFinal);
+            voiceIncluded = true;
+          }
+        } else if (duckedByGroup.has(group)) {
+          finalAudioLabels.push(duckedByGroup.get(group));
+        } else {
+          finalAudioLabels.push(...group.labels);
+        }
+      }
+    } else {
+      // Preserve the legacy flat mix when no voice/ducking pair is active.
+      finalAudioLabels = audioGroupsList.flatMap((group) => group.labels);
+    }
+  }
+
+  if (finalAudioLabels.length > 0) {
+    const mixedInputs = finalAudioLabels.map((label) => `[${label}]`).join('');
     chains.push(
-      `${mixedInputs}amix=inputs=${audioLabels.length}:normalize=0:duration=longest,` +
+      `${mixedInputs}amix=inputs=${finalAudioLabels.length}:normalize=0:duration=longest,` +
       'aresample=48000[aout]',
     );
   }
@@ -1792,7 +1902,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     '-map', '[vout]',
   ];
 
-  args.push(...audioEncodeArgs(settings, audioLabels.length > 0));
+  args.push(...audioEncodeArgs(settings, finalAudioLabels.length > 0));
   args.push(...videoEncodeArgs(settings));
 
   if (settings.container === 'mp4' || settings.container === 'mov') {

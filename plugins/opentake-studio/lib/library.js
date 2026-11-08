@@ -49,7 +49,7 @@ export function libraryPaths(rootInput) {
 }
 
 function emptyLibrary() {
-  return { version: LIBRARY_VERSION, items: [] };
+  return { version: LIBRARY_VERSION, items: [], folders: [] };
 }
 
 function sanitizeName(fileName) {
@@ -68,6 +68,21 @@ function validateLibrary(value) {
   }
   if (!Array.isArray(value.items)) {
     throw new LibraryError('invalid-library', 'library.json items must be an array');
+  }
+  const folders = [];
+  const folderIds = new Set();
+  if (Array.isArray(value.folders)) {
+    for (const raw of value.folders) {
+      if (raw === null || typeof raw !== 'object') continue;
+      if (typeof raw.id !== 'string' || raw.id.length === 0 || folderIds.has(raw.id)) continue;
+      folderIds.add(raw.id);
+      folders.push({
+        id: raw.id,
+        name: typeof raw.name === 'string' && raw.name.length > 0 ? raw.name : 'Folder',
+        parentId: typeof raw.parentId === 'string' && folderIds.has(raw.parentId) ? raw.parentId : null,
+        createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now(),
+      });
+    }
   }
   const seen = new Set();
   const items = [];
@@ -91,11 +106,12 @@ function validateLibrary(value) {
       favorite: raw.favorite === true,
       category: typeof raw.category === 'string' ? raw.category : '',
       tags: Array.isArray(raw.tags) ? raw.tags.filter((tag) => typeof tag === 'string') : [],
+      folderId: typeof raw.folderId === 'string' && folderIds.has(raw.folderId) ? raw.folderId : null,
       sourcePath: typeof raw.sourcePath === 'string' ? raw.sourcePath : null,
       importedAt: Number.isFinite(raw.importedAt) ? raw.importedAt : Date.now(),
     });
   }
-  return { version: LIBRARY_VERSION, items };
+  return { version: LIBRARY_VERSION, items, folders };
 }
 
 async function sha256File(filePath) {
@@ -143,7 +159,7 @@ async function linkOrCopy(source, destination) {
  * Import every media file under `folderPath` into the global library.
  * Content-addressed: identical bytes are deduplicated by SHA-256.
  */
-export async function importFolderToLibrary({ folderPath, libraryRoot } = {}) {
+export async function importFolderToLibrary({ folderPath, libraryRoot, folderId } = {}) {
   const paths = libraryPaths(libraryRoot);
   const library = await readManifest(paths);
   await mkdir(paths.mediaDir, { recursive: true });
@@ -178,6 +194,7 @@ export async function importFolderToLibrary({ folderPath, libraryRoot } = {}) {
         favorite: false,
         category: '',
         tags: [],
+        folderId: typeof folderId === 'string' && library.folders.some((folder) => folder.id === folderId) ? folderId : null,
         sourcePath: source,
         importedAt: Date.now(),
       };
@@ -193,7 +210,7 @@ export async function importFolderToLibrary({ folderPath, libraryRoot } = {}) {
 }
 
 /** List library items, optionally filtered. */
-export async function listLibrary({ libraryRoot, query, kind, favorite, category } = {}) {
+export async function listLibrary({ libraryRoot, query, kind, favorite, category, folderId } = {}) {
   const paths = libraryPaths(libraryRoot);
   const library = await readManifest(paths);
   const needle = typeof query === 'string' ? query.trim().toLowerCase() : '';
@@ -201,6 +218,7 @@ export async function listLibrary({ libraryRoot, query, kind, favorite, category
     .filter((item) => (kind === undefined ? true : item.kind === kind))
     .filter((item) => (favorite === undefined ? true : item.favorite === favorite))
     .filter((item) => (category === undefined ? true : item.category === category))
+    .filter((item) => (folderId === undefined ? true : folderId === null ? item.folderId === null : item.folderId === folderId))
     .filter((item) => {
       if (needle.length === 0) return true;
       return (
@@ -210,7 +228,7 @@ export async function listLibrary({ libraryRoot, query, kind, favorite, category
       );
     })
     .sort((left, right) => right.importedAt - left.importedAt);
-  return { ...paths, items };
+  return { ...paths, items, folders: library.folders };
 }
 
 function findItem(library, itemId) {
@@ -228,6 +246,12 @@ export async function updateLibraryItem({ libraryRoot, itemId, patch } = {}) {
     if (typeof patch.name === 'string' && patch.name.trim().length > 0) item.name = patch.name.trim();
     if (typeof patch.favorite === 'boolean') item.favorite = patch.favorite;
     if (typeof patch.category === 'string') item.category = patch.category;
+    if (patch.folderId === null) item.folderId = null;
+    else if (typeof patch.folderId === 'string') {
+      const targetFolder = library.folders.find((folder) => folder.id === patch.folderId);
+      if (targetFolder === undefined) throw new LibraryError('folder-not-found', `Folder not found: ${patch.folderId}`);
+      item.folderId = targetFolder.id;
+    }
     if (Array.isArray(patch.tags)) item.tags = patch.tags.filter((tag) => typeof tag === 'string');
   }
   await writeManifest(paths, library);
@@ -307,6 +331,72 @@ export async function addLibraryItemToProject({ libraryRoot, projectRoot, projec
     sizeBytes: item.sizeBytes,
     importedAt: Date.now(),
   };
+}
+
+/** Create a library folder; parentId must exist when supplied. */
+export async function createLibraryFolder({ libraryRoot, name, parentId } = {}) {
+  const paths = libraryPaths(libraryRoot);
+  const library = await readManifest(paths);
+  const value = typeof name === 'string' ? name.trim() : '';
+  if (value.length === 0) throw new LibraryError('invalid-input', 'A folder name is required');
+  let parent = null;
+  if (parentId !== undefined && parentId !== null) {
+    parent = library.folders.find((folder) => folder.id === parentId);
+    if (parent === undefined) throw new LibraryError('folder-not-found', `Folder not found: ${parentId}`);
+    parent = parent.id;
+  }
+  const folder = { id: randomUUID(), name: value.slice(0, 120), parentId: parent, createdAt: Date.now() };
+  library.folders.push(folder);
+  await writeManifest(paths, library);
+  return folder;
+}
+
+/** Rename a folder or move it under another folder. */
+export async function updateLibraryFolder({ libraryRoot, folderId, patch } = {}) {
+  const paths = libraryPaths(libraryRoot);
+  const library = await readManifest(paths);
+  const folder = library.folders.find((entry) => entry.id === folderId);
+  if (folder === undefined) throw new LibraryError('folder-not-found', `Folder not found: ${folderId}`);
+  if (patch !== null && typeof patch === 'object') {
+    if (typeof patch.name === 'string' && patch.name.trim().length > 0) folder.name = patch.name.trim().slice(0, 120);
+    if (patch.parentId === null) folder.parentId = null;
+    else if (typeof patch.parentId === 'string') {
+      if (patch.parentId === folder.id) throw new LibraryError('invalid-input', 'A folder cannot be its own parent');
+      const parent = library.folders.find((entry) => entry.id === patch.parentId);
+      if (parent === undefined) throw new LibraryError('folder-not-found', `Folder not found: ${patch.parentId}`);
+      // Reject cycles by walking up from the proposed parent.
+      let cursor = parent;
+      const seen = new Set();
+      while (cursor !== undefined && cursor !== null) {
+        if (cursor.id === folder.id) throw new LibraryError('invalid-input', 'Folder cycle');
+        if (seen.has(cursor.id)) break;
+        seen.add(cursor.id);
+        cursor = library.folders.find((entry) => entry.id === cursor.parentId);
+      }
+      folder.parentId = parent.id;
+    }
+  }
+  await writeManifest(paths, library);
+  return folder;
+}
+
+/** Delete a folder, moving its child folders and items to its parent/root. */
+export async function deleteLibraryFolder({ libraryRoot, folderId } = {}) {
+  const paths = libraryPaths(libraryRoot);
+  const library = await readManifest(paths);
+  const folder = library.folders.find((entry) => entry.id === folderId);
+  if (folder === undefined) throw new LibraryError('folder-not-found', `Folder not found: ${folderId}`);
+  const parentId = folder.parentId;
+  library.folders = library.folders.filter((entry) => entry.id !== folderId);
+  for (const child of library.folders) if (child.parentId === folderId) child.parentId = parentId;
+  for (const item of library.items) if (item.folderId === folderId) item.folderId = parentId;
+  await writeManifest(paths, library);
+  return folder;
+}
+
+/** Move an item to a folder (null = root). */
+export async function moveLibraryItem({ libraryRoot, itemId, folderId } = {}) {
+  return updateLibraryItem({ libraryRoot, itemId, patch: { folderId: folderId ?? null } });
 }
 
 /** Read the raw manifest (for tools/tests). */

@@ -64,6 +64,7 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const RECT_EPSILON = 1e-9;
 
 const MASK_SHAPES = ['rect', 'ellipse'];
+const TRACK_ROLES = ['voice', 'music', 'sfx', 'other'];
 const BLEND_MODES = [
   'normal',
   'screen',
@@ -360,6 +361,15 @@ function normalizeTrackVolume(value, code) {
   const volume = value === undefined ? 1 : requireFiniteNumber(value, code, 'track.volume');
   if (volume < 0 || volume > 2) fail(code, 'track.volume must be in [0,2]');
   return volume;
+}
+
+/** Normalize a track role (`voice|music|sfx|other`, default `'other'`). */
+function normalizeTrackRole(value, code) {
+  const role = value === undefined ? 'other' : value;
+  if (!TRACK_ROLES.includes(role)) {
+    fail(code, `track.role must be one of ${TRACK_ROLES.join('/')}`);
+  }
+  return role;
 }
 
 /** Merge a partial transform patch onto an already valid transform. */
@@ -904,10 +914,12 @@ function normalizeTrack(value) {
   const muted = optionalBoolean(value.muted, false, code, 'track.muted');
   const hidden = optionalBoolean(value.hidden, false, code, 'track.hidden');
   const volume = normalizeTrackVolume(value.volume, code);
+  const role = normalizeTrackRole(value.role, code);
+  const ducking = optionalBoolean(value.ducking, false, code, 'track.ducking');
   const clipsValue = value.clips === undefined ? [] : value.clips;
   if (!Array.isArray(clipsValue)) fail(code, 'track.clips must be an array');
   const clips = clipsValue.map(normalizeClip).sort(compareClips);
-  return { id, type, name, muted, hidden, volume, clips };
+  return { id, type, name, muted, hidden, volume, role, ducking, clips };
 }
 
 // ---------------------------------------------------------------------------
@@ -1587,6 +1599,8 @@ function addTrackOperation(project, operation) {
     muted: false,
     hidden: false,
     volume: 1,
+    role: 'other',
+    ducking: false,
     clips: [],
   });
 }
@@ -1611,17 +1625,25 @@ function updateTrackOperation(project, operation) {
   const hasMuted = operation.muted !== undefined;
   const hasHidden = operation.hidden !== undefined;
   const hasVolume = operation.volume !== undefined;
+  const hasRole = operation.role !== undefined;
+  const hasDucking = operation.ducking !== undefined;
 
   const name = hasName ? requireNonEmptyString(operation.name, 'invalid-input', 'name') : track.name;
   const muted = hasMuted ? requireBoolean(operation.muted, 'invalid-input', 'muted') : track.muted;
   const hidden = hasHidden ? requireBoolean(operation.hidden, 'invalid-input', 'hidden') : track.hidden;
   const volume = hasVolume ? normalizeTrackVolume(operation.volume, 'invalid-input') : track.volume;
+  const role = hasRole ? normalizeTrackRole(operation.role, 'invalid-input') : track.role;
+  const ducking = hasDucking
+    ? requireBoolean(operation.ducking, 'invalid-input', 'ducking')
+    : track.ducking;
 
   // No fields is an allowed no-op (still produces a new stamped project).
   track.name = name;
   track.muted = muted;
   track.hidden = hidden;
   track.volume = volume;
+  track.role = role;
+  track.ducking = ducking;
 }
 
 /** Rename the project. Frame semantics are untouched (no fps/resolution edits). */

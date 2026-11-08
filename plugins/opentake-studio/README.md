@@ -179,8 +179,14 @@ Importing only fills the media library; it does not add clips to the timeline.
   transcribe action, transcript storage, caption generation, and a Transcripts
   tab. Requires `OPENTAKE_STUDIO_ASR_URL` (or defaults to OpenAI) and a key.
 - **Search**: project media/transcript keyword search with seek-to-cue results.
-- **Generation**: optional OpenAI-compatible image and speech generation with
-  provider status, prompts/voices and automatic import into the project.
+- **Generation**: optional OpenAI-compatible image/speech and fal.ai video
+  generation with provider status, prompts/voices/aspect/duration and automatic
+  import into the project.
+- **Visual indexing**: optional vision-provider descriptions of image/video
+  thumbnails, included in project search (an approximate alternative to CLIP).
+- **Library folders**: create/rename/delete/move folders and import into them.
+- **Audio roles/ducking**: track role (voice/music/sfx/other) and ducking under
+  voice tracks; fixed sidechain compressor, per-track gain.
 - **Captions**: add a caption clip, edit timed segments and style, import SRT/VTT
   text, and export SRT/VTT.
 - **Markers**: add markers at the playhead, label/color them, click the ruler tick
@@ -291,11 +297,17 @@ MCP endpoint, client or credential is involved.
 | `opentake_studio_search` | `query` | Searches project media names and stored transcripts. |
 | `opentake_studio_generate_image` | `prompt`, `size?` | Generates an image with the configured OpenAI-compatible provider and adds it to the project. |
 | `opentake_studio_generate_speech` | `text`, `voice?`, `model?` | Generates speech audio with the configured provider and adds it to the project. |
+| `opentake_studio_generate_video` | `prompt`, `aspectRatio?`, `duration?` | Generates a short video with the configured fal.ai queue model and adds it to the project. |
+| `opentake_studio_index_media_vision` | `mediaId` | Describes an image/video thumbnail with the vision provider and stores it for search. |
 | `opentake_studio_library_list` | `query?`, `kind?`, `favorite?`, `category?` | Lists the global media library. |
 | `opentake_studio_library_import` | `path` | Imports an absolute folder into the global library (content-deduped). |
 | `opentake_studio_library_add_to_project` | `id` | Adds a library asset to the current project. |
 | `opentake_studio_library_update` | `id`, `patch` | Renames/favorites/categorizes a library item. |
 | `opentake_studio_library_delete` | `id` | Deletes a library item and its asset. |
+| `opentake_studio_library_create_folder` | `name`, `parentId?` | Creates a library folder. |
+| `opentake_studio_library_update_folder` | `id`, `patch` | Renames/moves a library folder. |
+| `opentake_studio_library_delete_folder` | `id` | Deletes a folder (items reparent). |
+| `opentake_studio_library_move` | `id`, `folderId` | Moves an item into a folder. |
 | `opentake_studio_new_project` | `path`, `name?`, `fps?`, `width?`, `height?` | Creates a project at an absolute folder path. |
 | `opentake_studio_open_project` | `path` | Opens the folder containing `opentake-studio.json`. |
 | `opentake_studio_import_media` | `path` | Imports every supported media file in an absolute folder; returns imported and skipped paths. |
@@ -396,14 +408,13 @@ gaps:
 - **Effects are per-clip only:** no effect stacks/masks/motion tracking, and
   drawtext-fallback text ignores effects/fades (browser-rendered PNGs support
   them).
-- **AI features are provider-backed, not bundled:** transcription and
-  generation need an OpenAI-compatible endpoint/key (or a local compatible
-  server). There is no bundled Whisper/CLIP model; visual/semantic search and
-  video generation are not implemented yet.
+- **AI features are provider-backed, not bundled:** transcription, image/speech
+  and video generation, and visual indexing need OpenAI/fal-compatible
+  endpoints and keys. There is no bundled Whisper/CLIP model; visual search is a
+  provider-generated description index, not CLIP/SigLIP embeddings.
 - **Still missing from the Rust/Tauri app:** multicam, nested sequences/groups,
-  Lottie/Motion documents, masks/blend modes, audio ducking/automation, visual
-  (CLIP/SigLIP) search, HDR/proxy management, account/updater surfaces, and full
-  1:1 UI parity.
+  Lottie/Motion documents, CLIP/SigLIP visual search, HDR/proxy management,
+  per-track ducking amount UI, account/updater surfaces, and full 1:1 UI parity.
 - **Preview is approximate.** The canvas composite is for interaction, not a
   frame-accurate reference. Export is authoritative. Browser codec support can
   differ from ffmpeg.
@@ -488,7 +499,7 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **322/322 tests pass**, 31 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **339/339 tests pass**, 35 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |
@@ -496,7 +507,8 @@ this document; the Client/UI/export rows are the verification run's results.
 | Agent tools | `opentake_studio_get_state`, `opentake_studio_add_text`, `opentake_studio_remove_clips` and `opentake_studio_export` were called live. |
 | UI export | The export dialog ran; text/caption PNGs were posted, and ffmpeg produced an MP4 at **1280×720, H.264 + AAC**; the exported frame shows the text overlay. |
 | Formats/presets | H.265 640×360@24 and ProRes MOV + VP9 WebM exports were ffprobe-verified; crop and true dissolve/wipe were pixel/probe-verified. |
-| Library/AI | Global library import/list/favorite/add-to-project ran live; transcription and generation were verified against local OpenAI-compatible fixture servers. |
+| Library/AI | Global library import/list/favorite/add-to-project/folders ran live; transcription, image/speech/video generation and visual indexing were verified against local OpenAI/fal-compatible fixture servers. |
+| Masks/blend/ducking | Rect/ellipse masks and screen blend were pixel-verified in exported frames; track-volume attenuation measured, and ducking argv/real-audio verification is covered by tests. |
 
 Not verified / not claimed:
 

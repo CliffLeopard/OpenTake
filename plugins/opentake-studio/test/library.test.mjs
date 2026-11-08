@@ -136,3 +136,35 @@ test('adds a library item to a project as a normal media asset', skip, async () 
     await rm(projectRoot, { recursive: true, force: true });
   }
 });
+
+test('library folders create/rename/move/delete with reparenting', skip, async () => {
+  const root = await tempDir('ots-library-');
+  const folder = await tempDir('ots-library-src-');
+  try {
+    await generateVideo(path.join(folder, 'c.mp4'));
+    const { imported } = await importFolderToLibrary({ folderPath: folder, libraryRoot: root });
+    const item = imported[0];
+    const { createLibraryFolder, updateLibraryFolder, deleteLibraryFolder, moveLibraryItem } = await import('../lib/library.js');
+    const parent = await createLibraryFolder({ libraryRoot: root, name: 'Shots' });
+    const child = await createLibraryFolder({ libraryRoot: root, name: 'B-roll', parentId: parent.id });
+    assert.equal(child.parentId, parent.id);
+    const moved = await moveLibraryItem({ libraryRoot: root, itemId: item.id, folderId: child.id });
+    assert.equal(moved.folderId, child.id);
+    const inChild = await listLibrary({ libraryRoot: root, folderId: child.id });
+    assert.equal(inChild.items.length, 1);
+    assert.equal(inChild.folders.length, 2);
+    const renamed = await updateLibraryFolder({ libraryRoot: root, folderId: child.id, patch: { name: 'Extras' } });
+    assert.equal(renamed.name, 'Extras');
+    await assert.rejects(
+      updateLibraryFolder({ libraryRoot: root, folderId: parent.id, patch: { parentId: child.id } }),
+      /cycle/i,
+    );
+    await deleteLibraryFolder({ libraryRoot: root, folderId: child.id });
+    const listed = await listLibrary({ libraryRoot: root });
+    assert.equal(listed.items[0].folderId, parent.id);
+    assert.equal(listed.folders.some((entry) => entry.id === child.id), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(folder, { recursive: true, force: true });
+  }
+});
