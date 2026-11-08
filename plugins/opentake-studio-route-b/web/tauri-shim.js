@@ -25,6 +25,23 @@
     if (cmd === 'plugin:dialog|message' || cmd === 'plugin:dialog|ask' || cmd === 'plugin:dialog|confirm') {
       return Promise.resolve(true);
     }
+    let poll = null;
+    if (cmd === 'export_video') {
+      const operationId = args && args.operationId ? String(args.operationId) : 'export';
+      poll = setInterval(async () => {
+        try {
+          const response = await fetch(BASE + '/engine/export/status', { credentials: 'same-origin' });
+          if (!response.ok) return;
+          const status = await response.json();
+          if (!status.active) return;
+          emitToListeners('export://progress', {
+            operationId: status.operationId || operationId,
+            done: status.done,
+            total: status.total,
+          });
+        } catch (error) { /* progress polling is best-effort */ }
+      }, 200);
+    }
     return fetch(BASE + '/engine/invoke', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -39,7 +56,7 @@
       }
       afterInvoke(cmd, args || {}, body);
       return body;
-    });
+    }).finally(() => { if (poll !== null) clearInterval(poll); });
   }
 
   function emitToListeners(event, payload) {

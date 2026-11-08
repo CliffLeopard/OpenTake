@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v11.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v12.node');
 }
 
 function loadAddon() {
@@ -96,6 +96,7 @@ export function apply(ctx) {
     addonError: null,
     loadError: null,
     thumbnails: new Map(),
+    exportJob: null,
   };
 
   try {
@@ -273,6 +274,7 @@ export function apply(ctx) {
         );
       }
       case 'cancel_export':
+        if (state.exportJob !== null) state.exportJob.cancelled = true;
         return null;
       case 'get_waveform':
         return state.engine.waveform(typeof args.mediaRef === 'string' ? args.mediaRef : '');
@@ -305,6 +307,52 @@ export function apply(ctx) {
     }
   }
 
+  async function handleExportInvoke(args, res) {
+    if (state.exportJob !== null) {
+      sendJson(res, 409, { error: { code: 'export-busy', message: 'another export is running' } });
+      return;
+    }
+    const req = args.req !== null && typeof args.req === 'object' ? args.req : {};
+    const outPath = typeof req.outPath === 'string' ? req.outPath : '';
+    if (outPath.length === 0) {
+      sendJson(res, 400, { error: { code: 'invalid-input', message: 'req.outPath is required' } });
+      return;
+    }
+    const operationId = typeof args.operationId === 'string' ? args.operationId : 'export';
+    const job = { operationId, done: 0, total: 0, active: true, cancelled: false, error: null };
+    state.exportJob = job;
+    try {
+      const start = JSON.parse(state.engine.exportBegin(outPath, req.codec ?? 'h264', req.quality ?? '1080p'));
+      job.total = start.total;
+      while (job.done < job.total) {
+        if (job.cancelled) {
+          state.engine.exportCancel();
+          throw new Error('export cancelled');
+        }
+        const step = JSON.parse(state.engine.exportStep(8));
+        job.done = step.done;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      if (job.cancelled) {
+        state.engine.exportCancel();
+        throw new Error('export cancelled');
+      }
+      const summary = JSON.parse(state.engine.exportFinish());
+      job.active = false;
+      state.exportJob = null;
+      sendJson(res, 200, summary);
+    } catch (error) {
+      job.active = false;
+      state.exportJob = null;
+      sendJson(res, 400, {
+        error: {
+          code: job.cancelled ? 'export-cancelled' : 'export-failed',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
   async function handle(req, res) {
     if (rejected(req, res)) return;
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -314,11 +362,22 @@ export function apply(ctx) {
         await serveStatic(res, sub.slice('/app/'.length));
         return;
       }
+      if (sub === '/engine/export/status' && req.method === 'GET') {
+        const job = state.exportJob;
+        sendJson(res, 200, job === null
+          ? { active: false, done: 0, total: 0, operationId: null }
+          : { active: job.active, done: job.done, total: job.total, operationId: job.operationId });
+        return;
+      }
       if (sub === '/engine/invoke' && req.method === 'POST') {
         const body = await readJson(req, 8 * 1024 * 1024);
         try {
           const cmd = typeof body.cmd === 'string' ? body.cmd : '';
           const args = body.args !== null && typeof body.args === 'object' ? body.args : {};
+          if (cmd === 'export_video') {
+            await handleExportInvoke(args, res);
+            return;
+          }
           sendJson(res, 200, invokeCore(cmd, args));
         } catch (error) {
           sendJson(res, 400, {

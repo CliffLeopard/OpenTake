@@ -19,6 +19,7 @@ use opentake_render::{
     plan::{try_build_render_plan, RenderSize, TextureSource},
     source::{DecodedFrame, SourceMetrics},
 };
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -398,16 +399,28 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
     Ok(serde_json::json!({ "width": rendered.width, "height": rendered.height, "dataUrl": data_url }))
 }
 
+struct ExportSession {
+    encoder: opentake_media::VideoEncoder,
+    width: u32,
+    height: u32,
+    fps: i32,
+    total: i32,
+    next_frame: i32,
+    out_path: std::path::PathBuf,
+    audio: Option<PcmBuffer>,
+}
+
 #[napi]
 pub struct Engine {
     core: opentake_core::AppCore,
+    export: RefCell<Option<ExportSession>>,
 }
 
 #[napi]
 impl Engine {
     #[napi(constructor)]
     pub fn new() -> Self {
-        Self { core: opentake_core::AppCore::new() }
+        Self { core: opentake_core::AppCore::new(), export: RefCell::new(None) }
     }
 
     /// Reset to a fresh unsaved project and return its timeline snapshot JSON.
@@ -457,43 +470,20 @@ impl Engine {
         json(&value)
     }
 
-    /// Render every timeline frame and encode it to `out_path` (H.264/H.265/
-    /// ProRes), returning the UI's ExportSummary JSON. Audio is not mixed yet.
-    #[napi]
-    pub fn export_video(&self, out_path: String, codec: String, quality: String) -> Result<String> {
-        let timeline = self.core.get_timeline().timeline;
-        let resolution = match quality.as_str() {
-            "720p" => opentake_render::ExportResolution::R720p,
-            "4k" => opentake_render::ExportResolution::R4k,
-            _ => opentake_render::ExportResolution::R1080p,
-        };
-        let render_size = opentake_render::export_render_size((timeline.width, timeline.height), resolution);
-        let video_codec = match codec.as_str() {
-            "h265" => opentake_media::VideoCodec::H265,
-            "prores" => opentake_media::VideoCodec::ProRes422,
-            "prores4444" => opentake_media::VideoCodec::ProRes4444,
-            _ => opentake_media::VideoCodec::H264,
-        };
-        let preset = opentake_media::ExportPreset::new(video_codec, opentake_media::ExportResolution::P1080);
-        let out = std::path::PathBuf::from(&out_path);
-        if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
+    fn export_cancel_inner(&self) -> bool {
+        if let Some(session) = self.export.borrow_mut().take() {
+            let path = session.out_path;
+            drop(session.encoder);
+            let _ = std::fs::remove_file(path);
+            return true;
         }
-        let mut encoder = opentake_media::VideoEncoder::new(&out, render_size.width, render_size.height, timeline.fps, &preset)
-            .map_err(|error| Error::from_reason(error.to_string()))?;
-        let frame_count = timeline.total_frames();
-        for frame in 0..frame_count {
-            let decoded = composite_frame_decoded(&self.core, frame, render_size)
-                .map_err(|message| Error::from_reason(message))?;
-            let rgba = opentake_media::RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
-            encoder.push_frame(&rgba).map_err(|error| Error::from_reason(error.to_string()))?;
-        }
-        // Linear audio mixdown: decode each audible timeline clip into the shared
-        // mono mix rate and place it at its frame offset. Fades/ducking envelopes
-        // are not applied yet (documented limitation).
-        let mut clips: Vec<ClipAudio> = Vec::new();
+        false
+    }
+
+    fn mix_timeline_audio(&self, timeline: &opentake_domain::Timeline) -> Option<PcmBuffer> {
         let media_entries = self.core.media().entries;
         let project_dir = self.core.project_dir();
+        let mut clips: Vec<ClipAudio> = Vec::new();
         for track in &timeline.tracks {
             if track.muted {
                 continue;
@@ -521,29 +511,137 @@ impl Engine {
                 clips.push(ClipAudio::with_static_gain(start_sample, pcm.samples_f32, clip.volume as f32));
             }
         }
-        let mixed = mix_clips(&clips).map_err(|error| Error::from_reason(error))?;
-        let has_audio = !mixed.is_empty();
-        if has_audio {
-            encoder
-                .push_audio(PcmBuffer {
-                    spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 },
-                    samples_f32: mixed,
-                })
-                .map_err(|error| Error::from_reason(error.to_string()))?;
+        let Ok(mixed) = mix_clips(&clips) else {
+            return None;
+        };
+        if mixed.is_empty() {
+            return None;
         }
-        encoder.finish().map_err(|error| Error::from_reason(error.to_string()))?;
-        let summary = serde_json::json!({
-            "outPath": out_path,
+        Some(PcmBuffer {
+            spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 },
+            samples_f32: mixed,
+        })
+    }
+
+    /// Start a chunked export session. Returns `{width,height,fps,total}`.
+    #[napi]
+    pub fn export_begin(&self, out_path: String, codec: String, quality: String) -> Result<String> {
+        self.export_cancel_inner();
+        let timeline = self.core.get_timeline().timeline;
+        let resolution = match quality.as_str() {
+            "720p" => opentake_render::ExportResolution::R720p,
+            "4k" => opentake_render::ExportResolution::R4k,
+            _ => opentake_render::ExportResolution::R1080p,
+        };
+        let render_size = opentake_render::export_render_size((timeline.width, timeline.height), resolution);
+        let video_codec = match codec.as_str() {
+            "h265" => opentake_media::VideoCodec::H265,
+            "prores" => opentake_media::VideoCodec::ProRes422,
+            "prores4444" => opentake_media::VideoCodec::ProRes4444,
+            _ => opentake_media::VideoCodec::H264,
+        };
+        let preset = opentake_media::ExportPreset::new(video_codec, opentake_media::ExportResolution::P1080);
+        let out = std::path::PathBuf::from(&out_path);
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
+        }
+        let encoder = opentake_media::VideoEncoder::new(&out, render_size.width, render_size.height, timeline.fps, &preset)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let audio = self.mix_timeline_audio(&timeline);
+        let total = timeline.total_frames();
+        *self.export.borrow_mut() = Some(ExportSession {
+            encoder,
+            width: render_size.width,
+            height: render_size.height,
+            fps: timeline.fps,
+            total,
+            next_frame: 0,
+            out_path: out,
+            audio,
+        });
+        json(&serde_json::json!({
             "width": render_size.width,
             "height": render_size.height,
             "fps": timeline.fps,
-            "frameCount": frame_count,
-            "hasAudio": has_audio,
-        });
-        json(&summary)
+            "total": total,
+        }))
     }
 
-    /// Current media catalog in the React UI's `MediaList` JSON shape.
+    /// Render up to `frames` more frames; returns `{done,total}`.
+    #[napi]
+    pub fn export_step(&self, frames: u32) -> Result<String> {
+        let mut guard = self.export.borrow_mut();
+        let session = guard.as_mut().ok_or_else(|| Error::from_reason("no export session"))?;
+        let size = opentake_render::plan::RenderSize::new(session.width, session.height);
+        let end = (session.next_frame + frames as i32).min(session.total);
+        while session.next_frame < end {
+            let frame = session.next_frame;
+            let decoded = composite_frame_decoded(&self.core, frame, size)
+                .map_err(|message| Error::from_reason(message))?;
+            let rgba = opentake_media::RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
+            session
+                .encoder
+                .push_frame(&rgba)
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+            session.next_frame += 1;
+        }
+        json(&serde_json::json!({ "done": session.next_frame, "total": session.total }))
+    }
+
+    /// Finish the active export and return the UI ExportSummary JSON.
+    #[napi]
+    pub fn export_finish(&self) -> Result<String> {
+        let mut session = self
+            .export
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| Error::from_reason("no export session"))?;
+        let has_audio = session.audio.is_some();
+        if let Some(pcm) = session.audio.take() {
+            session
+                .encoder
+                .push_audio(pcm)
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+        }
+        session
+            .encoder
+            .finish()
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&serde_json::json!({
+            "outPath": session.out_path.to_string_lossy(),
+            "width": session.width,
+            "height": session.height,
+            "fps": session.fps,
+            "frameCount": session.total,
+            "hasAudio": has_audio,
+        }))
+    }
+
+    /// Cancel the active export and remove the partial output.
+    #[napi]
+    pub fn export_cancel(&self) -> bool {
+        self.export_cancel_inner()
+    }
+
+    /// Blocking convenience export (used by the agent tool).
+    #[napi]
+    pub fn export_video(&self, out_path: String, codec: String, quality: String) -> Result<String> {
+        self.export_begin(out_path, codec, quality)?;
+        loop {
+            let done = {
+                let guard = self.export.borrow();
+                let session = guard.as_ref().ok_or_else(|| Error::from_reason("no export session"))?;
+                (session.next_frame, session.total)
+            };
+            if done.0 >= done.1 {
+                break;
+            }
+            self.export_step(8)?;
+        }
+        self.export_finish()
+    }
+
+    /// Current media catalog in the React UI's `MediaList` JSON shape.    /// Current media catalog in the React UI's `MediaList` JSON shape.
     #[napi]
     pub fn media_list(&self) -> Result<String> {
         json(&media_list_json(&self.core))

@@ -36,8 +36,9 @@ by the DSH Host through N-API.
   a simple shape Lottie animation.
 - `export_video`: renders every timeline frame, encodes H.264/H.265/ProRes via
   `opentake-media` VideoEncoder, and muxes a linear mono audio mixdown. Verified
-  320x180 2 s source → 1280x720 H.264 + AAC, 2.0 s. Progress/cancel, fades and
-  ducking envelopes remain.
+  320x180 2 s source → 1280x720 H.264 + AAC, 2.0 s. Chunked export exposes
+  `/engine/export/status` progress and cancel; the UI shim polls it and emits
+  `export://progress`. Fades/ducking envelopes remain.
 - Node smoke test: `node crates/opentake-node/test/smoke.mjs`.
 
 ## Known gaps
@@ -56,7 +57,7 @@ by the DSH Host through N-API.
 2. Media import/probe/list + timeline insert + direct preview (done).
 3. Poster thumbnails, waveform buckets, GPU composite (video/image/text/Lottie)
    and basic export with linear audio (done); streaming playback, export
-   progress/cancel, proxies and sprite filmstrips remain.
+   progress/cancel (basic), proxies and sprite filmstrips remain.
 4. Export pipeline.
 5. AI/transcription/search/generation and Motion.
 6. Packaging, signing, Windows/Linux, full parity verification.
