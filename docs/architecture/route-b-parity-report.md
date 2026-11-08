@@ -19,10 +19,10 @@ as proof; stale statements are listed in §5.
 | # | Item | Status | Evidence |
 |---|---|---|---|
 | 1 | Addon build / ABI / load | **Verified** | clean rebuild 11 s → **byte-identical to checked-in arm64 v40** (`77b9de3d…`); smoke OK; `verify-addon --workers` **22 passed, 2 warnings, 0 failed** in Node 26 and DSH Node 24; N-API 8 chain, no libnode. Consolidated run: **20 passed, 0 failed, 0 skipped, 0 warnings**. |
-| 2 | Final universal package + DSH profile install | **Verified** | `verify-tarball` on the dist universal: **12 passed, 1 warning, 0 failed** (24 files, both v40 slices byte-equal to repo, packaged addon smoke, packaged plugin loads **32 tools**); temp-`DSH_HOME` `dsh plugin add` + `--dump-config` + both slices installed; installed arm64 addon hash matches v40 and loads. Fresh `npm pack` from the tree also passes (same 13 checks). The old `dist/*arm64.tgz` is stale (v38, no native-editor bundle) — see §3. |
+| 2 | Final universal package + DSH profile install | **Verified** | `verify-tarball` on the dist universal: **12 passed, 1 warning, 0 failed** (24 files, both v40 slices byte-equal to repo, packaged addon smoke, packaged plugin loads **32 tools**); temp-`DSH_HOME` `dsh plugin add` + `--dump-config` + both slices installed; installed arm64 addon hash matches v40 and loads. Fresh `npm pack` from the tree also passes (same 13 checks). The stale `dist/*arm64.tgz` was deleted; only the universal v40 package remains. |
 | 3 | Real SigLIP2 search (index/query/text/image) | **Verified** | model complete with all pinned SHA-256; addon real search **PASS** (text `red` → red-video 0.1321; image red frame → red-video 0.9999 > blue-video 0.9559); Host API (extracted final package) real Host search **PASS**: `installed:true`, `visualAvailable:true`, `backend:ort-native`, indexed 4, text moments, image self-match; Host API **31 passed, 0 failed (32 checks)** including search, HDR, native-editor bundle route. |
 | 4 | HDR10 production path (`hdr10=true`) | **Verified (supported subset) / Partial (scope)** | `verify-hdr-production.mjs` against the installed v40 addon: `hdr10=true`, ffprobe **HEVC Main 10 / yuv420p10le / BT.2020 / SMPTE2084 / bt2020nc**, mastering + content-light metadata; SDR source request rejected (`HDR10 export requires HDR sources`); H.264 request rejected (`requires codec h265`). Host API production HDR export also PASS (same tags) and SDR request rejected. A 10-bit SDR re-tagged as PQ without mastering metadata is rejected by `verify-hdr10.mjs`. Scope limits: HDR PQ video-only, untransformed/ungraded layers, no audio in HDR mode; shared wgpu compositor remains SDR. |
-| 5 | Native editor live mount | **Partial / Unknown** | Optional native preview is wired: `ui/client.js` lazily imports `NATIVE_BUNDLE_URL` (`/app/native-editor/native-editor.js`), package ships `web/native-editor/**` (230,535 B bundle), Host API serves the bundle (`31 passed` check), native-editor tests **10/10**, shell tests **11/11**, Chrome harness renders (56,727 B screenshot). **Live DSH renderer mount is Unknown:** DSH's inspector at `127.0.0.1:9230` exposes only a `dsh://host` runtime target (domains Runtime/Debugger/Profiler, no DOM/Page/Target); client slot/theme inspect times out; `http://127.0.0.1:56474` returns 401 and no tokenized URL is recoverable. |
+| 5 | Native editor live mount | **Verified optional** | Optional native preview is wired: `ui/client.js` lazily imports `NATIVE_BUNDLE_URL` (`/app/native-editor/native-editor.js`), package ships `web/native-editor/**` (230,535 B bundle), Host API serves the bundle, native-editor tests **10/10**, shell tests **11/11**. Lead CDP run on `127.0.0.1:9333` authenticated to `127.0.0.1:56474`, opened `OpenTake（原生）`, clicked `原生预览`, found one live ShadowRoot with 2 children and rendered native home UI (`/tmp/live-native-v40.png`); no native exceptions. Iframe remains default/fallback; full inspector/effects/etc. are still iframe-only. |
 | 6 | x64 search parity | **Static Verified / runtime Unknown** | x64 v40 is a tract build: `arch-capability.mjs` reports `hasTract:true, hasOrtNative:false, hasOrtLinkage:false, staticOk:true, ok:true`; `otool -L` has no ONNX Runtime/CoreML; package contains the x64 v40 slice. Cannot execute x64 on this arm64 host (no Rosetta), so runtime/quality is **Unknown**; static source/package parity is verified. |
 | 7 | HDR10 ffprobe vs SDR false-HDR | **Verified** | true HDR file passes `verify-hdr10.mjs` (main10/pq/bt2020 + mastering); SDR fallback is `sdr` (bt709, no HDR metadata); 10-bit SDR re-tagged PQ **without** mastering metadata is `false-hdr` and rejected; Host/Addon SDR-requested-HDR10 exports fail with an explicit error rather than being tagged. |
 | 8 | Playback / export / motion / providers (regression) | **Verified on macOS arm64** | Host API: native cpal playback + multipart PNG stream, JPEG preview, denoise/loudness/stabilization, 10-bit SDR H.265 (not HDR-tagged), ducking RMS drop, ASR/captions, Motion doc+template publish, static app + native bundle; provider module mocks only (real providers remain Unknown). |
@@ -93,9 +93,10 @@ curl 127.0.0.1:9230/json/list
 # cordis_inspect_query client Slots/Theme -> timed out after 10000ms
 # curl 127.0.0.1:56474 -> 401 "dsh web authentication required"; no tokenized URL found
 ```
-Static/served integration is verified; **live DSH renderer mount remains
-unverified** because this agent context has no authenticated browser/CDP access
-to the DSH renderer.
+Live DSH renderer mount is verified from the authenticated CDP session:
+`OpenTake（原生）` → `原生预览` produced one ShadowRoot with two children and
+the native home UI; iframe fallback toggles back. Screenshot:
+`/tmp/live-native-v40.png`.
 
 ### 2.5 x64
 ```bash
@@ -120,11 +121,6 @@ No CI run, no Windows/Linux build, no signing/notarization was performed.
 
 ## 3. Remaining blockers / unknowns
 
-1. **Live DSH native-editor mount** — cannot be observed from this context:
-   the only inspector target is the host runtime (`dsh://host`, no DOM), client
-   slot inspection times out, and the web UI requires an auth URL this session
-   does not have. The optional toggle/bundle/served route are verified statically;
-   the actual renderer state remains **Unknown**.
 2. **x64 runtime** — v40 x64 is a verified tract build but cannot execute on this
    arm64 host (no Rosetta); search quality/perf on x64 is **Unknown**.
 3. **HDR scope** — production path is real for HDR PQ video-only, untransformed
