@@ -1,0 +1,28 @@
+{
+  "name": "@opentake/studio-route-b",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenTake Studio Route B: Rust engine as an in-process N-API addon inside DeepSeek Harness.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "web/**",
+    "native/*/*/opentake_engine*.node",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

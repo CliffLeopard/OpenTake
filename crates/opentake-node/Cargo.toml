@@ -1,0 +1,23 @@
+[package]
+name = "opentake-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Node-API (N-API) addon exposing the OpenTake Rust engine to the DSH plugin."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "2", default-features = false, features = ["napi8"] }
+napi-derive = "2"
+opentake-core = { workspace = true }
+opentake-domain = { workspace = true }
+opentake-ops = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+
+[build-dependencies]
+napi-build = "2"

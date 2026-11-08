@@ -26,3 +26,4 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+plugins/opentake-studio-route-b/native/**/*.node

@@ -12,6 +12,7 @@ members = [
     "crates/opentake-gen",
     "crates/opentake-core",
     "src-tauri",
+    "crates/opentake-node",
 ]
 
 [workspace.package]

@@ -1,0 +1,46 @@
+# OpenTake Studio — Route B
+
+This is the Route B prototype: the existing OpenTake Rust engine is loaded
+**in-process** by the DeepSeek Harness Host as a Node-API addon, and the existing
+OpenTake React editor is served inside a same-origin iframe in a DSH panel.
+
+No Tauri window, no sidecar process, no MCP bridge.
+
+## What works (Milestone 1)
+
+- `crates/opentake-node` builds a Node-API 8 addon exposing the OpenTake
+  `AppCore` (project new/open/save, timeline snapshot, `apply(EditRequest)`,
+  undo/redo).
+- The DSH Host loads `native/<platform>-<arch>/opentake_engine_v2.node` and
+  exposes `/opentake-studio-route-b/engine/*` + `opentake_route_b_*` tools.
+- The existing Vite-built React editor (`web/`) is served at
+  `.../app/`, with a Tauri shim that forwards `invoke` to the Rust engine.
+- Verified in DSH: plugin panel opens the full OpenTake home + editor, creating
+  a new project through the UI drives the Rust engine; `edit_apply`/undo/redo
+  work from Host tools.
+
+## Build
+
+```bash
+# Rust toolchain (first time only)
+curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+
+./scripts/build-route-b-addon.sh
+cd web && pnpm install --frozen-lockfile && pnpm exec vite build --base=/opentake-studio-route-b/app/
+cd .. && rm -rf plugins/opentake-studio-route-b/web && cp -R web/dist plugins/opentake-studio-route-b/web
+```
+
+Then install `plugins/opentake-studio-route-b` as a DSH bundle and restart the
+plugin. The native binary is intentionally gitignored; run the build script on
+each platform.
+
+## Current limits
+
+- Only the core editing commands are exposed; media import/probe, preview
+  compositing, export, transcription/search/generation, motion documents and
+  account/update surfaces still need their Rust command bridges.
+- The Tauri file dialogs are stubbed to `/tmp/opentake-route-b/demo.opentake`;
+  native DSH dialogs are a later milestone.
+- The iframe is a stepping stone; a native DSH React mount is the target.
+- `EditRequest` is extracted from `src-tauri/src/commands.rs` and must be kept
+  in sync until it is moved into a shared `opentake-ipc` crate.

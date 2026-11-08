@@ -1,0 +1,3 @@
+- insert:
+    - id: opentake-studio-route-b
+      name: '@opentake/studio-route-b'
