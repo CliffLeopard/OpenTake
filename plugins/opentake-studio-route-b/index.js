@@ -31,7 +31,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v37.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v38.node');
 }
 
 function loadAddon() {
@@ -839,7 +839,7 @@ export function apply(ctx) {
       case 'export_audio': {
         const outPath = typeof args.outPath === 'string' ? args.outPath : '';
         if (outPath.length === 0) throw new Error('export_audio requires outPath');
-        return JSON.parse(state.engine.exportAudio(outPath, args.format === 'mp3' ? 'mp3' : 'm4a'));
+        return JSON.parse(state.engine.exportAudio(outPath, args.format === 'mp3' ? 'mp3' : 'm4a', args.duckMusic === true));
       }
       case 'capture_frame_to_media':
         return JSON.parse(state.engine.captureFrameToMedia(
@@ -1120,6 +1120,7 @@ export function apply(ctx) {
             typeof req.codec === 'string' ? req.codec : 'h264',
             typeof req.quality === 'string' ? req.quality : '1080p',
             req.bitDepth === 10 ? 10 : null,
+            req.duckMusic === true,
           ),
         );
       }
@@ -1307,6 +1308,7 @@ export function apply(ctx) {
         typeof req.rangeStartFrame === 'number' ? req.rangeStartFrame : null,
         typeof req.rangeEndFrame === 'number' ? req.rangeEndFrame : null,
         req.bitDepth === 10 ? 10 : null,
+        req.duckMusic === true,
       ));
       job.total = start.total;
       while (job.done < job.total) {
@@ -1688,13 +1690,14 @@ export function apply(ctx) {
         codec: { type: 'string', enum: ['h264', 'h265', 'prores', 'prores4444'] },
         quality: { type: 'string', enum: ['720p', '1080p', '4k'] },
         bitDepth: { type: 'number', enum: [8, 10] },
+        duckMusic: { type: 'boolean' },
       },
       required: ['outPath'],
       additionalProperties: false,
     },
     async (args) => {
       const value = JSON.parse(
-        ensureEngine().exportVideo(args.outPath, args.codec ?? 'h264', args.quality ?? '1080p', args.bitDepth === 10 ? 10 : null),
+        ensureEngine().exportVideo(args.outPath, args.codec ?? 'h264', args.quality ?? '1080p', args.bitDepth === 10 ? 10 : null, args.duckMusic === true),
       );
       return { text: JSON.stringify(value), data: value };
     },
@@ -1901,12 +1904,12 @@ export function apply(ctx) {
     'Export the timeline audio mixdown to M4A(AAC) or MP3.',
     {
       type: 'object',
-      properties: { outPath: { type: 'string' }, format: { type: 'string', enum: ['m4a', 'mp3'] } },
+      properties: { outPath: { type: 'string' }, format: { type: 'string', enum: ['m4a', 'mp3'] }, duckMusic: { type: 'boolean' } },
       required: ['outPath'],
       additionalProperties: false,
     },
     async (args) => {
-      const value = JSON.parse(ensureEngine().exportAudio(args.outPath, args.format ?? 'm4a'));
+      const value = JSON.parse(ensureEngine().exportAudio(args.outPath, args.format ?? 'm4a', args.duckMusic === true));
       return { text: JSON.stringify(value), data: value };
     },
   );

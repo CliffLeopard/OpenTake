@@ -569,6 +569,8 @@ export interface ExportRequest {
   quality: ExportQuality;
   /** H.265 only: encode Main10 (10-bit); omit for 8-bit. */
   bitDepth?: 10;
+  /** Lower standalone audio against linked A/V voice. */
+  duckMusic?: boolean;
 }
 
 /** Summary of a completed export (mirror of Rust `ExportSummary`). */

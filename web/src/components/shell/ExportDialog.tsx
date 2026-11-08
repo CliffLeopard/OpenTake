@@ -134,6 +134,7 @@ export function ExportDialog() {
   const [codec, setCodec] = useState<ExportCodec>("h264");
   const [quality, setQuality] = useState<ExportQuality>("1080p");
   const [tenBit, setTenBit] = useState(false);
+  const [duckMusic, setDuckMusic] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -306,6 +307,7 @@ export function ExportDialog() {
           codec,
           quality,
           ...(codec === "h265" && tenBit ? { bitDepth: 10 as const } : {}),
+          ...(duckMusic ? { duckMusic: true } : {}),
         },
         operationId,
       );
@@ -545,6 +547,18 @@ export function ExportDialog() {
                   ariaLabel={t("export.resolution")}
                   minWidth={160}
                 />
+              </Row>
+
+              <Row label={t("export.duckMusic")} hint={t("export.duckMusicHint")}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "var(--fs-sm)" }}>
+                  <input
+                    type="checkbox"
+                    checked={duckMusic}
+                    onChange={(event) => setDuckMusic(event.target.checked)}
+                    aria-label={t("export.duckMusic")}
+                  />
+                  {t("export.duckMusic")}
+                </label>
               </Row>
 
               {codec === "h265" && (

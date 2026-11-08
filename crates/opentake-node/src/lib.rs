@@ -586,6 +586,65 @@ fn collect_audio_clips(
     }
 }
 
+
+fn collect_audio_clips_with_roles(
+    timeline: &opentake_domain::Timeline,
+    frame_offset: i32,
+    depth: u32,
+    media_entries: &[MediaManifestEntry],
+    project_dir: Option<&std::path::Path>,
+    out: &mut Vec<(ClipAudio, bool)>,
+) {
+    if depth > 8 {
+        return;
+    }
+    for track in &timeline.tracks {
+        if track.muted { continue; }
+        for clip in &track.clips {
+            if let Some(sequence_id) = clip.nested_sequence_id.as_deref() {
+                if let Some(sequence) = timeline.nested_sequences.iter().find(|sequence| sequence.id == sequence_id) {
+                    collect_audio_clips_with_roles(
+                        &sequence.timeline,
+                        frame_offset + clip.start_frame.max(0),
+                        depth + 1,
+                        media_entries,
+                        project_dir,
+                        out,
+                    );
+                }
+                continue;
+            }
+            if clip.media_type != ClipType::Audio { continue; }
+            let Some(entry) = media_entries.iter().find(|entry| entry.id == clip.media_ref) else { continue; };
+            let Some(path) = resolve_media_path(entry, project_dir) else { continue; };
+            let fps = timeline.fps.max(1) as f64;
+            let start_secs = clip.trim_start_frame.max(0) as f64 / fps;
+            let end_secs = start_secs + clip.duration_frames.max(1) as f64 / fps;
+            let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
+            let Ok(pcm) = opentake_media::extract_pcm(&path, &spec, Some((start_secs, end_secs))) else { continue; };
+            if pcm.samples_f32.is_empty() { continue; }
+            let start_frame = frame_offset + clip.start_frame.max(0);
+            let start_sample = ((start_frame as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+            let sample_count = pcm.samples_f32.len();
+            let fade_in_samples = ((clip.fade_in_frames.max(0) as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+            let fade_out_samples = ((clip.fade_out_frames.max(0) as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+            let gains = if fade_in_samples == 0 && fade_out_samples == 0 && (clip.volume - 1.0).abs() < f64::EPSILON {
+                Vec::new()
+            } else {
+                (0..sample_count).map(|index| {
+                    let fade_in = if fade_in_samples == 0 { 1.0 } else { (index as f64 / fade_in_samples as f64).clamp(0.0, 1.0) };
+                    let remaining = sample_count.saturating_sub(1).saturating_sub(index);
+                    let fade_out = if fade_out_samples == 0 { 1.0 } else { (remaining as f64 / fade_out_samples as f64).clamp(0.0, 1.0) };
+                    (clip.volume * fade_in * fade_out) as f32
+                }).collect()
+            };
+            // Linked A/V audio is treated as voice; standalone audio as music.
+            let is_voice = clip.link_group_id.is_some();
+            out.push((ClipAudio { start_sample, samples: pcm.samples_f32, gains }, is_voice));
+        }
+    }
+}
+
 struct NativePlayback {
     stream: cpal::Stream,
     position: Arc<AtomicU64>,
@@ -701,6 +760,37 @@ impl Engine {
             spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 },
             samples_f32: mixed,
         })
+    }
+
+    fn mix_timeline_audio_ducked(&self, timeline: &opentake_domain::Timeline, reduction_db: f64, threshold_db: f64) -> Option<PcmBuffer> {
+        let media_entries = self.core.media().entries;
+        let project_dir = self.core.project_dir();
+        let mut roles: Vec<(ClipAudio, bool)> = Vec::new();
+        collect_audio_clips_with_roles(timeline, 0, 0, &media_entries, project_dir.as_deref(), &mut roles);
+        let voice: Vec<ClipAudio> = roles.iter().filter(|(_, is_voice)| *is_voice).map(|(clip, _)| clip.clone()).collect();
+        let music: Vec<ClipAudio> = roles.iter().filter(|(_, is_voice)| !*is_voice).map(|(clip, _)| clip.clone()).collect();
+        let voice_mix = mix_clips(&voice).ok()?;
+        let music_mix = mix_clips(&music).ok()?;
+        if music_mix.is_empty() { return None; }
+        if voice_mix.is_empty() {
+            return Some(PcmBuffer { spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 }, samples_f32: music_mix });
+        }
+        let sample_rate = MIX_SAMPLE_RATE as f64;
+        let threshold = 10.0_f64.powf(threshold_db / 20.0);
+        let reduction = 10.0_f64.powf(-reduction_db.abs() / 20.0);
+        let attack = (-1.0 / (0.008 * sample_rate)).exp();
+        let release = (-1.0 / (0.180 * sample_rate)).exp();
+        let mut envelope = 1.0_f64;
+        let mut out = vec![0.0_f32; music_mix.len()];
+        for index in 0..music_mix.len() {
+            let voice_level = voice_mix.get(index).copied().unwrap_or(0.0).abs() as f64;
+            let target = if voice_level > threshold { reduction } else { 1.0 };
+            let coefficient = if target < envelope { attack } else { release };
+            envelope = coefficient * envelope + (1.0 - coefficient) * target;
+            let voice_sample = voice_mix.get(index).copied().unwrap_or(0.0);
+            out[index] = (voice_sample + music_mix[index] * envelope as f32).clamp(-1.0, 1.0);
+        }
+        Some(PcmBuffer { spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 }, samples_f32: out })
     }
 
     /// Start native cpal playback of the timeline mix at `start_frame`.
@@ -1009,6 +1099,7 @@ impl Engine {
         range_start: Option<i32>,
         range_end: Option<i32>,
         bit_depth: Option<u32>,
+        duck_music: Option<bool>,
     ) -> Result<String> {
         self.export_cancel_inner();
         let timeline = self.core.get_timeline().timeline;
@@ -1034,7 +1125,11 @@ impl Engine {
         }
         let encoder = opentake_media::VideoEncoder::new(&out, render_size.width, render_size.height, timeline.fps, &preset)
             .map_err(|error| Error::from_reason(error.to_string()))?;
-        let audio = self.mix_timeline_audio(&timeline);
+        let audio = if duck_music == Some(true) {
+            self.mix_timeline_audio_ducked(&timeline, 12.0, -30.0)
+        } else {
+            self.mix_timeline_audio(&timeline)
+        };
         let timeline_frames = timeline.total_frames().max(1);
         let start_frame = range_start.unwrap_or(0).clamp(0, timeline_frames - 1);
         let end_frame = range_end.unwrap_or(timeline_frames).clamp(start_frame + 1, timeline_frames);
@@ -1124,8 +1219,9 @@ impl Engine {
         codec: String,
         quality: String,
         bit_depth: Option<u32>,
+        duck_music: Option<bool>,
     ) -> Result<String> {
-        self.export_begin(out_path, codec, quality, None, None, bit_depth)?;
+        self.export_begin(out_path, codec, quality, None, None, bit_depth, duck_music)?;
         loop {
             let done = {
                 let guard = self.export.borrow();
@@ -1572,10 +1668,13 @@ impl Engine {
 
     /// Export the whole timeline audio mixdown to M4A (AAC) or MP3.
     #[napi]
-    pub fn export_audio(&self, out_path: String, format: String) -> Result<String> {
+    pub fn export_audio(&self, out_path: String, format: String, duck_music: Option<bool>) -> Result<String> {
         let timeline = self.core.get_timeline().timeline;
-        let pcm = self
-            .mix_timeline_audio(&timeline)
+        let pcm = (if duck_music == Some(true) {
+            self.mix_timeline_audio_ducked(&timeline, 12.0, -30.0)
+        } else {
+            self.mix_timeline_audio(&timeline)
+        })
             .ok_or_else(|| Error::from_reason("timeline has no audible audio"))?;
         let directory = std::env::temp_dir().join("opentake-route-b").join("audio");
         std::fs::create_dir_all(&directory).map_err(|error| Error::from_reason(error.to_string()))?;
