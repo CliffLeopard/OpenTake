@@ -171,6 +171,9 @@ Importing only fills the media library; it does not add clips to the timeline.
   ProRes, transparent ProRes 4444 and optional color tags.
 - **Frame stepping**: −1/+1 buttons and ArrowLeft/ArrowRight step exactly one
   frame (pauses playback), with the frame counter visible.
+- **Recent projects**: welcome screen and New/Open dialog list recent projects
+  with missing badges, open/refresh/clear.
+- **Export current frame**: capture the composited preview frame as a PNG.
 - **Lottie**: import bodymovin `.json` animations, preview them in the editor,
   and export them by rendering per-frame PNGs in the browser and compositing
   them through ffmpeg. Both bodymovin `.json` and `.lottie` ZIP containers (with
@@ -294,6 +297,7 @@ MCP endpoint, client or credential is involved.
 | Tool | Arguments | Behavior |
 |---|---|---|
 | `opentake_studio_get_state` | — | Returns a project summary: name, fps, resolution, total duration frames, media and tracks/clips. Call before editing. |
+| `opentake_studio_list_recent_projects` | — | Lists recently opened/created projects (root, name, missing). |
 | `opentake_studio_list_media` | — | Returns the imported media list (id, name, kind, dimensions, duration frames). |
 | `opentake_studio_edit` | `operations` | Advanced batch edit: speed, keyframes, effects, fades, markers, transitions, captions and all timeline ops from DESIGN §11.2. |
 | `opentake_studio_import_captions` | `text`, `style?`, `trackId?` | Parses SRT/VTT and adds a caption clip on a Captions track. |

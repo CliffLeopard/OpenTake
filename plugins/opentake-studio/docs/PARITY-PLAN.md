@@ -40,7 +40,8 @@ Rust/Tauri 版包含：
 | Phase 9 | 轨道角色/ducking（voice 总线 + sidechaincompress）；fal 视频生成；视觉描述索引 |
 | Phase 10–12 | UI（文件夹/角色/视频/视觉/代理/relink）；360p 代理；媒体重链接 |
 | Phase 13 | ProRes 4444 alpha/透明底、10-bit H.265/VP9、色彩标签；逐帧步进 |
-| Phase 14–15 | Lottie JSON 导入/探测、客户端 lottie-web 预览、逐帧 PNG 预渲染 + ffmpeg 合成导出；vended MIT 播放器 |
+| Phase 14–15 | Lottie JSON/.lottie 容器导入/探测、客户端 lottie-web 预览、逐帧 PNG 预渲染 + ffmpeg 合成导出；vendored MIT 播放器 |
+| Phase 16 | 最近工程列表/打开/清除；导出当前帧 PNG |
 
 ## 3. 未完成清单（按验收域；Phase 1 项已划掉）
 

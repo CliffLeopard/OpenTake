@@ -1072,6 +1072,36 @@ window.__ModuleLoader__.load({
 			return media ? media.name : fallback;
 		}
 
+		function downloadDataUrl(filename, dataUrl) {
+			try {
+				if (typeof document === 'undefined' || typeof document.createElement !== 'function') return false;
+				const anchor = document.createElement('a');
+				if (!anchor) return false;
+				anchor.href = dataUrl;
+				anchor.download = filename;
+				anchor.rel = 'noopener';
+				if (document.body && typeof document.body.appendChild === 'function') document.body.appendChild(anchor);
+				if (typeof anchor.click !== 'function') return false;
+				anchor.click();
+				if (document.body && typeof document.body.removeChild === 'function' && anchor.parentNode === document.body) {
+					document.body.removeChild(anchor);
+				} else if (typeof anchor.remove === 'function') {
+					anchor.remove();
+				}
+				return true;
+			} catch (error) {
+				return false;
+			}
+		}
+
+		function exportFrameFileName(project, frame) {
+			const base = String(project && project.name ? project.name : 'opentake-studio')
+				.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-')
+				.trim();
+			const safe = base.length > 0 ? base : 'opentake-studio';
+			return `${safe}-${Math.max(0, Math.round(frame))}.png`;
+		}
+
 		function downloadTextFile(filename, text) {
 			try {
 				if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof Blob === 'undefined') return;
@@ -1794,6 +1824,20 @@ window.__ModuleLoader__.load({
 .ots-welcome-title{margin:0;font-size:22px;font-weight:650;letter-spacing:.2px}
 .ots-welcome-lead{color:var(--dsw-alias-label-secondary);margin:0;font-size:13px}
 .ots-welcome-actions{display:flex;gap:8px;margin-top:4px}
+.ots-recent{border-top:.5px solid var(--dsw-alias-border-l1);display:flex;flex-direction:column;gap:4px;margin-top:8px;max-height:280px;overflow:auto;padding-top:8px}
+.ots-recent[data-compact="true"]{max-height:200px}
+.ots-recent-head{align-items:center;display:flex;gap:6px;justify-content:space-between}
+.ots-recent-title{color:var(--dsw-alias-label-secondary);font-size:10.5px;font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+.ots-recent-actions{display:flex;gap:3px}
+.ots-recent-list{display:flex;flex-direction:column;gap:3px;overflow:auto}
+.ots-recent-row{align-items:center;background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:5px;color:inherit;cursor:pointer;display:flex;font-family:inherit;gap:6px;min-width:0;padding:4px 6px;text-align:left;width:100%}
+.ots-recent-row:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2)}
+.ots-recent-row[data-missing="true"]{border-color:var(--dsw-alias-state-error-primary);cursor:not-allowed;opacity:.85}
+.ots-recent-main{display:flex;flex:1 1 auto;flex-direction:column;gap:1px;min-width:0}
+.ots-recent-name{color:var(--dsw-alias-label-primary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-recent-path,.ots-recent-meta{color:var(--dsw-alias-label-secondary);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-recent-missing{background:var(--dsw-alias-state-error-primary);border-radius:3px;color:var(--dsw-alias-bg-base);flex:0 0 auto;font-size:8px;padding:1px 4px;text-transform:uppercase}
+.ots-recent-confirm{align-items:center;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-state-error-primary);border-radius:5px;display:flex;flex-wrap:wrap;font-size:10px;gap:4px;justify-content:space-between;padding:4px 6px}
 .ots-welcome-note{border-top:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);font-size:12px;margin:4px 0 0;padding-top:10px}
 .ots-welcome-note[data-warn="true"]{color:var(--dsw-alias-state-warn-primary)}
 .ots-body{display:grid;flex:1 1 auto;grid-template-columns:236px minmax(0,1fr) 272px;min-height:0}
@@ -2665,6 +2709,20 @@ window.__ModuleLoader__.load({
 			'lottie.unavailable': 'Lottie unavailable',
 			'status.preparingLottie': 'Rendering Lottie frame {index}/{total} for {name}…',
 			'inspector.kindLottie': 'Lottie clip',
+			'welcome.recentTitle': 'Recent projects',
+			'welcome.recentRefresh': 'Refresh',
+			'welcome.recentClear': 'Clear',
+			'welcome.recentLoading': 'Loading recent projects…',
+			'welcome.recentEmpty': 'No recent projects yet.',
+			'welcome.recentMissing': 'Missing',
+			'welcome.recentMissingHint': 'Project folder or opentake-studio.json is missing.',
+			'welcome.recentClearConfirm': 'Clear the recent projects list?',
+			'welcome.recentCleared': 'Recent projects cleared.',
+			'welcome.recentOpened': 'Opened {name}.',
+			'preview.exportFrame': 'Export frame',
+			'preview.exportFrameTitle': 'Export the current composited preview frame as PNG.',
+			'preview.frameExported': 'Exported {file}.',
+			'preview.exportFrameError': 'Could not export the frame: {message}',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -3240,6 +3298,20 @@ window.__ModuleLoader__.load({
 			'lottie.unavailable': 'Lottie 不可用',
 			'status.preparingLottie': '正在为 {name} 渲染 Lottie 帧 {index}/{total}…',
 			'inspector.kindLottie': 'Lottie 片段',
+			'welcome.recentTitle': '最近项目',
+			'welcome.recentRefresh': '刷新',
+			'welcome.recentClear': '清除',
+			'welcome.recentLoading': '正在加载最近项目…',
+			'welcome.recentEmpty': '还没有最近项目。',
+			'welcome.recentMissing': '缺失',
+			'welcome.recentMissingHint': '项目文件夹或 opentake-studio.json 不存在。',
+			'welcome.recentClearConfirm': '清除最近项目列表？',
+			'welcome.recentCleared': '最近项目已清除。',
+			'welcome.recentOpened': '已打开 {name}。',
+			'preview.exportFrame': '导出帧',
+			'preview.exportFrameTitle': '将当前合成预览帧导出为 PNG。',
+			'preview.frameExported': '已导出 {file}。',
+			'preview.exportFrameError': '无法导出帧：{message}',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -3553,8 +3625,99 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		function RecentProjects(props) {
+			const { t, projects, loading, error, onOpen, onClear, onRefresh, compact } = props;
+			const [confirmClear, setConfirmClear] = React.useState(false);
+			const rows = Array.isArray(projects) ? projects : [];
+			const clear = () => {
+				setConfirmClear(false);
+				onClear();
+			};
+			return h(
+				'div',
+				{ className: 'ots-recent', 'data-compact': compact ? 'true' : 'false' },
+				h(
+					'div',
+					{ className: 'ots-recent-head' },
+					h('span', { className: 'ots-recent-title' }, t('welcome.recentTitle')),
+					h(
+						'div',
+						{ className: 'ots-recent-actions' },
+						h(Btn, { variant: 'ghost', onClick: onRefresh, disabled: loading }, t('welcome.recentRefresh')),
+						h(
+							Btn,
+							{ variant: 'ghost', onClick: () => setConfirmClear(true), disabled: loading || rows.length === 0 },
+							t('welcome.recentClear'),
+						),
+					),
+				),
+				loading ? h('p', { className: 'ots-note', role: 'status' }, t('welcome.recentLoading')) : null,
+				error ? h('p', { className: 'ots-note', 'data-warn': 'true', role: 'alert' }, error) : null,
+				!loading && !error && rows.length === 0
+					? h('p', { className: 'ots-note' }, t('welcome.recentEmpty'))
+					: null,
+				rows.length > 0
+					? h(
+							'div',
+							{ className: 'ots-recent-list' },
+							rows.map((entry) =>
+								h(
+									'button',
+									{
+										type: 'button',
+										key: entry.root,
+										className: 'ots-recent-row',
+										'data-missing': entry.missing === true ? 'true' : 'false',
+										disabled: entry.missing === true,
+										title: entry.missing === true ? t('welcome.recentMissingHint') : entry.root,
+										onClick: () => onOpen(entry),
+									},
+									h(
+										'span',
+										{ className: 'ots-recent-main' },
+										h('span', { className: 'ots-recent-name' }, entry.name || entry.root),
+										h('span', { className: 'ots-recent-path' }, entry.root),
+										h(
+											'span',
+											{ className: 'ots-recent-meta' },
+											[
+												Number.isFinite(Number(entry.fps)) ? `${entry.fps} fps` : null,
+												Number.isFinite(Number(entry.width)) && Number.isFinite(Number(entry.height))
+													? `${entry.width} × ${entry.height}`
+													: null,
+												Number.isFinite(Number(entry.updatedAt)) && Number(entry.updatedAt) > 0
+													? new Date(Number(entry.updatedAt)).toLocaleString()
+													: null,
+											]
+												.filter(Boolean)
+												.join(' · '),
+										),
+									),
+									entry.missing === true
+										? h('span', { className: 'ots-recent-missing' }, t('welcome.recentMissing'))
+										: null,
+								),
+							),
+						)
+					: null,
+				confirmClear
+					? h(
+							'div',
+							{ className: 'ots-recent-confirm', role: 'alertdialog' },
+							h('span', {}, t('welcome.recentClearConfirm')),
+							h(
+								'div',
+								{ className: 'ots-recent-actions' },
+								h(Btn, { variant: 'ghost', onClick: () => setConfirmClear(false) }, t('actions.cancel')),
+								h(Btn, { variant: 'outline', onClick: clear }, t('welcome.recentClear') ),
+							),
+						)
+					: null,
+			);
+		}
+
 		function Welcome(props) {
-			const { t, snapshot, onNew, onOpen } = props;
+			const { t, snapshot, onNew, onOpen, recentProjects, recentLoading, recentError, onOpenRecent, onClearRecent, onRefreshRecent } = props;
 			const ffmpeg = snapshot ? snapshot.ffmpeg : null;
 			const missing = Boolean(ffmpeg && !ffmpeg.available);
 			return h(
@@ -3573,6 +3736,15 @@ window.__ModuleLoader__.load({
 						h(Btn, { variant: 'outline', onClick: onOpen }, t('welcome.open')),
 					),
 					h('p', { className: 'ots-welcome-note', 'data-warn': missing ? 'true' : 'false' }, missing ? t('welcome.ffmpegMissing') : t('welcome.dependency')),
+					h(RecentProjects, {
+						t,
+						projects: recentProjects,
+						loading: recentLoading,
+						error: recentError,
+						onOpen: onOpenRecent,
+						onClear: onClearRecent,
+						onRefresh: onRefreshRecent,
+					}),
 				),
 			);
 		}
@@ -5548,6 +5720,7 @@ window.__ModuleLoader__.load({
 				onToggleLoop,
 				onVolumeChange,
 				onStepFrame,
+				onExportFrame,
 				proxyPreview,
 				missingMediaIds,
 			} = props;
@@ -5628,6 +5801,17 @@ window.__ModuleLoader__.load({
 							'aria-label': t('preview.stepForward'),
 						},
 						'+1',
+					),
+					h(
+						Btn,
+						{
+							variant: 'ghost',
+							onClick: onExportFrame,
+							disabled: !project,
+							title: t('preview.exportFrameTitle'),
+							'aria-label': t('preview.exportFrame'),
+						},
+						t('preview.exportFrame'),
 					),
 					h(
 						Btn,
@@ -8015,7 +8199,22 @@ window.__ModuleLoader__.load({
 		// -------------------------------------------------------------------
 
 		function Dialog(props) {
-			const { t, dialog, project, onPatch, onBrowse, onSubmit, onClose, title } = props;
+			const {
+				t,
+				dialog,
+				project,
+				onPatch,
+				onBrowse,
+				onSubmit,
+				onClose,
+				title,
+				recentProjects,
+				recentLoading,
+				recentError,
+				onOpenRecent,
+				onClearRecent,
+				onRefreshRecent,
+			} = props;
 			const isExport = dialog.mode === 'export';
 			const isNew = dialog.mode === 'new';
 			const busy = Boolean(dialog.busy);
@@ -8384,6 +8583,18 @@ window.__ModuleLoader__.load({
 									}),
 								)
 							: null,
+						dialog.mode === 'open' || isNew
+							? h(RecentProjects, {
+									t,
+									projects: recentProjects,
+									loading: recentLoading,
+									error: recentError,
+									onOpen: onOpenRecent,
+									onClear: onClearRecent,
+									onRefresh: onRefreshRecent,
+									compact: true,
+								})
+							: null,
 						isExport ? h('h3', { className: 'ots-section-title' }, t('export.settings')) : null,
 						isExport ? exportOptions : null,
 						dialog.status ? h('p', { className: 'ots-modal-hint', role: 'status', 'aria-live': 'polite' }, dialog.status) : null,
@@ -8467,6 +8678,9 @@ window.__ModuleLoader__.load({
 			const [proxyFailedIds, setProxyFailedIds] = React.useState(() => new Set());
 			const [missingMediaIds, setMissingMediaIds] = React.useState(() => new Set());
 			const [lottieReadyTick, setLottieReadyTick] = React.useState(0);
+			const [recentProjects, setRecentProjects] = React.useState([]);
+			const [recentLoading, setRecentLoading] = React.useState(true);
+			const [recentError, setRecentError] = React.useState(null);
 			const [selectedClipIds, setSelectedClipIds] = React.useState([]);
 			const [snapping, setSnapping] = React.useState(true);
 			const [currentFrame, setCurrentFrame] = React.useState(0);
@@ -8599,6 +8813,19 @@ window.__ModuleLoader__.load({
 				return t('error.action', { message: raw });
 			};
 
+			const refreshRecentProjects = async () => {
+				setRecentLoading(true);
+				setRecentError(null);
+				try {
+					const data = await hostRequest('projects/recent');
+					setRecentProjects(data && Array.isArray(data.projects) ? data.projects : []);
+				} catch (error) {
+					setRecentError(messageFor(error));
+				} finally {
+					setRecentLoading(false);
+				}
+			};
+
 			const absorb = (payload) => {
 				if (!payload || typeof payload !== 'object') return null;
 				if (payload.version === 1 && 'project' in payload) {
@@ -8671,6 +8898,9 @@ window.__ModuleLoader__.load({
 			}, []);
 
 			const projectRoot = snapshot ? snapshot.projectRoot : null;
+			React.useEffect(() => {
+				void refreshRecentProjects();
+			}, [projectRoot]);
 			React.useEffect(() => {
 				setSelectedClipIds([]);
 				clipboardRef.current = null;
@@ -9006,6 +9236,24 @@ window.__ModuleLoader__.load({
 
 			const handleNew = () => setDialog({ mode: 'new', path: '', name: '', error: null, busy: false });
 			const handleOpen = () => setDialog({ mode: 'open', path: projectRoot || '', name: '', error: null, busy: false });
+			const handleOpenRecent = async (entry) => {
+				if (!entry || entry.missing === true) return;
+				setDialog(null);
+				const payload = await perform(() => hostPost('project/open', { path: entry.root }));
+				if (payload) {
+					await refreshRecentProjects();
+					showNotice(t('welcome.recentOpened', { name: entry.name || entry.root }));
+				}
+			};
+			const handleClearRecent = async () => {
+				try {
+					await hostPost('projects/recent/clear', {});
+					setRecentProjects([]);
+					showNotice(t('welcome.recentCleared'));
+				} catch (error) {
+					setActionError(messageFor(error));
+				}
+			};
 			const handleImport = async () => {
 				if (!projectRef.current) return;
 				let picked;
@@ -9078,6 +9326,35 @@ window.__ModuleLoader__.load({
 			const handleCancelExport = async () => {
 				const payload = await perform(() => hostPost('export/cancel'));
 				if (payload) showNotice(t('status.exportCancelled'));
+			};
+			const handleExportFrame = () => {
+				const projectValue = projectRef.current;
+				if (!projectValue) return;
+				try {
+					const frame = Math.max(0, Math.round(currentFrameRef.current));
+					let canvas = canvasRef.current;
+					if (canvas && typeof canvas.toDataURL === 'function') {
+						if (drawRef.current) drawRef.current(frame);
+					} else {
+						canvas = document.createElement('canvas');
+						canvas.width = Math.max(2, Math.round(projectValue.width));
+						canvas.height = Math.max(2, Math.round(projectValue.height));
+						const context = canvas.getContext('2d');
+						if (!context) throw new Error('canvas-unavailable');
+						drawComposite(context, projectValue, frame, mediaElements.current);
+					}
+					const dataUrl = canvas.toDataURL('image/png');
+					if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png')) {
+						throw new Error('capture-failed');
+					}
+					const filename = exportFrameFileName(projectValue, frame);
+					if (!downloadDataUrl(filename, dataUrl)) {
+						throw new Error('download-unavailable');
+					}
+					showNotice(t('preview.frameExported', { file: filename }));
+				} catch (error) {
+					showNotice(t('preview.exportFrameError', { message: error && error.message ? error.message : String(error) }));
+				}
 			};
 
 			const handleAddMedia = async (mediaId, trackId, startFrame) => {
@@ -9800,7 +10077,18 @@ window.__ModuleLoader__.load({
 							h('span', {}, t('welcome.loading')),
 						)
 					: !project
-						? h(Welcome, { t, snapshot, onNew: handleNew, onOpen: handleOpen })
+						? h(Welcome, {
+								t,
+								snapshot,
+								onNew: handleNew,
+								onOpen: handleOpen,
+								recentProjects,
+								recentLoading,
+								recentError,
+								onOpenRecent: handleOpenRecent,
+								onClearRecent: handleClearRecent,
+								onRefreshRecent: refreshRecentProjects,
+							})
 						: h(
 								ReactFragment,
 								null,
@@ -9842,6 +10130,7 @@ window.__ModuleLoader__.load({
 										onToggleLoop: () => setLoop((value) => !value),
 										onVolumeChange: (value) => setMonitorVolume(clamp01(value)),
 										onStepFrame: stepFrame,
+										onExportFrame: handleExportFrame,
 										proxyPreview,
 										missingMediaIds,
 									}),
@@ -9975,6 +10264,12 @@ window.__ModuleLoader__.load({
 							title: dialogTitle,
 							onPatch: (patch) => setDialog((current) => (current ? Object.assign({}, current, patch) : current)),
 							onBrowse: browseDialog,
+							recentProjects,
+							recentLoading,
+							recentError,
+							onOpenRecent: handleOpenRecent,
+							onClearRecent: handleClearRecent,
+							onRefreshRecent: refreshRecentProjects,
 							onSubmit: submitDialog,
 							onClose: () => setDialog(null),
 						})

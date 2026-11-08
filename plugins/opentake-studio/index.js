@@ -9,7 +9,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync } from 'node:fs';
-import { copyFile, link as linkFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link as linkFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -60,8 +61,35 @@ import {
 import { generateImage, generateSpeech, generateVideo, generationProviders } from './lib/generate.js';
 import { indexMediaVision, readVisionIndex } from './lib/vision.js';
 
+async function readRecentProjects() {
+  try {
+    const raw = await readFile(RECENT_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.projects)) {
+      return parsed.projects.filter(
+        (entry) => entry !== null && typeof entry === 'object' && typeof entry.root === 'string',
+      );
+    }
+  } catch {
+    // Missing/corrupt recent list is treated as empty.
+  }
+  return [];
+}
+
+async function writeRecentProjects(projects) {
+  await mkdir(DATA_DIR, { recursive: true });
+  const temporary = `${RECENT_FILE}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify({ version: 1, projects }, null, 2)}\n`, 'utf8');
+  await rename(temporary, RECENT_FILE);
+}
+
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 const VENDOR_DIR = path.join(PLUGIN_DIR, 'vendor');
+const DATA_DIR = process.env.OPENTAKE_STUDIO_DATA
+  ? path.resolve(process.env.OPENTAKE_STUDIO_DATA)
+  : path.join(os.homedir(), '.dsh', 'opentake-studio');
+const RECENT_FILE = path.join(DATA_DIR, 'recent-projects.json');
+const MAX_RECENT = 20;
 
 export const name = 'opentake-studio';
 export const inject = ['tools', 'webServer', 'connection'];
@@ -480,6 +508,20 @@ export function apply(ctx) {
     return operations;
   }
 
+  async function rememberProject(project, root) {
+    const entry = {
+      root,
+      name: project.name,
+      fps: project.fps,
+      width: project.width,
+      height: project.height,
+      updatedAt: Date.now(),
+    };
+    const recent = (await readRecentProjects()).filter((item) => item.root !== root);
+    recent.unshift(entry);
+    await writeRecentProjects(recent.slice(0, MAX_RECENT)).catch(() => {});
+  }
+
   async function createProjectFromPath(input) {
     const root = projectRootFromInput(input);
     stopExportForProjectSwitch();
@@ -495,6 +537,7 @@ export function apply(ctx) {
     state.saveError = null;
     state.lastError = null;
     resetHistory();
+    await rememberProject(created.project, created.paths.root);
     return buildState();
   }
 
@@ -508,6 +551,7 @@ export function apply(ctx) {
     state.saveError = null;
     state.lastError = null;
     resetHistory();
+    await rememberProject(opened.project, opened.paths.root);
     return buildState();
   }
 
@@ -1322,6 +1366,20 @@ export function apply(ctx) {
     let sub = url.pathname.startsWith(PREFIX) ? url.pathname.slice(PREFIX.length) : url.pathname;
     if (sub === '' || sub === '/') sub = '/state';
     try {
+      if (sub === '/projects/recent' && req.method === 'GET') {
+        const projects = await readRecentProjects();
+        const enriched = projects.map((entry) => ({
+          ...entry,
+          missing: !existsSync(path.join(entry.root, 'opentake-studio.json')),
+        }));
+        sendJson(res, 200, { projects: enriched });
+        return;
+      }
+      if (sub === '/projects/recent/clear' && req.method === 'POST') {
+        await writeRecentProjects([]);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
       if (sub === '/library' && req.method === 'GET') {
         const query = url.searchParams;
         const result = await listLibrary({
@@ -1603,6 +1661,19 @@ export function apply(ctx) {
       const project = ensureProject();
       const summary = summaryOf(project);
       return { text: JSON.stringify(summary), data: summary };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_list_recent_projects',
+    'List recently opened/created OpenTake Studio projects (absolute root, name, missing flag).',
+    { type: 'object', properties: {}, additionalProperties: false },
+    async () => {
+      const projects = (await readRecentProjects()).map((entry) => ({
+        ...entry,
+        missing: !existsSync(path.join(entry.root, 'opentake-studio.json')),
+      }));
+      return { text: JSON.stringify(projects), data: { projects } };
     },
   );
 

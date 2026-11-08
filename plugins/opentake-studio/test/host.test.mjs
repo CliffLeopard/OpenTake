@@ -53,6 +53,7 @@ const PREFIX = '/opentake-studio';
 /** Tool list registered by index.js, in registration order. */
 const EXPECTED_TOOLS = [
   'opentake_studio_get_state',
+  'opentake_studio_list_recent_projects',
   'opentake_studio_list_media',
   'opentake_studio_create_proxy',
   'opentake_studio_relink_media',
