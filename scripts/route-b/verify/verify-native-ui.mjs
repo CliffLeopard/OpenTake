@@ -63,13 +63,20 @@ check('native shell registers main + sidebar slots and token-only CSS', () => {
   if (!/iframe/.test(uiSource)) throw new Error('expected the iframe body fallback to remain in the native shell');
   return 'main + sidebar.panellist registered; iframe body fallback present';
 });
-check('native-editor prototype is additive (not wired into the default shell)', () => {
+check('native editor is wired as an optional preview with iframe fallback', () => {
   if (!fs.existsSync(path.join(nativeEditorDir, 'README.md'))) throw new Error('native-editor/README.md missing');
-  const shellRefsPrototype = /native-editor/.test(uiSource);
   const readme = fs.readFileSync(path.join(nativeEditorDir, 'README.md'), 'utf8');
-  if (!/Not wired into the active DSH shell/i.test(readme)) throw new Error('prototype README does not state its integration status');
-  if (shellRefsPrototype) throw new Error('default shell unexpectedly references native-editor prototype');
-  return 'prototype is separate; default shell keeps iframe body';
+  if (!/wired as an optional native preview/i.test(readme)) throw new Error('native-editor README no longer states the optional-preview integration');
+  if (!/NATIVE_BUNDLE_URL/.test(uiSource) || !/native-editor\.js/.test(uiSource)) throw new Error('client shell does not reference the native bundle');
+  if (!/data-otn-action/.test(uiSource) && !/toggle/i.test(uiSource)) throw new Error('client shell has no native/iframe toggle');
+  const bundle = path.join(PLUGIN, 'web/native-editor/native-editor.js');
+  if (!fs.existsSync(bundle) || fs.statSync(bundle).size < 100_000) throw new Error(`native bundle missing/too small: ${bundle}`);
+  return `optional native preview wired; bundle ${fs.statSync(bundle).size} bytes; iframe remains default`;
+});
+check('package ships web/native-editor and search installer modules', () => {
+  if (!pkg.files?.includes('web/native-editor/**')) throw new Error('files is missing web/native-editor/**');
+  if (!pkg.files?.includes('lib/search/install-model.mjs')) throw new Error('files is missing lib/search/install-model.mjs');
+  return pkg.files.join(', ');
 });
 check('DSH-native shell stub tests pass', () => {
   const out = spawnSync(process.execPath, ['--test', path.join(PLUGIN, 'test/ui-mount.test.mjs')], { encoding: 'utf8' });

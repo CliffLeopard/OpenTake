@@ -348,9 +348,15 @@ test('apply registers native main panel and sidebar entry', () => {
     'status.unavailable',
     'common.unknown',
     'action.retry',
+    'action.retryNative',
     'action.reload',
+    'action.showNative',
+    'action.showIframe',
+    'native.loading',
+    'native.error',
     'editorTitle',
     'note.iframe',
+    'note.native',
     'error.network',
     'error.http',
     'error.invalidResponse',
@@ -363,6 +369,7 @@ test('apply registers native main panel and sidebar entry', () => {
   assert.deepEqual(injections, ['sidebar.panellist', 'main'])
   assert.equal(registrations.length, 2)
   assert.equal(harness.module.internals.INCLUDE_IFRAME_PROTOTYPE, false)
+  assert.equal(harness.module.internals.NATIVE_BUNDLE_URL, '/opentake-studio-route-b/app/native-editor/native-editor.js')
 
   const nativeSidebar = registrations[0]
   const nativeMain = registrations[1]
@@ -659,14 +666,24 @@ test('renders the native shell + interim iframe editor when ready', () => {
   assert.equal(iframe.props.src, '/opentake-studio-route-b/app/')
   assert.equal(iframe.props.title, 'editorTitle')
   assert.equal(iframe.props['data-otn-editor'], 'iframe')
+  assert.equal(iframe.props.className, 'otn-frame', 'iframe is the default editor body')
+
+  const nativeHost = elements.find((node) => node.props['data-otn-editor'] === 'native')
+  assert.ok(nativeHost, 'native mount host is present alongside the fallback')
+  assert.ok(String(nativeHost.props.className).includes('otn-native-host--hidden'), 'native host hidden by default')
+  assert.equal(typeof nativeHost.props.ref, 'object')
 
   const live = elements.find((node) => node.props['aria-live'] === 'polite')
   assert.ok(live, 'aria-live status line')
 
   const buttons = elements.filter((node) => node.type === 'button')
-  assert.equal(buttons.length, 2)
+  assert.equal(buttons.length, 3)
   for (const button of buttons) assert.equal(button.props.type, 'button')
   assert.ok(buttons.every((button) => typeof button.props.onClick === 'function'))
+  const toggle = elements.find((node) => node.props['data-otn-action'] === 'toggle-mode')
+  assert.ok(toggle, 'native/iframe toggle')
+  assert.equal(toggle.props['aria-pressed'], false)
+  assert.deepEqual(toggle.children, ['action.showNative'])
 
   const note = elements.find((node) => String(node.props.className || '') === 'otn-note')
   assert.ok(note && note.children[0] === 'note.iframe')
@@ -710,10 +727,13 @@ test('shell actions update retry/reload state through the stub setters', () => {
   const { elements, react } = renderState({ 0: 'ready', 1: READY_ENGINE })
   const retry = elements.find((node) => node.props['data-otn-action'] === 'retry')
   const reload = elements.find((node) => node.props['data-otn-action'] === 'reload')
+  const toggle = elements.find((node) => node.props['data-otn-action'] === 'toggle-mode')
   retry.props.onClick()
   reload.props.onClick()
+  toggle.props.onClick()
   assert.ok(react.updates.some((update) => update.index === 3 && update.value === 1), 'retry nonce')
   assert.ok(react.updates.some((update) => update.index === 4 && update.value === 1), 'reload nonce')
+  assert.ok(react.updates.some((update) => update.index === 5 && update.value === 'native'), 'mode toggle')
 })
 
 // ---------------------------------------------------------------------------

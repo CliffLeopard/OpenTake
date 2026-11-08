@@ -47,7 +47,7 @@ function ErrorBanner(React, state, store, t) {
   );
 }
 
-function HomeView(React, { state, store, client, t }) {
+function HomeView({ React, state, store, client, t }) {
   const [path, setPath] = React.useState(state.projectPath ?? '');
   React.useEffect(() => {
     if (state.projectPath !== null && state.projectPath !== path) setPath(state.projectPath);
@@ -278,7 +278,7 @@ export function NativeEditorView({ React, store, client, theme = 'system' }) {
     ),
     ErrorBanner(React, state, store, t),
     state.view === 'home'
-      ? HomeView(React, { state, store, client, t })
+      ? h(React, HomeView, { React, state, store, client, t })
       : EditorView(React, { state, store, client, t }),
     h(React, 'footer', { className: 'otn-status' },
       h(React, 'span', null, `${t('projectVersion', { version: state.timeline?.version ?? 0 })}`),

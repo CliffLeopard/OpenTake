@@ -142,7 +142,10 @@ test("addon loads and reports an honest unconfigured capability", () => {
   assert.equal(status.reason, "visual_unavailable");
   assert.equal(status.detail, "models_dir_not_configured");
   assert.equal(status.expectedBytes, 1_535_824_768);
-  assert.equal(status.backend, process.platform === "win32" ? "ort-tract" : "ort-native");
+  assert.equal(
+    status.backend,
+    process.platform === "darwin" && process.arch === "arm64" ? "ort-native" : "tract",
+  );
 });
 
 test("missing/corrupt model dir is capability-gated (no fake success)", async () => {
@@ -211,7 +214,10 @@ test(
       assert.equal(configured.visualAvailable, true, JSON.stringify(configured));
       assert.equal(configured.reason, null);
       assert.equal(configured.expectedBytes, 1_535_824_768);
-      assert.equal(configured.backend, process.platform === "win32" ? "ort-tract" : "ort-native");
+      assert.equal(
+        configured.backend,
+        process.platform === "darwin" && process.arch === "arm64" ? "ort-native" : "tract",
+      );
 
       const assets = assetsJson(fixtures.files);
       const indexStatus = JSON.parse(engine.searchIndexStart(assets));

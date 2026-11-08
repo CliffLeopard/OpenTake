@@ -530,18 +530,25 @@ inference in the Route B addon.
 
 ### 13.1 Enabled feature / build profile
 
-- `crates/opentake-node/Cargo.toml`: `opentake-media = { workspace = true, features = ["ort-backend"] }`.
-  This turns on the existing pinned ORT backend (`ort = 2.0.0-rc.11`,
-  `download-binaries`/`copy-dylibs`; Windows uses `ort-tract` + `tract-onnx`),
-  and no new crate is added to the workspace.
+- `crates/opentake-node/Cargo.toml` now selects the backend per target:
+  - macOS arm64: `opentake-media` with `ort-backend` (native ORT
+    `2.0.0-rc.11`, `download-binaries`/`copy-dylibs`, CoreML/CPU).
+  - every other target (macOS x86_64, Windows, Linux x64): `opentake-media` with
+    `tract-backend` (pure-Rust tract), so those addons never link or load a
+    native ONNX Runtime dylib.
+  The addon’s `SearchState` uses a cfg alias (`OrtEmbedder` on arm64 macOS,
+  `TractEmbedder` elsewhere), and capability JSON reports
+  `backend: "ort-native"` or `"tract"` accordingly; no search method signature
+  changed. `crates/opentake-media` gained `tract-backend` and
+  `src/search/tract_embedder.rs` (fixed-shape binding for the pinned graphs).
 - The crate-level `opentake-search` contract/fallback stays independent; the
   addon uses `opentake-media::search` directly for real inference.
-- Measured on macOS arm64, debug build: addon `libopentake_node.dylib` grew from
-  a ~45 MB shipped `v38` artifact baseline to **116.8 MB** including the
-  **71 MB static `libonnxruntime.a`** downloaded to
-  `~/Library/Caches/ort.pyke.io/...`. Release builds are expected to be smaller;
-  measure the shipped package before release. Windows links tract instead of the
-  native ORT dylib.
+- Measured debug builds (current tree): arm64 ORT addon
+  `libopentake_node.dylib` = **117,028,504 B** including the **71 MB static
+  `libonnxruntime.a`** (`~/Library/Caches/ort.pyke.io/...`); x86_64 tract addon =
+  **156,978,608 B** (no ORT linkage). Release builds are expected to be smaller;
+  measure the shipped package before release. The arm64 artifact remains the
+  only one linking native ORT (confirmed with `otool -L`).
 - No weights are committed; the model directory is user/persistent data only.
 
 ### 13.2 Addon search methods (additive)
@@ -630,3 +637,68 @@ self-match at ≈1.0 cosine. Model load + 3-image indexing + both queries took
 
 (Earlier deterministic fallback coverage: 26 Rust unit + 2 integration tests and
 8 Node contract tests; see §9.)
+
+### 13.5 Per-arch backend matrix and evidence
+
+| Target | Addon backend | Runtime | Status |
+|---|---|---|---|
+| macOS arm64 | `ort-native` | native ONNX Runtime (CoreML/CPU) | real inference verified (task-66 suite; capability `installed:true, visualAvailable:true`) |
+| macOS x86_64 | `tract` | pure-Rust tract | **compile/static verified; runtime unverified** — Rosetta absent on this host (`arch: posix_spawnp: /usr/bin/true: Bad CPU type in executable`) |
+| Windows x64 | `tract` | pure-Rust tract | code path shared with verified tract backend; not cross-built here (no Windows toolchain); CI matrix is the build evidence |
+| Linux x64 | `tract` | pure-Rust tract | same code path; not exercised here |
+
+Tract real-asset proof on this host (arm64 native CPU, same `TractEmbedder`
+implementation the x64/Windows addons compile):
+
+```console
+$ OPENTAKE_SEARCH_MODELS_DIR=~/.dsh/opentake/models     cargo test -p opentake-media --features tract-backend real_model_tract -- --ignored --nocapture
+running 1 test
+tract text query hits=[Hit { asset_id: "red", time: 0.0, shot_start: 0.0, shot_end: 0.0, score: 0.15864483 }]
+tract image self hits=[
+  Hit { asset_id: "red", score: 1.0000231 },
+  Hit { asset_id: "blue", score: 0.947621 },
+  Hit { asset_id: "green", score: 0.9206737 }]
+test result: ok. 1 passed; failed 0; finished in 113.30s
+```
+
+The tract scores match the arm64 ORT run (red text 0.15864377; red self
+1.0000215; blue 0.9476207; green 0.92067295), covering fixed-shape binding,
+tokenizer, preprocessing, both encoders and the ranker without ORT.
+
+x86_64 static evidence:
+
+```console
+$ cargo check -p opentake-node --target x86_64-apple-darwin   # exit 0
+$ cargo build -p opentake-node --target x86_64-apple-darwin   # exit 0
+$ file target/x86_64-apple-darwin/debug/libopentake_node.dylib
+  Mach-O 64-bit dynamically linked shared library x86_64   # 156,978,608 B
+$ node scripts/route-b/search/arch-capability.mjs \
+    --addon target/x86_64-apple-darwin/debug/libopentake_node.dylib --static-only --json
+  expectedBackend: "tract", binaryArch: "x64", staticOk: true,
+  hasOrtLinkage: false, linkedLibraries: [AudioUnit, CoreAudio, QuartzCore, Metal, libSystem, ...]
+```
+
+`otool -L` confirms the x64 artifact has **no** `onnxruntime` dependency.
+`arch-capability.mjs` is the per-arch capability-metadata check: it loads the
+addon and reports the live capability when the binary arch matches the process,
+otherwise it prints the static backend/ORT-linkage evidence used above;
+`--out PATH` writes that JSON for packaging alongside each native artifact. Live
+arm64 result on the current tree:
+`binaryArch: "arm64", expectedBackend: "ort-native", staticOk: true,
+capability: {installed: true, backend: "ort-native", visualAvailable: true},
+capOk: true`. The full real arm64 suite was re-run after the target-matrix
+change: **4/4 pass** (`text red 0.15864377`, `image red 1.0000215`,
+`video red-video 0.9938898`), confirming the arm64 ORT path was not broken.
+
+Windows: the same `TractEmbedder` implementation is selected by the Cargo cfg
+matrix and compiles through the Windows target in CI
+(`scripts/route-b/platform/build-windows.sh`, `route-b-platform.yml`); this host
+has no Windows toolchain, so no local Windows build was recorded. The tract
+backend itself is validated with real pinned assets above.
+
+Host: `plugins/opentake-studio-route-b/index.js` already reports the addon's
+capability (`backend`, `visualAvailable`, `detail`) rather than assuming ORT, so
+an x64 package will report `tract`/honest availability. The remaining packaging
+step is to build and copy the per-arch `opentake_engine_v*.node` artifacts
+(darwin-x64/win32-x64/linux-x64) from the target-specific cargo builds; the
+`darwin-arm64` artifact remains ORT and was re-verified after the matrix change.

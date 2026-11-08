@@ -1,9 +1,9 @@
 # Native editor body prototype (Route B)
 
-Status: bounded native-mount prototype, 2026-11-08, branch
-`feat/dsh-rust-engine`. **Not wired into the active DSH shell.** The working
-iframe editor body remains unchanged and is still the default; this directory is
-the evidence and integration source for the next step.
+Status: **wired as an optional native preview** in the DSH shell, 2026-11-08,
+branch `feat/dsh-rust-engine`. The iframe editor remains the default and the
+fallback; the shell exposes a toggle that lazily imports the served native
+bundle, mounts it in a ShadowRoot and disposes it on switch/unmount.
 
 ## What this is
 
@@ -35,7 +35,10 @@ Bounded milestone implemented:
 | `web/src/native/components.js` | React view (createElement, no JSX/import of React) |
 | `web/src/native/mount.js` | ShadowRoot + CSS + React root mount/unmount contract |
 | `web/src/native/index.js` | Public source barrel |
-| `plugins/.../native-editor/entry.js` | Source entry for the future client bundle; owns AbortController |
+| `web/src/native/browser-entry.js` | Bundled entry; exports `mountNative` |
+| `plugins/.../native-editor/build-bundle.mjs` | Vite library build for the served artifact |
+| `plugins/.../native-editor/entry.js` | Source entry; owns AbortController |
+| `plugins/.../web/native-editor/native-editor.js` | Served self-contained bundle (React/ReactDOM included) |
 | `plugins/.../native-editor/preview.html` | Browser harness with real React 18 UMD + mocked engine fetch |
 | `plugins/.../native-editor/preview.js` | Harness mock routes and mount call |
 | `plugins/.../native-editor/test/native-editor.test.mjs` | Browser-free node:test contract |
@@ -46,9 +49,34 @@ Bounded milestone implemented:
 node --test plugins/opentake-studio-route-b/native-editor/test/native-editor.test.mjs
 ```
 
-Current result: 9 tests pass (IPC routes/payloads, errors, store lifecycle,
+Current result: 10 tests pass (IPC routes/payloads, errors, store lifecycle,
 move/undo, failure retention, locale, CSS isolation, mount/unmount, entry abort,
-defensive DTO helpers).
+defensive DTO helpers, served bundle production contract).
+
+```bash
+node --test plugins/opentake-studio-route-b/test/ui-mount.test.mjs
+```
+
+The DSH shell harness now has 11 passing tests, including the native/iframe
+toggle, default iframe body and native host presence, dictionary parity and
+bundle URL.
+
+## Bundle build and serving
+
+```bash
+node plugins/opentake-studio-route-b/native-editor/build-bundle.mjs
+```
+
+Output: `plugins/opentake-studio-route-b/web/native-editor/native-editor.js`
+(ES module, React 18 + ReactDOM bundled, production build, ~230 KB / ~62 KB
+gzip). The existing Host static route serves it as:
+
+```
+/opentake-studio-route-b/app/native-editor/native-editor.js
+```
+
+`web/native-editor/**` is explicitly included in the package `files`. No package
+export is needed because the shell loads it as a same-origin static ESM file.
 
 ## Browser harness
 
@@ -70,49 +98,62 @@ Headless proof used Chrome 157 at 1280×800:
 - `/tmp/native-editor-harness.png` (home)
 - `/tmp/native-editor-editor.png` (media + preview + timeline)
 
-Both render inside the ShadowRoot. This proves the React mount/CSS/layout path;
-it does not prove live DSH integration because that requires the shared shell
-edit and a real Host route.
+Both render inside the ShadowRoot. This harness mocks the engine fetch; the live
+DSH integration below uses the real Host routes.
 
-## Integration patch (not applied)
+## Shell integration (applied)
 
-`client.js` and package exports were **not edited**. The iframe fallback stays
-intact. A future integration needs a deliberate shared-file change:
+`plugins/opentake-studio-route-b/ui/client.js` now:
 
-1. **Bundle source with external React.** Build `native-editor/entry.js` +
-   `web/src/native/**` into a single client artifact with React externalized
-   (React from the DSH module table) and a ReactDOM-client implementation
-   available. The current DSH client artifact format does not bundle arbitrary
-   relative ES modules at runtime.
-2. **Package the artifact.** Add the built native artifact (and only the
-   runtime files, not the whole `web/src`) to the plugin `files`; add an
-   explicit export only if the client loads it as a second artifact.
-3. **Mount through the existing client shell.** Add an explicit native-preview
-   action (or feature flag) in `client.js`:
-   - keep the iframe as default/fallback;
-   - lazily create a host element in the slot;
-   - call `createNativeEditorController({host, React, ReactDOM, base, locale, theme})`;
-   - on toggle/unmount call `controller.dispose()` and restore the iframe;
-   - pass `ctx.locale` and theme/token changes into the native store; do not
-     write `documentElement.lang` or global styles.
-4. **Live verification:** point the client at the real plugin prefix, exercise
-   new/open + media + timeline selection/move + preview against live
-   `/engine/*`, then compare with the iframe before switching the default.
+- keeps the iframe mounted by default (`data-otn-editor="iframe"`);
+- renders a hidden native host next to it (`data-otn-editor="native"`);
+- exposes a `data-otn-action="toggle-mode"` button (label “原生预览” / “Iframe
+  编辑器”) that switches modes without unmounting the iframe;
+- lazily imports the served bundle and calls `mountNative({host, base, locale,
+  theme})`; the controller is disposed on mode switch, native retry, or panel
+  unmount;
+- shows `data-otn-native-state="loading|error"` and a native retry action;
+- passes the current DSH document language as the native locale and reads an
+  optional `data-theme` marker; theme tokens remain inherited from DSH.
 
-The source entry already isolates the client signal:
+The bundle re-exports `mountNative`; it creates its own engine client and
+`AbortController`, so switching back to iframe aborts in-flight `/engine`
+requests and unmounts React/ShadowRoot resources.
 
-```js
-const controller = createNativeEditorController({
-  host,
-  React,
-  ReactDOM,
-  base: '/opentake-studio-route-b',
-  locale: ctx.locale,
-  theme: 'system',
-});
-// later
-controller.dispose();
-```
+## Live CDP verification
+
+Verified against a temporary DSH web profile on branch `feat/dsh-rust-engine`
+(authenticated URL via `/connect?token=...`, headless Chrome 157, CDP on
+127.0.0.1:9444):
+
+- Opened the `OpenTake（原生）` panel; engine status showed ready.
+- Clicked `原生预览`: ShadowRoot mounted (`children=2`, style + React root),
+  no `process is not defined` after the production `NODE_ENV` define.
+- Home rendered (engine status, project path, new/open, media count).
+- Created/opened a project and clicked `编辑器`: media card, one timeline track
+  and one clip rendered.
+- Selected a clip and clicked `右移`: engine timeline `startFrame` changed
+  0 → 1 and the clip's timeline style changed; `undo`/`redo` actions exist.
+- Preview `<img>` loaded `/engine/preview/frame?frame=1...` with
+  `complete=true`, `naturalWidth=1280`, `naturalHeight=720`; the route returned
+  `200 image/png` (177,515 bytes) and the color-bar image rendered.
+- Toggled back to `Iframe 编辑器`: iframe display `block`, native host `none`,
+  ShadowRoot children `0`; toggled native again and remounted cleanly.
+- Only DSH's pre-existing `Failed to apply window size` console message
+  appeared; no native-editor exceptions.
+- Screenshots: `/tmp/native-editor-live-home.png`,
+  `/tmp/native-editor-live4.png`, plus `/tmp/live-preview.png`.
+
+## Remaining integration notes
+
+- React/ReactDOM are bundled (not externalized) in the served artifact, so the
+  shell does not depend on a second React module-table entry.
+- The toggle is opt-in; iframe remains default until the native milestone is
+  accepted. Do not switch the default without a follow-up.
+- DSH theme changes are inherited through tokens; there is no explicit live
+  locale/theme subscription beyond the value read at mount time. Remount the
+  native preview after changing language/theme until that adapter lands.
+- `/engine/asset` remains an absolute-path/no-Range prototype route.
 
 ## Tauri shim scoping
 
@@ -137,21 +178,20 @@ shim and asset/dialog/event behavior are untouched.
 - The existing iframe remains the only path that currently renders the complete
   working editor.
 
-## Blockers before editing shared files
+## Remaining blockers / follow-ups
 
-- **Client build/ReactDOM:** need a client-bundle build that externalizes React
-  and supplies `react-dom/client`; current client manifest only documents
-  `require('react')`.
-- **DSH lifecycle/locales:** need live `ctx.locale`/theme propagation and slot
-  unmount semantics verified in the Web GUI.
+- **Feature parity:** bounded native shell is not the full editor; keep iframe as
+  default until the native milestone is explicitly accepted.
+- **Locale/theme reactivity:** the native store receives the document language
+  and optional theme marker at mount; a live DSH locale/theme subscription is
+  not implemented, so remount after changing language or theme.
 - **Asset route:** `/engine/asset` currently accepts an absolute path and has no
-  Range support; native thumbnails/video would inherit that prototype-only
-  security gap.
-- **Event model:** no push channel; this prototype polls. The full app's
-  timeline/media event behavior is not ported.
-- **Feature parity:** bounded native shell is not the full editor; do not switch
-  the default until the milestone is explicitly accepted and the iframe remains
-  available.
-- **Package wiring:** adding the native entry/artifact to `package.json`
-  exports/files and changing `client.js` is a shared-file step and needs the
-  Lead's approval; not done here.
+  Range support; native thumbnails/video inherit that prototype-only security
+  gap.
+- **Event model:** no push channel; the native store polls/refreshes rather than
+  using a real timeline/media event stream.
+- **Bundle maintenance:** `web/native-editor/native-editor.js` is generated by
+  `build-bundle.mjs`; rebuild it whenever `web/src/native/**` changes. The bundle
+  is included in `files` via `web/**` and the explicit `web/native-editor/**`.
+- **Default switch:** changing the iframe default to native remains a product
+  decision; the toggle already leaves the fallback intact.

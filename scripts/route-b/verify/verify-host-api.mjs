@@ -538,33 +538,32 @@ try {
     return 'xmeml + edl';
   });
 
-  await checkAsync('search_query: text fallback works, visual search stays gated', async () => {
-    const response = await invoke('search_query', { query: 'clip' });
-    assert.equal(response.status, 200, response.text);
-    assert.ok(Array.isArray(response.json.files));
-    assert.ok(response.json.files.some((hit) => hit.mediaId === importedIds.video), JSON.stringify(response.json));
-    // SigLIP2 visual search is advertised but gated when assets/backend are
-    // absent; the Host must not fabricate visual Moments in that state.
-    assert.equal(response.json.visualAvailable, false);
-    assert.deepEqual(response.json.moments ?? [], []);
+  await checkAsync('Host real SigLIP2 search: status/index/query/image query', async () => {
     const model = await invoke('search_model_status');
-    assert.match(model.json.model, /siglip2|route-b-text-search/);
-    // If the pinned assets are installed and checksum-valid but the Host still
-    // reports the model as unavailable, that is a stale Host gate, not a model
-    // problem; surface it as a warning so it cannot hide behind a PASS.
-    const modelReceipt = path.join(os.homedir(), '.dsh/opentake/models/siglip2-base-patch16-256-v2/manifest.json');
-    if (fs.existsSync(modelReceipt) && model.json.visualAvailable !== true) {
-      warn('Host search gate is stale after the model install', 'pinned model + receipts exist; addon searchConfigure reports installed/visualAvailable, but the Host still returns model_not_installed');
-    } else {
-      assert.equal(model.json.visualAvailable, false);
-      assert.ok(['model_not_installed', 'visual_unavailable'].includes(model.json.visualErrorDetail ?? model.json.reason));
-    }
-    return `${response.json.files.length} file hit(s); visual ${model.json.visualAvailable === true ? 'available' : 'gated (stale Host gate)'}`;
+    assert.equal(model.status, 200, model.text);
+    assert.equal(model.json.visualAvailable, true, `model not available in Host: ${model.text}`);
+    assert.equal(model.json.installed, true);
+    assert.equal(model.json.backend, 'ort-native');
+    const indexStatus = await invoke('search_index_status');
+    assert.equal(indexStatus.status, 200, indexStatus.text);
+    assert.equal(indexStatus.json.visualAvailable, true);
+    const indexed = await invoke('search_index_start');
+    assert.equal(indexed.status, 200, indexed.text);
+    assert.equal(indexed.json.visualAvailable, true);
+    assert.ok(indexed.json.indexed > 0, `no visual assets indexed: ${indexed.text}`);
+    const text = await invoke('search_query', { query: 'clip' });
+    assert.equal(text.status, 200, text.text);
+    assert.equal(text.json.visualAvailable, true);
+    assert.ok(Array.isArray(text.json.moments), 'Host search returned no moments array');
+    // Image query: use the imported still and require a same-media self-match.
+    const image = await invoke('search_query_image', { imageBase64: fs.readFileSync(imageFile).toString('base64') });
+    assert.equal(image.status, 200, image.text);
+    assert.equal(image.json.visualAvailable, true);
+    const topImageMedia = image.json.moments?.[0]?.mediaId;
+    assert.equal(topImageMedia, importedIds.image, `image self-match was ${topImageMedia}, expected ${importedIds.image}`);
+    return `model=${model.json.backend}; indexed=${indexed.json.indexed}; text moments=${text.json.moments.length}; image top=${topImageMedia}`;
   });
 
-  // -------------------------------------------------------------------------
-  // ASR + captions (local mock provider)
-  // -------------------------------------------------------------------------
   const asrUrl = await startMockServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/asr') {
       await readBody(req);
@@ -739,6 +738,50 @@ try {
     assert.ok(Array.isArray(response.json.categories));
     assert.ok(typeof response.json.totalBytes === 'number');
     return `${response.json.totalBytes} bytes`;
+  });
+
+  await checkAsync('Host production HDR10 export: true PQ output + SDR request rejected', async () => {
+    const hdrSource = process.env.OPENTAKE_HDR_SOURCE ?? '/tmp/route-b-hdr10/hdr10_true.mp4';
+    const sdrSource = process.env.OPENTAKE_SDR_SOURCE ?? '/tmp/route-b-hdr10/hdr10_sdr_fallback.mp4';
+    if (!fs.existsSync(hdrSource) || !fs.existsSync(sdrSource)) return 'SKIP (HDR fixtures missing)';
+    const makeProject = async (name, source) => {
+      const dir = path.join(tempRoot, name);
+      assert.equal((await invoke('project_new', { path: dir })).status, 200);
+      const imported = await jsonRequest('POST', `${PREFIX}/engine/import-media`, { body: JSON.stringify({ paths: [source] }) });
+      assert.equal(imported.status, 200, imported.text);
+      const item = imported.json.items.find((entry) => entry.path === source) ?? imported.json.items[0];
+      assert.ok(item, `import failed for ${source}`);
+      const inserted = await invoke('edit_apply', { command: { type: 'insertTrack', kind: 'video', at: null } });
+      assert.equal(inserted.status, 200, inserted.text);
+      const snapshot = await jsonRequest('GET', `${PREFIX}/engine/timeline`);
+      const trackIndex = snapshot.json.timeline.tracks.findIndex((track) => track.type === 'video');
+      const placed = await invoke('edit_apply', {
+        command: { type: 'addClips', entries: [{
+          mediaRef: item.id, mediaType: 'video', sourceClipType: 'video', trackIndex,
+          startFrame: 0, durationFrames: 10, trimStartFrame: 0, trimEndFrame: 0,
+          hasAudio: false, addLinkedAudio: false,
+        }] },
+      });
+      assert.equal(placed.status, 200, placed.text);
+      return { dir, item };
+    };
+    const hdr = await makeProject('hdr-project', hdrSource);
+    const out = path.join(tempRoot, 'hdr-host-export.mp4');
+    const exported = await invoke('export_video', { operationId: 'verify-hdr-host', req: { outPath: out, codec: 'h265', quality: '720p', hdr10: true } });
+    assert.equal(exported.status, 200, exported.text);
+    const probe = ffprobe(out);
+    const video = probe.streams.find((stream) => stream.codec_type === 'video');
+    assert.equal(video.codec_name, 'hevc');
+    assert.equal(video.profile, 'Main 10');
+    assert.equal(video.pix_fmt, 'yuv420p10le');
+    assert.equal(video.color_primaries, 'bt2020');
+    assert.equal(video.color_transfer, 'smpte2084');
+    assert.equal(video.color_space, 'bt2020nc');
+    const sdr = await makeProject('sdr-hdr-request', sdrSource);
+    const rejected = await invoke('export_video', { operationId: 'verify-hdr-sdr-negative', req: { outPath: path.join(tempRoot, 'sdr-requested-hdr10.mp4'), codec: 'h265', quality: '720p', hdr10: true } });
+    assert.equal(rejected.status, 400, `SDR source HDR request was not rejected: ${rejected.text}`);
+    assert.match(rejected.text, /requires HDR sources/);
+    return `HDR ${video.profile}/${video.pix_fmt} ${video.color_primaries}/${video.color_transfer}; SDR rejected`;
   });
 
   noteEnd: {

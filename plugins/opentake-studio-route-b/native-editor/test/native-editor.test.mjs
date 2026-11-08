@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { createEngineClient, EngineRequestError } from '../../../../web/src/native/ipc.js';
 import { createTranslator } from '../../../../web/src/native/locale.js';
@@ -338,4 +341,17 @@ test('media/tracks helpers tolerate completed and empty snapshots', () => {
   assert.deepEqual(mediaItems({ items: null }), []);
   assert.deepEqual(timelineTracks({ timeline: { tracks: null } }), []);
   assert.equal(totalFrames({ timeline: { tracks: [] } }), 1);
+});
+
+test('served native bundle exists and is a production self-contained module', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const bundlePath = path.resolve(here, '../../web/native-editor/native-editor.js');
+  assert.equal(fs.existsSync(bundlePath), true, 'run build-bundle.mjs before this test');
+  const source = fs.readFileSync(bundlePath, 'utf8');
+  assert.ok(source.length > 200_000, 'bundle includes React and ReactDOM');
+  assert.match(source, /mountNative/);
+  assert.match(source, /createRoot/);
+  assert.doesNotMatch(source, /process\.env/);
+  assert.doesNotMatch(source, /__TAURI_INTERNALS__/);
+  assert.doesNotMatch(source, /@tauri-apps/);
 });

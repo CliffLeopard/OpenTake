@@ -17,6 +17,7 @@ import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { templateToDocument, validateTemplateParams } from './lib/motion-templates.js';
 import { ProviderError, createProviderClient } from './lib/providers.js';
+import { installModel } from './lib/search/install-model.mjs';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,7 +32,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v39.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v40.node');
 }
 
 function loadAddon() {
@@ -1184,6 +1185,7 @@ export function apply(ctx) {
             typeof req.quality === 'string' ? req.quality : '1080p',
             req.bitDepth === 10 ? 10 : null,
             req.duckMusic === true,
+            req.hdr10 === true,
           ),
         );
       }
@@ -1372,6 +1374,7 @@ export function apply(ctx) {
         typeof req.rangeEndFrame === 'number' ? req.rangeEndFrame : null,
         req.bitDepth === 10 ? 10 : null,
         req.duckMusic === true,
+        req.hdr10 === true,
       ));
       job.total = start.total;
       while (job.done < job.total) {
@@ -1745,7 +1748,7 @@ export function apply(ctx) {
 
   registerTool(
     'opentake_route_b_export_video',
-    'Render every timeline frame, encode H.264/H.265/ProRes, and mux the linear audio mixdown.',
+    'Render every timeline frame, encode H.264/H.265/ProRes, and mux the linear audio mixdown. Set hdr10 for the true HDR10 path (requires HDR PQ sources; SDR/text/transformed layers and audio are rejected rather than mislabelled).',
     {
       type: 'object',
       properties: {
@@ -1754,13 +1757,14 @@ export function apply(ctx) {
         quality: { type: 'string', enum: ['720p', '1080p', '4k'] },
         bitDepth: { type: 'number', enum: [8, 10] },
         duckMusic: { type: 'boolean' },
+        hdr10: { type: 'boolean' },
       },
       required: ['outPath'],
       additionalProperties: false,
     },
     async (args) => {
       const value = JSON.parse(
-        ensureEngine().exportVideo(args.outPath, args.codec ?? 'h264', args.quality ?? '1080p', args.bitDepth === 10 ? 10 : null, args.duckMusic === true),
+        ensureEngine().exportVideo(args.outPath, args.codec ?? 'h264', args.quality ?? '1080p', args.bitDepth === 10 ? 10 : null, args.duckMusic === true, args.hdr10 === true),
       );
       return { text: JSON.stringify(value), data: value };
     },
@@ -1905,6 +1909,26 @@ export function apply(ctx) {
     async (args) => {
       const value = await generateImage(args.prompt, args.size);
       return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_install_search_model',
+    'Verify/stage the SigLIP2 model assets in the persistent models dir; optionally download missing pinned files.',
+    {
+      type: 'object',
+      properties: { download: { type: 'boolean' }, wait: { type: 'boolean' } },
+      additionalProperties: false,
+    },
+    async (args) => {
+      const report = await installModel(SEARCH_MODELS_DIR, {
+        download: args.download === true,
+        wait: args.wait === true,
+        timeoutSeconds: 1800,
+      });
+      state.searchCapability = null;
+      state.searchAttempted = false;
+      return { text: JSON.stringify(report), data: report };
     },
   );
 

@@ -11,6 +11,7 @@ search.
 | `probe-search.mjs` | Build + run the dependency-free Rust `search-probe` binary and assert the deterministic text fallback and explicit image-query `visual_unavailable` contract. Runs `cargo test --offline`. |
 | `search.test.mjs` | `node:test` wrapper for the above; run `node --test scripts/route-b/search/search.test.mjs`. |
 | `benchmark-search.mjs` | Synthetic 2,000-asset fallback benchmark through the Rust probe (no model). |
+| `arch-capability.mjs` | Per-arch addon backend check: loads the addon and reports live capability when its arch matches, otherwise prints static backend/ORT-linkage evidence (expected `ort-native` on macOS arm64, `tract` elsewhere). `--addon`, `--models-dir`, `--static-only`, `--json`, `--out PATH` (package metadata). |
 
 Environment:
 

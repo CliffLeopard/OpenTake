@@ -15,7 +15,6 @@ napi-derive = "2"
 opentake-core = { workspace = true }
 opentake-domain = { workspace = true }
 opentake-ops = { workspace = true }
-opentake-media = { workspace = true, features = ["ort-backend"] }
 opentake-render = { workspace = true }
 opentake-project = { workspace = true }
 base64 = "0.22"
@@ -27,6 +26,15 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = "2"
 cpal = "0.15.3"
+
+# Search backend is target-selected: macOS arm64 keeps the native ORT build
+# (fast CoreML/CPU path), every other target uses the pure-Rust tract backend so
+# x64/Windows addons never link or load a native ONNX Runtime dylib.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+opentake-media = { workspace = true, features = ["ort-backend"] }
+
+[target.'cfg(not(all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+opentake-media = { workspace = true, features = ["tract-backend"] }
 
 [build-dependencies]
 napi-build = "2"

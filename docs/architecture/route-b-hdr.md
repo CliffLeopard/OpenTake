@@ -1,11 +1,13 @@
 # Route B HDR10 linear compositor + export contract
 
-Status: isolated true-HDR10 path implemented, macOS arm64 verified, 2026-11-08,
-branch `feat/dsh-rust-engine`. This phase introduces an RGBA16F scene-linear
-frame contract and a reference linear compositor in `crates/opentake-render`,
-plus a real PQ/BT.2020 HDR10 writer in `crates/opentake-export-pro` with ffprobe
-evidence. It does **not** claim the shipped wgpu compositor or shared encoder is
-HDR yet — see the claim matrix below.
+Status: isolated true-HDR10 path **and production addon HDR export path**
+implemented, macOS arm64 verified, 2026-11-08, branch `feat/dsh-rust-engine`.
+This phase introduces an RGBA16F scene-linear frame contract and a reference
+linear compositor in `crates/opentake-render`, a real PQ/BT.2020 HDR10 writer in
+`crates/opentake-export-pro`, and a supported-subset production HDR10 export
+through the Route B addon/Host (`hdr10` option). The shipped wgpu compositor,
+preview path and shared `opentake_media::ExportPreset` remain RGBA8/SDR — see the
+claim matrix and boundary sections below.
 
 ## 1. Claim matrix (read this first)
 
@@ -16,14 +18,18 @@ HDR yet — see the claim matrix below.
 | `LinearFrame::to_sdr_rgba8` fallback | Implemented + tested | No — explicit BT.709/203-nit clip fallback, `tone_mapped = false` |
 | Production wgpu `Compositor` / `RenderLoop` | Unchanged | **No** — still `Rgba8Unorm` SDR; HDR sources are still tone-mapped at decode in `opentake-media::color` |
 | `opentake-export-pro` HDR10 writer (linear → PQ/BT.2020 → libx265 Main10 + metadata) | Implemented + real ffprobe/pixel evidence | **Yes** for the frames handed to it |
+| Addon production HDR path (`exportBegin`/`exportVideo(..., hdr10=true)`) | Implemented + real `.opentake` project → addon export → ffprobe evidence | **Yes for the supported subset** (HDR PQ video-only, untransformed layers, no audio) |
+| Host `hdr10` option (`export_video`, chunked `/engine/export`, agent export tool) | Implemented pass-through to the addon | **Yes** (forwards to addon; SDR default preserved) |
 | `opentake-export-pro` SDR 10-bit encoder (RGBA8 input, HDR tags) | Pre-existing policy path | No — 10-bit precision and metadata only; SDR pixels |
-| `opentake_media::ExportPreset` / shared encoder / addon | Not modified (coordination required) | No claim |
+| Shared `opentake_media::ExportPreset` / `VideoEncoder` | Not modified (coordination required) | No HDR claim |
 | HDR10+ / Dolby Vision / HLG output | Not implemented | No |
 | HDR hardware display / OS EDR verification | Not performed | Unknown |
 
-The honest boundary: **the isolated linear compositor + HDR10 writer produce a
-true HDR10 bitstream; the app's production compositor still produces RGBA8 SDR
-frames, so Route B's normal preview/export path is not HDR yet.**
+The honest boundary: **the supported-subset addon/Host `hdr10` export writes a
+true HDR10 bitstream from HDR PQ sources; the wgpu preview compositor and the
+shared encoder path are still RGBA8 SDR, so preview and ordinary SDR exports are
+not HDR.** SDR timelines or timelines with unsupported layers are rejected by
+the HDR preflight, never silently tagged HDR10.
 
 ## 2. What was added
 
@@ -46,9 +52,13 @@ frames, so Route B's normal preview/export path is not HDR yet.**
 - `Hdr10Metadata` / `MasteringDisplay`: BT.2020/PQ policy with canonical
   mastering-display token, `max_cll`/`max_fall`, pixel format
   `yuv420p10le`, profile `main10`, and the x265 params payload.
-- 6 unit tests: PQ round-trip/non-gamma shape, linear highlight preservation,
+- `Hdr10OutputSpec` / `Hdr10Writer`: production incremental writer (raw
+  `yuv420p10le` stdin → libx265 Main10 + HDR10 VUI/mastering/MaxCLL/MaxFALL),
+  with abort/finish and explicit frame byte contract.
+- 7 unit tests: PQ round-trip/non-gamma shape, linear highlight preservation,
   compositor alpha/background behavior, synthetic PQ-frame linear compositing,
-  SDR fallback clipping, metadata validation and frame validation.
+  SDR fallback clipping, metadata validation/frame validation, and writer
+  argument/Q10 conversion contract.
 
 ### 2.2 `crates/opentake-export-pro/src/hdr10.rs`
 
@@ -74,7 +84,46 @@ frames, so Route B's normal preview/export path is not HDR yet.**
   argument/tag/metadata assertions, frame validation, synthetic determinism,
   SDR-fallback clipping.
 
-### 2.3 CLI and scripts
+### 2.3 Production addon HDR path (`crates/opentake-node`)
+
+The addon now exposes the explicit option as the final optional argument:
+
+```text
+exportBegin(outPath, codec, quality, rangeStart, rangeEnd, bitDepth, duckMusic, hdr10)
+exportVideo(outPath, codec, quality, bitDepth, duckMusic, hdr10)
+```
+
+When `hdr10 === true`:
+
+1. **Preflight (`validate_hdr10_timeline`)** rejects false-HDR before spawning an
+   encoder. The selected range must contain at least one HDR PQ video layer, and
+   every visible visual layer must be a video with BT.2020/PQ color metadata,
+   identity transform/crop, no masks/effects/color grade/LUT/chroma key/
+   stabilization/transition/reverse/nested sequence. SDR, HLG, text/image and
+   transformed layers are rejected with a descriptive error.
+2. Codec must be `h265`; audio is currently rejected (the HDR path has no audio
+   mixdown yet) rather than silently dropping it.
+3. The per-frame path decodes each supported HDR source directly with ffmpeg to
+   16-bit RGBA PQ code values, **bypassing `opentake_media::decode`'s SDR
+   tone-map**, linearises with the PQ EOTF, composites full-frame layers with
+   `LinearCompositor`, and pushes the linear frame into `Hdr10Writer`.
+4. `exportStep` streams chunks through the writer; `exportFinish` returns
+   `{hdr10:true, metadata:{primaries,transfer,matrix,maxCll,maxFall,masteringDisplay}}`;
+   `exportCancel` aborts the ffmpeg child and removes the partial file. SDR
+   export is unchanged (`hdr10:false`/omitted).
+
+Host call sites (approved, no React dialog rebuild):
+
+- `plugins/opentake-studio-route-b/index.js` `case 'export_video'` forwards
+  `req.hdr10 === true` as the final addon argument;
+- the chunked `/engine/export` handler forwards it to `exportBegin`;
+- the agent `opentake_route_b_export_video` tool schema accepts `hdr10` and
+  forwards it. SDR remains the default.
+
+The production HDR path is intentionally narrower than the SDR path (see §7).
+Its ffprobe evidence is in §4.1.
+
+### 2.4 CLI and scripts
 
 - `export-pro hdr10-encode`: synthetic linear frames → true HDR10 MP4; prints a
   JSON report with metadata and x265 params.
@@ -187,14 +236,75 @@ Tests:
 
 ```text
 cargo test -p opentake-render --lib --offline
-  test result: ok. 70 passed; 0 failed  (6 HDR tests included)
+  test result: ok. 71 passed; 0 failed  (7 HDR tests included)
 
 cargo test --offline --manifest-path crates/opentake-export-pro/Cargo.toml --lib
   test result: ok. 32 passed; 0 failed
 
 cargo check -p opentake-render --offline
-  Finished (macOS arm64; only pre-existing `block` future-incompat warning)
+cargo check -p opentake-node --offline
+  Finished (macOS arm64; warnings are pre-existing)
+
+scripts/route-b/export/hdr10-evidence.sh          # isolated writer proof
+scripts/route-b/export/hdr10-production-evidence.sh  # addon production proof
+  both: PASS
 ```
+
+## 4.1 Production addon evidence (2026-11-08, macOS arm64)
+
+Command (builds the addon and runs the real project/import/export path):
+
+```bash
+scripts/route-b/export/hdr10-production-evidence.sh /tmp/route-b-hdr10-production
+```
+
+Pipeline: create a real `.opentake` project → addon `importMedia` of a PQ/BT.2020
+HDR MP4 → `insertTrack`/`addClips` → addon `exportBegin/Step/Finish` with
+`hdr10=true` → verify with ffprobe.
+
+Produced `production_hdr10.mp4` (1920x1080, 60 frames, 2.0 s):
+
+```text
+codec_name=hevc
+profile=Main 10
+pix_fmt=yuv420p10le
+color_range=tv
+color_space=bt2020nc
+color_transfer=smpte2084
+color_primaries=bt2020
+frame HDR side-data:
+  Mastering display metadata (BT.2020/D65, L(10000000,1))
+  Content light level metadata (max_content=1000, max_average=400)
+```
+
+Measured first-frame Y codes: `[195,571,720,852]` vs expected PQ
+`[195,573,723,855]` (deltas ≤3, pass). The addon export summary reports
+`hdr10:true` plus the same metadata.
+
+SDR regression in the same project (`hdr10=false`): `production_sdr10.mp4` is
+HEVC Main10 `yuv420p10le` but **bt709** with **no HDR side-data**; its first-frame
+Y codes are the existing decode tone-mapped result `[153,851,933,933]`
+(non-degenerate BT.709; not PQ HDR10).
+
+False-HDR guard: an SDR-only project with `hdr10=true` is rejected at
+`exportBegin` with `HDR10 export requires HDR sources; sdr_source is SDR`
+(no file/encoder is created). This is the explicit no-false-HDR check.
+
+SHA-256 from the latest run:
+
+```text
+7f744c1f8602d1ab41d2d8150463c7a54bbf07187f2e0f32cc530e5a27ab1fca  production_hdr10.mp4
+963671903ddbbb5481378850b53c50da9b654a256f4a4b126aafd56e1ce8e019  production_sdr10.mp4
+```
+
+The isolated export-pro evidence (§4) remains the writer-only proof; §4.1 is the
+production addon path proof.
+
+The independent verifier `scripts/route-b/verify/verify-hdr-production.mjs` was
+also run against this built addon and passes: HDR export tags are Main10 /
+yuv420p10le / bt2020 / smpte2084 / bt2020nc, SDR is refused with
+`HDR10 export requires HDR sources; ... is SDR`, and H.264 is refused with
+`HDR10 export requires codec h265 (Main10)`.
 
 ## 5. wgpu backend feature change (coordination with docs-writer)
 
@@ -230,46 +340,62 @@ Not touched (explicitly out of this phase/coordination required):
 - `src-tauri/src/render.rs` / `src-tauri/src/export.rs` and the wgpu
   `Compositor`: still RGBA8 SDR. HDR source decode still tone-maps in
   `opentake-media::color`.
-- `plugins/opentake-studio-route-b/**`: Route B addon/Host unchanged; no HDR
-  export option or preview path is exposed yet.
+- `plugins/opentake-studio-route-b/index.js`: **updated with Lead approval** to
+  pass `req.hdr10` through `export_video`, chunked `/engine/export`, and the
+  `opentake_route_b_export_video` agent tool. The built React export dialog has no
+  HDR checkbox yet (separate web rebuild); API/tool callers can use it.
+- `src-tauri/src/{render,export}.rs` (desktop Tauri shell) and the wgpu
+  compositor: still RGBA8 SDR. The Route B production HDR path is addon-only.
 
-Required follow-up to make the app path truly HDR:
+Required follow-up to widen/consume the production HDR path:
 
-1. Migrate the wgpu compositor output to `Rgba16Float` (or an HDR-capable second
-   compositor) and composite layer textures in scene-linear space; keep the
-   existing RGBA8 path as the SDR fallback. Add GPU readback for RGBA16F.
-2. Stop tone-mapping HDR sources at decode for the HDR path; preserve source
-   primaries/transfer/mastering metadata (`MediaColorMetadata`) through the
-   render plan. SDR sources can be linearised or kept on the RGBA8 path.
-3. Wire linear frames to a shared HDR10 writer (port `export-pro::hdr10` into
-   `opentake-media`/export orchestration once approved), select Main10 +
-   metadata from the export settings, and keep the existing SDR/10-bit path as
-   the fallback.
+1. Migrate the wgpu compositor output to `Rgba16Float` (or add an HDR-capable
+   second compositor) and composite layer textures in scene-linear space; keep
+   the existing RGBA8 path as the SDR fallback. Add GPU readback for RGBA16F.
+2. Extend the addon HDR path beyond the supported subset: transformed/cropped
+   layers, text/image overlays, effects/grades/masks, nested sequences, audio
+   mixdown (currently rejected), and HLG sources. Or replace the CPU full-frame
+   compositor with the GPU linear compositor once (1) exists.
+3. Port the HDR10 writer into the shared `opentake_media` encoder/`ExportPreset`
+   for the desktop app once approved; keep the existing SDR/10-bit path as the
+   fallback.
 4. Auto-compute MaxCLL/MaxFALL (or accept them from settings) instead of the
    fixed reference values; add HDR10+ dynamic metadata and HLG policy if
    required.
 5. Verify on Windows/Linux (DX12/Vulkan/GLES), on an actual HDR display/EDR
    pipeline, and with third-party HDR players; current evidence is
    macOS arm64 software/file-level only.
-6. Add integration tests comparing linear compositor output against a reference
-   (e.g., known PQ patches) and add GPU/HDR decode fixtures.
+6. Add a React export-dialog HDR toggle and full Host integration tests; current
+   evidence drives the addon via Node and the Host pass-through is syntax-checked
+   only.
 
 ## 7. Limits of this phase
 
-- HDR claims are limited to the isolated linear frame/compositor/writer path and
-  the synthetic proofs above; the production compositor is still RGBA8 SDR.
-- The linear compositor supports full-frame source-over only (no transforms,
-  masks, effects, LUTs, or partial-frame layers yet). It is a contract/reference
-  implementation, not a replacement for the wgpu compositor.
+- The production addon HDR path is **supported-subset only**: HDR PQ video
+  layers with identity transform/crop, no masks/effects/grades/LUTs/chroma
+  key/stabilization/transitions/reverse/nested sequences, no text/image layers,
+  no audio mixdown, no HLG. Unsupported timelines are rejected, not exported.
+- The addon HDR path uses a **CPU full-frame linear compositor** and per-frame
+  ffmpeg HDR decode; it is correct and evidenced, not a performance path. The
+  wgpu compositor is still RGBA8 SDR and is not used for HDR.
+- HDR claims are limited to the supported production addon path and the isolated
+  linear/writer proofs. Preview and ordinary SDR exports remain SDR. The shared
+  `opentake_media::ExportPreset`/encoder and desktop Tauri export are unchanged.
+- Host support is pass-through: `export_video`, chunked `/engine/export`, and the
+  `opentake_route_b_export_video` agent tool accept `hdr10`; the built React
+  export dialog has no HDR checkbox yet.
 - SDR fallback is a hard clip at 203 cd/m² (by design, `tone_mapped = false`);
-  the existing decode-stage VideoToolbox/zscale policy is the perceptual
-  HDR→SDR route and is separate.
+  the existing decode-stage VideoToolbox/zscale policy is the perceptual HDR→SDR
+  route and is separate.
 - Mastering/MaxCLL/MaxFALL are fixed policy defaults; no content analysis.
 - ffprobe exposes mastering display/content-light metadata on the first frame,
   not stream side-data, for this MP4/HEVC/x265 build; some players may ignore it.
 - HLG, HDR10+, Dolby Vision, and OS/display-level HDR are out of scope.
 - The `hdr-policy` decision for an SDR compositor still means "decode tone-map +
   SDR10"; it must never be reported as HDR10 by the UI/export summary.
-- No source files outside `crates/opentake-render/**`,
-  `crates/opentake-export-pro/**`, `scripts/route-b/export/**`, and this document
-  were edited.
+- Evidence is macOS arm64 software/file-level; Windows/Linux and real HDR
+  displays remain unverified.
+- Source changes are confined to `crates/opentake-render/**`,
+  `crates/opentake-export-pro/**`, `crates/opentake-node/src/lib.rs` HDR regions,
+  `scripts/route-b/export/**`, the two approved Host call sites/tool schema, and
+  this document. Shared search/native-UI files and root Cargo were not edited.

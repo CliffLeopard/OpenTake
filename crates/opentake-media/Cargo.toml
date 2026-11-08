@@ -82,6 +82,9 @@ test-faults = []
 # DirectX/ONNX Runtime entry points. Other platforms keep the pinned native
 # ONNX Runtime backend. Both remain off in the default, fully-offline build.
 ort-backend = ["dep:ort", "dep:ort-tract", "dep:tract-onnx"]
+# ORT-free SigLIP2 inference through the pure-Rust tract engine (macOS x86_64,
+# Windows, Linux x64). Keeps the pinned ONNX graphs and fixed-shape binding.
+tract-backend = ["dep:tract-onnx"]
 # Real on-device transcription via whisper.cpp (compiles native C++ on enable).
 whisper-backend = ["dep:whisper-rs"]
 # Model weight download/verify/unzip (reqwest + zip + sha1). Off by default so
@@ -107,7 +110,8 @@ optional = true
 
 # Fixed-shape search encoders need input-fact binding, which ort-tract's ORT
 # compatibility API does not expose. Reuse the exact engine already in Cargo.lock.
-[target.'cfg(windows)'.dependencies.tract-onnx]
+# It is also the ORT-free backend for macOS x86_64 / Linux x64 / Windows.
+[dependencies.tract-onnx]
 version = "=0.22.3"
 optional = true
 

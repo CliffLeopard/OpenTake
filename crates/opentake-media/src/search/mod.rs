@@ -24,6 +24,9 @@ pub mod tokenizer;
 #[cfg(feature = "ort-backend")]
 pub mod ort_embedder;
 
+#[cfg(feature = "tract-backend")]
+pub mod tract_embedder;
+
 pub use embed_store::{AssetIndex, Header, Row};
 pub use embedder::{Embedder, EmbedderSpec};
 pub use frame_sampler::{SampledFrame, SamplerOptions};
@@ -33,6 +36,9 @@ pub use tokenizer::SiglipTokenizer;
 
 #[cfg(feature = "ort-backend")]
 pub use ort_embedder::{IoNames, OrtEmbedder};
+
+#[cfg(feature = "tract-backend")]
+pub use tract_embedder::{TractEmbedder, TractIoNames};
 
 #[cfg(test)]
 mod integration_tests {

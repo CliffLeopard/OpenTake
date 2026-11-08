@@ -20,6 +20,8 @@
 //! pipeline itself is migrated to `Rgba16Float`. See
 //! `docs/architecture/route-b-hdr.md` for the exact claim boundary.
 
+use std::io::Write;
+
 use half::f16;
 
 use crate::source::DecodedFrame;
@@ -449,6 +451,220 @@ impl Hdr10Metadata {
     }
 }
 
+/// Production HDR10 output spec used by the addon/export orchestration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hdr10OutputSpec {
+    pub out: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: i32,
+    pub crf: u8,
+    pub preset: String,
+    pub metadata: Hdr10Metadata,
+}
+
+impl Hdr10OutputSpec {
+    pub fn validate(&self) -> Result<(), HdrError> {
+        if self.out.trim().is_empty() {
+            return Err(HdrError::from("HDR10 output path is empty"));
+        }
+        if self.width < 2 || self.height < 2 {
+            return Err(HdrError::from("HDR10 width/height must be >= 2"));
+        }
+        if !self.width.is_multiple_of(2) || !self.height.is_multiple_of(2) {
+            return Err(HdrError::from(
+                "HDR10 yuv420p10le requires even width/height",
+            ));
+        }
+        if self.fps <= 0 {
+            return Err(HdrError::from("HDR10 fps must be positive"));
+        }
+        if self.crf > 51 {
+            return Err(HdrError::from("HDR10 crf must be <= 51"));
+        }
+        Ok(())
+    }
+
+    /// ffmpeg argv for raw `yuv420p10le` stdin -> H.265 Main10 HDR10.
+    pub fn encode_args(&self) -> Result<Vec<String>, HdrError> {
+        self.validate()?;
+        Ok(vec![
+            "-y".into(),
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-f".into(),
+            "rawvideo".into(),
+            "-pix_fmt".into(),
+            "yuv420p10le".into(),
+            "-s".into(),
+            format!("{}x{}", self.width, self.height),
+            "-r".into(),
+            self.fps.to_string(),
+            "-i".into(),
+            "-".into(),
+            "-c:v".into(),
+            "libx265".into(),
+            "-profile:v".into(),
+            "main10".into(),
+            "-pix_fmt".into(),
+            "yuv420p10le".into(),
+            "-preset".into(),
+            self.preset.clone(),
+            "-crf".into(),
+            self.crf.to_string(),
+            "-vf".into(),
+            "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc".into(),
+            "-x265-params".into(),
+            self.metadata.x265_params(),
+            "-color_primaries".into(),
+            "bt2020".into(),
+            "-color_trc".into(),
+            "smpte2084".into(),
+            "-colorspace".into(),
+            "bt2020nc".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            self.out.clone(),
+        ])
+    }
+
+    pub fn frame_bytes(&self) -> usize {
+        let y = self.width as usize * self.height as usize;
+        let chroma = (self.width as usize / 2) * (self.height as usize / 2);
+        (y + chroma * 2) * 2
+    }
+}
+
+/// Convert one linear RGBA16F frame to raw `yuv420p10le` bytes.
+pub fn linear_frame_to_yuv420p10le(frame: &LinearFrame) -> Result<Vec<u8>, HdrError> {
+    if frame.width() % 2 != 0 || frame.height() % 2 != 0 {
+        return Err(HdrError::from("HDR10 conversion requires even dimensions"));
+    }
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    let source = frame.to_f32();
+    let mut y_plane = vec![0_u16; width * height];
+    let mut u_plane = vec![0_u16; (width / 2) * (height / 2)];
+    let mut v_plane = vec![0_u16; (width / 2) * (height / 2)];
+    let pq = |linear: f32| pq_inverse_eotf(linear.clamp(0.0, 1.0));
+    let quant_y = |value: f32| (64.0 + value.clamp(0.0, 1.0) * 876.0).round() as u16;
+    let quant_c = |value: f32| (512.0 + value.clamp(-0.5, 0.5) * 896.0).round() as u16;
+    for py in 0..height {
+        for px in 0..width {
+            let base = (py * width + px) * 4;
+            let rgb = [pq(source[base]), pq(source[base + 1]), pq(source[base + 2])];
+            let luma = 0.262_7 * rgb[0] + 0.678_0 * rgb[1] + 0.059_3 * rgb[2];
+            y_plane[py * width + px] = quant_y(luma);
+            if px % 2 == 0 && py % 2 == 0 {
+                let mut cb = 0.0;
+                let mut cr = 0.0;
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let sbase = ((py + dy) * width + px + dx) * 4;
+                        let srgb = [
+                            pq(source[sbase]),
+                            pq(source[sbase + 1]),
+                            pq(source[sbase + 2]),
+                        ];
+                        let sy = 0.262_7 * srgb[0] + 0.678_0 * srgb[1] + 0.059_3 * srgb[2];
+                        cb += (srgb[2] - sy) / 1.881_4;
+                        cr += (srgb[0] - sy) / 1.474_6;
+                    }
+                }
+                u_plane[(py / 2) * (width / 2) + px / 2] = quant_c(cb / 4.0);
+                v_plane[(py / 2) * (width / 2) + px / 2] = quant_c(cr / 4.0);
+            }
+        }
+    }
+    let mut bytes = Vec::with_capacity((y_plane.len() + u_plane.len() + v_plane.len()) * 2);
+    for value in y_plane.iter().chain(u_plane.iter()).chain(v_plane.iter()) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+/// Incremental HDR10 ffmpeg writer: start once, push linear frames, finish.
+pub struct Hdr10Writer {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    spec: Hdr10OutputSpec,
+    written: u64,
+}
+
+impl Hdr10Writer {
+    pub fn start(spec: Hdr10OutputSpec) -> Result<Self, HdrError> {
+        let args = spec.encode_args()?;
+        let ffmpeg = std::env::var("OPENTAKE_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
+        let mut child = std::process::Command::new(&ffmpeg)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| HdrError::from(format!("spawn {ffmpeg}: {error}")))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| HdrError::from("ffmpeg stdin unavailable"))?;
+        Ok(Self {
+            child,
+            stdin,
+            spec,
+            written: 0,
+        })
+    }
+
+    pub fn write_frame(&mut self, frame: &LinearFrame) -> Result<(), HdrError> {
+        if frame.width() != self.spec.width || frame.height() != self.spec.height {
+            return Err(HdrError::from(format!(
+                "frame is {}x{}, expected {}x{}",
+                frame.width(),
+                frame.height(),
+                self.spec.width,
+                self.spec.height
+            )));
+        }
+        let bytes = linear_frame_to_yuv420p10le(frame)?;
+        if bytes.len() != self.spec.frame_bytes() {
+            return Err(HdrError::from("HDR10 frame byte count mismatch"));
+        }
+        self.stdin
+            .write_all(&bytes)
+            .map_err(|error| HdrError::from(format!("write HDR10 frame: {error}")))?;
+        self.written += 1;
+        Ok(())
+    }
+
+    pub fn frame_count(&self) -> u64 {
+        self.written
+    }
+
+    pub fn finish(self) -> Result<u64, HdrError> {
+        drop(self.stdin);
+        let output = self
+            .child
+            .wait_with_output()
+            .map_err(|error| HdrError::from(format!("wait for ffmpeg: {error}")))?;
+        if !output.status.success() {
+            return Err(HdrError::from(format!(
+                "ffmpeg exited {} after {} frames: {}",
+                output.status,
+                self.written,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(self.written)
+    }
+
+    /// Abort the encoder and reap ffmpeg; caller removes the partial file.
+    pub fn abort(mut self) {
+        let _ = self.stdin.flush();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +852,66 @@ mod tests {
         assert!(!fallback.tone_mapped);
         // Bar 3 centre (x=7) clips to white in the SDR fallback.
         assert_eq!(fallback.frame.rgba[(width as usize - 1) * 4], 255);
+    }
+
+    #[test]
+    fn hdr10_writer_args_and_conversion_contract() {
+        let spec = Hdr10OutputSpec {
+            out: "/tmp/hdr10.mp4".into(),
+            width: 64,
+            height: 36,
+            fps: 30,
+            crf: 20,
+            preset: "medium".into(),
+            metadata: Hdr10Metadata::reference_1000nit(),
+        };
+        assert!(spec.validate().is_ok());
+        assert_eq!(spec.frame_bytes(), (64 * 36 + 32 * 18 * 2) * 2);
+        let args = spec.encode_args().unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-c:v", "libx265"]));
+        assert!(args.windows(2).any(|pair| pair == ["-profile:v", "main10"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-pix_fmt", "yuv420p10le"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-color_primaries", "bt2020"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-color_trc", "smpte2084"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-colorspace", "bt2020nc"]));
+        let params = args
+            .windows(2)
+            .find(|pair| pair[0] == "-x265-params")
+            .map(|pair| pair[1].clone())
+            .expect("x265 params");
+        assert!(params.contains("master-display=G(13250,34500)"));
+        assert!(params.contains("max-cll=1000,400"));
+
+        let black = LinearFrame::from_f32(
+            2,
+            2,
+            &[0.0; 16],
+            LinearPrimaries::Bt2020,
+            LinearTransfer::Linear,
+        )
+        .unwrap();
+        let black_raw = linear_frame_to_yuv420p10le(&black).unwrap();
+        assert_eq!(black_raw.len(), (2 * 2 + 2) * 2);
+        assert_eq!(u16::from_le_bytes([black_raw[0], black_raw[1]]), 64);
+        let white = LinearFrame::from_f32(
+            2,
+            2,
+            &[1.0, 1.0, 1.0, 1.0].repeat(4),
+            LinearPrimaries::Bt2020,
+            LinearTransfer::Linear,
+        )
+        .unwrap();
+        let white_raw = linear_frame_to_yuv420p10le(&white).unwrap();
+        assert_eq!(u16::from_le_bytes([white_raw[0], white_raw[1]]), 940);
+        assert!(Hdr10OutputSpec { width: 65, ..spec }.validate().is_err());
     }
 
     #[test]

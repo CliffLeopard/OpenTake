@@ -16,11 +16,13 @@ use opentake_core::dto::{handle_get_timeline, handle_project_new, handle_project
 use opentake_core::session::ProbedMedia;
 use opentake_render::{
     gpu::{upload_rgba, Compositor, CosmicTextRasterizer, GpuTexture, RenderDevice, TextRasterRequest, TextRasterizer, TextureResolver},
+    hdr::{pq_eotf, Hdr10Metadata, Hdr10OutputSpec, Hdr10Writer, LinearCompositor, LinearFrame, LinearLayer, LinearPrimaries, LinearTransfer},
     plan::{try_build_render_plan, RenderSize, TextureSource},
     source::{DecodedFrame, SourceMetrics},
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::process::{Command as StdCommand, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -34,8 +36,12 @@ use opentake_media::library::{FavoriteRequest, LibraryStore};
 use opentake_media::decode::pcm::{PcmBuffer, PcmFormat, PcmSpec};
 use opentake_media::frame::RgbaFrame;
 use opentake_media::search::{
-    config as search_config, embed_store, embedder::Embedder, indexer::{index_image, index_video, needs_index, CancelToken}, model_download, ort_embedder::OrtEmbedder, ranker, SamplerOptions,
+    config as search_config, embed_store, embedder::Embedder, indexer::{index_image, index_video, needs_index, CancelToken}, model_download, ranker, SamplerOptions,
 };
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use opentake_media::search::OrtEmbedder as SiglipEmbedder;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+use opentake_media::search::TractEmbedder as SiglipEmbedder;
 use std::path::{Path as FsPath, PathBuf};
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String> {
@@ -659,8 +665,299 @@ struct NativePlayback {
     paused: bool,
 }
 
+/// HDR10 output metadata policy used by the Route B production path. The
+/// mastering/content-light values are policy defaults until content analysis
+/// derives per-project values.
+fn hdr10_output_metadata() -> Hdr10Metadata {
+    Hdr10Metadata::reference_1000nit()
+}
+
+fn hdr_source_ffmpeg() -> String {
+    std::env::var("OPENTAKE_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string())
+}
+
+/// Decode one HDR PQ source frame directly to a scene-linear RGBA16F frame.
+///
+/// This deliberately bypasses `opentake_media::decode`, which tone-maps HDR
+/// sources to SDR RGBA8 for the normal preview/export path. The source is
+/// decoded to 16-bit RGBA code values in the PQ domain (no transfer-function
+/// conversion), then linearised here with the PQ EOTF. The HDR10 writer applies
+/// the inverse PQ at output time, so the round-trip is explicit.
+fn decode_hdr_linear_frame(
+    path: &FsPath,
+    time_secs: f64,
+    width: u32,
+    height: u32,
+) -> std::result::Result<LinearFrame, String> {
+    let filter = format!(
+        "scale=w={width}:h={height}:force_original_aspect_ratio=decrease,         pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,format=rgba64le"
+    );
+    let output = StdCommand::new(hdr_source_ffmpeg())
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            &format!("{time_secs:.6}"),
+            "-i",
+            &path.to_string_lossy(),
+            "-frames:v",
+            "1",
+            "-vf",
+            &filter,
+            "-pix_fmt",
+            "rgba64le",
+            "-f",
+            "rawvideo",
+            "-",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("decode HDR source: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "HDR decode failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let expected = width as usize * height as usize * 8;
+    if output.stdout.len() < expected {
+        return Err(format!(
+            "HDR decode returned {} bytes, expected {expected}",
+            output.stdout.len()
+        ));
+    }
+    let mut components = Vec::with_capacity(width as usize * height as usize * 4);
+    for chunk in output.stdout[..expected].chunks_exact(8) {
+        let r = u16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 65_535.0;
+        let g = u16::from_le_bytes([chunk[2], chunk[3]]) as f32 / 65_535.0;
+        let b = u16::from_le_bytes([chunk[4], chunk[5]]) as f32 / 65_535.0;
+        components.extend_from_slice(&[pq_eotf(r), pq_eotf(g), pq_eotf(b), 1.0]);
+    }
+    LinearFrame::from_f32(
+        width,
+        height,
+        &components,
+        LinearPrimaries::Bt2020,
+        LinearTransfer::Linear,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Preflight for the HDR10 production path: reject false-HDR before spawning
+/// the encoder. Every visible visual layer in the exported range must be an
+/// HDR PQ video layer in the supported subset; at least one HDR layer must be
+/// present, so an SDR-only timeline can never be tagged HDR10.
+fn validate_hdr10_timeline(
+    core: &opentake_core::AppCore,
+    start_frame: i32,
+    end_frame: i32,
+) -> std::result::Result<(), String> {
+    let snapshot = core.get_timeline();
+    let timeline = &snapshot.timeline;
+    let manifest = core.media();
+    let mut hdr_layers = 0usize;
+    for track in timeline.tracks.iter().filter(|track| !track.hidden) {
+        for clip in &track.clips {
+            let clip_start = clip.start_frame;
+            let clip_end = clip_start + clip.duration_frames;
+            if clip_end <= start_frame || clip_start >= end_frame {
+                continue;
+            }
+            if clip.media_type != ClipType::Video {
+                return Err(format!(
+                    "HDR10 export currently supports HDR video layers only; found {:?}",
+                    clip.media_type
+                ));
+            }
+            if clip.nested_sequence_id.is_some() {
+                return Err("HDR10 export does not support nested sequences yet".to_string());
+            }
+            let entry = manifest
+                .entries
+                .iter()
+                .find(|entry| entry.id == clip.media_ref)
+                .ok_or_else(|| format!("HDR source media not found: {}", clip.media_ref))?;
+            let color = entry.color.as_ref().ok_or_else(|| {
+                format!(
+                    "HDR10 export requires source color metadata for {}",
+                    entry.name
+                )
+            })?;
+            if !color.is_hdr() {
+                return Err(format!(
+                    "HDR10 export requires HDR sources; {} is SDR",
+                    entry.name
+                ));
+            }
+            let transfer = color
+                .transfer
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if transfer != "smpte2084" && transfer != "pq" {
+                return Err(format!(
+                    "HDR10 export currently supports PQ sources only; {} uses {:?}",
+                    entry.name, color.transfer
+                ));
+            }
+            if color
+                .primaries
+                .as_deref()
+                .is_some_and(|primaries| !primaries.eq_ignore_ascii_case("bt2020"))
+            {
+                return Err(format!(
+                    "HDR10 export requires BT.2020 primaries; {} declares {:?}",
+                    entry.name, color.primaries
+                ));
+            }
+            if clip.transform != opentake_domain::Transform::default()
+                || !clip.crop.is_identity()
+                || !clip.masks.is_empty()
+                || !clip.effects.is_empty()
+                || clip.stabilization.is_some()
+                || clip.color_grade.is_some()
+                || clip.lut.is_some()
+                || clip.chroma_key.is_some()
+                || clip.transition_out.is_some()
+                || clip.reversed
+            {
+                return Err(
+                    "HDR10 export currently supports untransformed, ungraded HDR video layers only"
+                        .to_string(),
+                );
+            }
+            hdr_layers += 1;
+        }
+    }
+    if hdr_layers == 0 {
+        return Err(
+            "HDR10 export requires HDR video content in the selected range; refusing to tag SDR frames as HDR"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Production HDR10 frame renderer for the currently supported subset: HDR
+/// video layers on visible tracks with identity transform/crop, no masks,
+/// effects, grades, LUTs, keying, transitions or reverse. SDR/text/image layers
+/// are rejected explicitly rather than silently tagged as HDR.
+fn render_hdr_linear_frame(
+    core: &opentake_core::AppCore,
+    frame: i32,
+    width: u32,
+    height: u32,
+) -> std::result::Result<LinearFrame, String> {
+    let snapshot = core.get_timeline();
+    let timeline = &snapshot.timeline;
+    let manifest = core.media();
+    let project_dir = core.project_dir();
+    let mut layers: Vec<(LinearFrame, f64)> = Vec::new();
+    for track in timeline.tracks.iter().filter(|track| !track.hidden) {
+        for clip in &track.clips {
+            if frame < clip.start_frame || frame >= clip.start_frame + clip.duration_frames {
+                continue;
+            }
+            if clip.media_type != ClipType::Video {
+                return Err(format!(
+                    "HDR10 export currently supports HDR video layers only; found {:?}",
+                    clip.media_type
+                ));
+            }
+            if clip.nested_sequence_id.is_some() {
+                return Err("HDR10 export does not support nested sequences yet".to_string());
+            }
+            let entry = manifest
+                .entries
+                .iter()
+                .find(|entry| entry.id == clip.media_ref)
+                .ok_or_else(|| format!("HDR source media not found: {}", clip.media_ref))?;
+            let color = entry.color.as_ref().ok_or_else(|| {
+                format!(
+                    "HDR10 export requires source color metadata for {}",
+                    entry.name
+                )
+            })?;
+            if !color.is_hdr() {
+                return Err(format!(
+                    "HDR10 export requires HDR sources; {} is SDR",
+                    entry.name
+                ));
+            }
+            let transfer = color
+                .transfer
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if transfer != "smpte2084" && transfer != "pq" {
+                return Err(format!(
+                    "HDR10 export currently supports PQ sources only; {} uses {:?}",
+                    entry.name, color.transfer
+                ));
+            }
+            if color
+                .primaries
+                .as_deref()
+                .is_some_and(|primaries| !primaries.eq_ignore_ascii_case("bt2020"))
+            {
+                return Err(format!(
+                    "HDR10 export requires BT.2020 primaries; {} declares {:?}",
+                    entry.name, color.primaries
+                ));
+            }
+            if clip.transform != opentake_domain::Transform::default()
+                || !clip.crop.is_identity()
+                || !clip.masks.is_empty()
+                || !clip.effects.is_empty()
+                || clip.stabilization.is_some()
+                || clip.color_grade.is_some()
+                || clip.lut.is_some()
+                || clip.chroma_key.is_some()
+                || clip.transition_out.is_some()
+                || clip.reversed
+            {
+                return Err(
+                    "HDR10 export currently supports untransformed, ungraded HDR video layers only"
+                        .to_string(),
+                );
+            }
+            let path = resolve_media_path(entry, project_dir.as_deref())
+                .ok_or_else(|| format!("HDR source path unavailable for {}", entry.name))?;
+            let fps = timeline.fps.max(1) as f64;
+            let source_frame = clip.trim_start_frame as f64
+                + (frame - clip.start_frame) as f64 * clip.speed.max(0.000_1);
+            let linear = decode_hdr_linear_frame(&path, source_frame / fps, width, height)?;
+            layers.push((linear, clip.opacity.clamp(0.0, 1.0)));
+        }
+    }
+    if layers.is_empty() {
+        return Err(format!(
+            "HDR10 export frame {frame} has no HDR video content"
+        ));
+    }
+    let compositor = LinearCompositor::new(width, height).map_err(|error| error.to_string())?;
+    let refs: Vec<LinearLayer<'_>> = layers
+        .iter()
+        .map(|(linear, opacity)| LinearLayer {
+            frame: linear,
+            opacity: *opacity as f32,
+        })
+        .collect();
+    compositor
+        .composite([0.0, 0.0, 0.0, 1.0], &refs)
+        .map_err(|error| error.to_string())
+}
+
+struct HdrExport {
+    writer: Hdr10Writer,
+    metadata: Hdr10Metadata,
+}
+
 struct ExportSession {
-    encoder: opentake_media::VideoEncoder,
+    encoder: Option<opentake_media::VideoEncoder>,
+    hdr: Option<HdrExport>,
     transparent: bool,
     width: u32,
     height: u32,
@@ -738,18 +1035,18 @@ struct SearchAssetDto {
 
 struct SearchState {
     cache_dir: PathBuf,
-    embedder: OrtEmbedder,
+    embedder: SiglipEmbedder,
     capability: SearchCapabilityDto,
 }
 
 fn search_backend_name() -> &'static str {
-    #[cfg(windows)]
-    {
-        "ort-tract"
-    }
-    #[cfg(not(windows))]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         "ort-native"
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        "tract"
     }
 }
 
@@ -890,9 +1187,12 @@ impl Engine {
     }
 
     fn export_cancel_inner(&self) -> bool {
-        if let Some(session) = self.export.borrow_mut().take() {
+        if let Some(mut session) = self.export.borrow_mut().take() {
             let path = session.out_path;
-            drop(session.encoder);
+            if let Some(hdr) = session.hdr.take() {
+                hdr.writer.abort();
+            }
+            drop(session.encoder.take());
             let _ = std::fs::remove_file(path);
             return true;
         }
@@ -1254,8 +1554,10 @@ impl Engine {
         range_end: Option<i32>,
         bit_depth: Option<u32>,
         duck_music: Option<bool>,
+        hdr10: Option<bool>,
     ) -> Result<String> {
         self.export_cancel_inner();
+        let hdr10 = hdr10 == Some(true);
         let timeline = self.core.get_timeline().timeline;
         let resolution = match quality.as_str() {
             "720p" => opentake_render::ExportResolution::R720p,
@@ -1263,33 +1565,79 @@ impl Engine {
             _ => opentake_render::ExportResolution::R1080p,
         };
         let render_size = opentake_render::export_render_size((timeline.width, timeline.height), resolution);
+        let timeline_frames = timeline.total_frames().max(1);
+        let start_frame = range_start.unwrap_or(0).clamp(0, timeline_frames - 1);
+        let end_frame = range_end.unwrap_or(timeline_frames).clamp(start_frame + 1, timeline_frames);
+        let total = end_frame - start_frame;
+        if hdr10 {
+            validate_hdr10_timeline(&self.core, start_frame, end_frame)
+                .map_err(Error::from_reason)?;
+        }
         let video_codec = match codec.as_str() {
             "h265" => opentake_media::VideoCodec::H265,
             "prores" => opentake_media::VideoCodec::ProRes422,
             "prores4444" => opentake_media::VideoCodec::ProRes4444,
             _ => opentake_media::VideoCodec::H264,
         };
+        if hdr10 && video_codec != opentake_media::VideoCodec::H265 {
+            return Err(Error::from_reason(
+                "HDR10 export requires codec h265 (Main10)",
+            ));
+        }
         let mut preset = opentake_media::ExportPreset::new(video_codec, opentake_media::ExportResolution::P1080);
-        if bit_depth == Some(10) {
+        if bit_depth == Some(10) || hdr10 {
             preset = preset.with_bit_depth(10);
         }
         let out = std::path::PathBuf::from(&out_path);
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
         }
-        let encoder = opentake_media::VideoEncoder::new(&out, render_size.width, render_size.height, timeline.fps, &preset)
-            .map_err(|error| Error::from_reason(error.to_string()))?;
         let audio = if duck_music == Some(true) {
             self.mix_timeline_audio_ducked(&timeline, 12.0, -30.0)
         } else {
             self.mix_timeline_audio(&timeline)
         };
-        let timeline_frames = timeline.total_frames().max(1);
-        let start_frame = range_start.unwrap_or(0).clamp(0, timeline_frames - 1);
-        let end_frame = range_end.unwrap_or(timeline_frames).clamp(start_frame + 1, timeline_frames);
-        let total = end_frame - start_frame;
+        if hdr10 && audio.is_some() {
+            return Err(Error::from_reason(
+                "HDR10 export does not yet mix audio; mute audio or export SDR/H.265 10-bit",
+            ));
+        }
+        let encoder = if hdr10 {
+            None
+        } else {
+            Some(
+                opentake_media::VideoEncoder::new(
+                    &out,
+                    render_size.width,
+                    render_size.height,
+                    timeline.fps,
+                    &preset,
+                )
+                .map_err(|error| Error::from_reason(error.to_string()))?,
+            )
+        };
+        let hdr = if hdr10 {
+            let metadata = hdr10_output_metadata();
+            let spec = Hdr10OutputSpec {
+                out: out.to_string_lossy().into_owned(),
+                width: render_size.width,
+                height: render_size.height,
+                fps: timeline.fps,
+                crf: 20,
+                preset: "medium".to_string(),
+                metadata,
+            };
+            Some(HdrExport {
+                writer: Hdr10Writer::start(spec)
+                    .map_err(|error| Error::from_reason(error.to_string()))?,
+                metadata,
+            })
+        } else {
+            None
+        };
         *self.export.borrow_mut() = Some(ExportSession {
             encoder,
+            hdr,
             transparent: matches!(video_codec, opentake_media::VideoCodec::ProRes4444),
             width: render_size.width,
             height: render_size.height,
@@ -1301,12 +1649,24 @@ impl Engine {
             out_path: out,
             audio,
         });
-        json(&serde_json::json!({
+        let mut response = serde_json::json!({
             "width": render_size.width,
             "height": render_size.height,
             "fps": timeline.fps,
             "total": total,
-        }))
+            "hdr10": hdr10,
+        });
+        if hdr10 {
+            response["metadata"] = serde_json::json!({
+                "primaries": "bt2020",
+                "transfer": "smpte2084",
+                "matrix": "bt2020nc",
+                "maxCll": 1000,
+                "maxFall": 400,
+                "masteringDisplay": hdr10_output_metadata().mastering_display.x265_token(),
+            });
+        }
+        json(&response)
     }
 
     /// Render up to `frames` more frames; returns `{done,total}`.
@@ -1318,13 +1678,23 @@ impl Engine {
         let end = (session.next_frame + frames as i32).min(session.end_frame);
         while session.next_frame < end {
             let frame = session.next_frame;
-            let decoded = composite_frame_decoded(&self.core, frame, size, session.transparent)
-                .map_err(|message| Error::from_reason(message))?;
-            let rgba = opentake_media::RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
-            session
-                .encoder
-                .push_frame(&rgba)
-                .map_err(|error| Error::from_reason(error.to_string()))?;
+            if let Some(hdr) = session.hdr.as_mut() {
+                let linear = render_hdr_linear_frame(&self.core, frame, session.width, session.height)
+                    .map_err(Error::from_reason)?;
+                hdr.writer
+                    .write_frame(&linear)
+                    .map_err(|error| Error::from_reason(error.to_string()))?;
+            } else {
+                let decoded = composite_frame_decoded(&self.core, frame, size, session.transparent)
+                    .map_err(|message| Error::from_reason(message))?;
+                let rgba = opentake_media::RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
+                session
+                    .encoder
+                    .as_mut()
+                    .ok_or_else(|| Error::from_reason("SDR export encoder is missing"))?
+                    .push_frame(&rgba)
+                    .map_err(|error| Error::from_reason(error.to_string()))?;
+            }
             session.next_frame += 1;
         }
         json(&serde_json::json!({ "done": session.next_frame - session.start_frame, "total": session.total }))
@@ -1338,15 +1708,43 @@ impl Engine {
             .borrow_mut()
             .take()
             .ok_or_else(|| Error::from_reason("no export session"))?;
+        if let Some(hdr) = session.hdr.take() {
+            let metadata = hdr.metadata;
+            let frames = hdr
+                .writer
+                .finish()
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+            return json(&serde_json::json!({
+                "outPath": session.out_path.to_string_lossy(),
+                "width": session.width,
+                "height": session.height,
+                "fps": session.fps,
+                "frameCount": frames,
+                "hasAudio": false,
+                "hdr10": true,
+                "metadata": {
+                    "primaries": "bt2020",
+                    "transfer": "smpte2084",
+                    "matrix": "bt2020nc",
+                    "maxCll": metadata.max_cll,
+                    "maxFall": metadata.max_fall,
+                    "masteringDisplay": metadata.mastering_display.x265_token(),
+                },
+            }));
+        }
         let has_audio = session.audio.is_some();
         if let Some(pcm) = session.audio.take() {
             session
                 .encoder
+                .as_mut()
+                .ok_or_else(|| Error::from_reason("SDR export encoder is missing"))?
                 .push_audio(pcm)
                 .map_err(|error| Error::from_reason(error.to_string()))?;
         }
         session
             .encoder
+            .take()
+            .ok_or_else(|| Error::from_reason("SDR export encoder is missing"))?
             .finish()
             .map_err(|error| Error::from_reason(error.to_string()))?;
         json(&serde_json::json!({
@@ -1356,6 +1754,7 @@ impl Engine {
             "fps": session.fps,
             "frameCount": session.total,
             "hasAudio": has_audio,
+            "hdr10": false,
         }))
     }
 
@@ -1374,8 +1773,9 @@ impl Engine {
         quality: String,
         bit_depth: Option<u32>,
         duck_music: Option<bool>,
+        hdr10: Option<bool>,
     ) -> Result<String> {
-        self.export_begin(out_path, codec, quality, None, None, bit_depth, duck_music)?;
+        self.export_begin(out_path, codec, quality, None, None, bit_depth, duck_music, hdr10)?;
         loop {
             let done = {
                 let guard = self.export.borrow();
@@ -2061,7 +2461,7 @@ impl Engine {
         };
 
         let tokenizer_json = installed.tokenizer_folder.join("tokenizer.json");
-        let embedder = match OrtEmbedder::new(&installed.image_encoder, &installed.text_encoder, &tokenizer_json, manifest.spec()) {
+        let embedder = match SiglipEmbedder::new(&installed.image_encoder, &installed.text_encoder, &tokenizer_json, manifest.spec()) {
             Ok(embedder) => embedder,
             Err(error) => {
                 let mut capability = search_capability_unavailable(&manifest, Some(&models_dir), "backend_error");

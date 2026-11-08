@@ -14,10 +14,13 @@
     "ui/**",
     "cordis.patch.yml",
     "web/**",
+    "web/native-editor/**",
     "native/*/*.node",
     "README.md",
     "lib/motion-templates.js",
-    "lib/providers.js"
+    "lib/providers.js",
+    "lib/search/install-model.mjs",
+    "lib/search/model-assets.mjs"
   ],
   "dsh": {
     "bundle": {

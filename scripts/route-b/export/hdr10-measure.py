@@ -55,7 +55,7 @@ def main() -> int:
     parser.add_argument("--raw", required=True)
     parser.add_argument("--width", type=int, required=True)
     parser.add_argument("--height", type=int, required=True)
-    parser.add_argument("--kind", choices=["hdr", "sdr"], required=True)
+    parser.add_argument("--kind", choices=["hdr", "sdr", "sdr-tone-mapped"], required=True)
     parser.add_argument("--tolerance", type=int, default=12)
     args = parser.parse_args()
 
@@ -81,9 +81,9 @@ def main() -> int:
             "interpretation": "true HDR10: PQ/BT.2020 codes match the linear frame contract",
             "pass": passed,
         })
-    else:
-        # SDR fallback clips 203/1000/4000 cd/m² to the same white; only the
-        # dimmest bar is lower.
+    elif args.kind == "sdr":
+        # Explicit linear-frame fallback: 203/1000/4000 cd/m² clip to the same
+        # SDR white; only the dimmest bar is lower.
         clipped_together = (
             abs(measured[1] - measured[2]) <= 4 and abs(measured[2] - measured[3]) <= 4
         )
@@ -93,6 +93,17 @@ def main() -> int:
             "clippedAboveReferenceWhite": clipped_together,
             "dimmestBarLower": dimmer,
             "interpretation": "SDR fallback: reference-white clip, not PQ HDR10",
+            "pass": passed,
+        })
+    else:
+        # Production SDR regression: the existing decode tone-map path converts
+        # HDR sources to SDR BT.709; the bars are tone-mapped (not a PQ encode
+        # and not necessarily clipped to one white). Only require a stable,
+        # non-degenerate BT.709-shaped signal; ffprobe separately proves the
+        # transfer/primaries are bt709 and HDR side-data is absent.
+        passed = result["monotonicNonDecreasing"] and len(set(measured)) >= 2
+        result.update({
+            "interpretation": "production SDR regression: tone-mapped BT.709 output, not PQ HDR10",
             "pass": passed,
         })
 

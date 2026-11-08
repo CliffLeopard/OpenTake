@@ -39,6 +39,8 @@ window.__ModuleLoader__.load({
     const INFO_PATH = BASE + '/engine/info'
     /** Existing built React editor, still hosted in an iframe for now. */
     const EDITOR_PATH = BASE + '/app/'
+    /** Self-contained native editor bundle served by the existing /app/* route. */
+    const NATIVE_BUNDLE_URL = BASE + '/app/native-editor/native-editor.js'
     /** Engine status poll cadence; skipped while the document is hidden. */
     const POLL_MS = 10000
     /** Existing iframe prototype panel key/id in `../client.js`. */
@@ -199,6 +201,50 @@ window.__ModuleLoader__.load({
     }
 
     // ---------------------------------------------------------------------
+    // Native editor bundle
+    // ---------------------------------------------------------------------
+
+    /** Cache one in-flight bundle import; clear it on failure so Retry works. */
+    let nativeBundlePromise = null
+    function loadNativeBundle() {
+      if (nativeBundlePromise === null) {
+        nativeBundlePromise = import(/* webpackIgnore: true */ NATIVE_BUNDLE_URL).catch((error) => {
+          nativeBundlePromise = null
+          throw error
+        })
+      }
+      return nativeBundlePromise
+    }
+
+    /** Read the current DSH language without mutating the page. */
+    function resolveNativeLocale() {
+      if (
+        typeof document !== 'undefined' &&
+        document.documentElement !== null &&
+        document.documentElement !== undefined &&
+        typeof document.documentElement.lang === 'string' &&
+        document.documentElement.lang.length > 0
+      ) {
+        return document.documentElement.lang
+      }
+      return 'en'
+    }
+
+    /** Read an explicit DSH theme marker when present; tokens still drive CSS. */
+    function resolveNativeTheme() {
+      if (
+        typeof document !== 'undefined' &&
+        document.documentElement !== null &&
+        document.documentElement !== undefined &&
+        document.documentElement.dataset !== undefined
+      ) {
+        const value = document.documentElement.dataset.theme
+        if (value === 'light' || value === 'dark') return value
+      }
+      return 'system'
+    }
+
+    // ---------------------------------------------------------------------
     // Component
     // ---------------------------------------------------------------------
 
@@ -213,6 +259,11 @@ window.__ModuleLoader__.load({
       const [failure, setFailure] = React.useState(null)
       const [retryNonce, setRetryNonce] = React.useState(0)
       const [reloadNonce, setReloadNonce] = React.useState(0)
+      const [mode, setMode] = React.useState('iframe')
+      const [nativePhase, setNativePhase] = React.useState('idle')
+      const [nativeFailure, setNativeFailure] = React.useState(null)
+      const [nativeRetry, setNativeRetry] = React.useState(0)
+      const nativeHostRef = React.useRef(null)
       const uid = React.useId()
       const headingId = uid + '-otn-heading'
 
@@ -276,6 +327,49 @@ window.__ModuleLoader__.load({
         }
       }, [retryNonce])
 
+      // Mount the native editor only while it is selected. The iframe stays
+      // mounted underneath, so switching back restores the working editor
+      // without reloading it. The bundle import and controller are disposed
+      // together when the mode changes or the panel unmounts.
+      React.useEffect(() => {
+        if (mode !== 'native' || nativeHostRef.current === null) return undefined
+        let disposed = false
+        let controller = null
+        setNativePhase('loading')
+        setNativeFailure(null)
+        loadNativeBundle()
+          .then((bundle) => {
+            if (disposed) return
+            if (bundle === null || typeof bundle.mountNative !== 'function') {
+              throw new Error('native editor bundle has no mountNative export')
+            }
+            controller = bundle.mountNative({
+              host: nativeHostRef.current,
+              base: BASE,
+              locale: resolveNativeLocale(),
+              theme: resolveNativeTheme(),
+              pollIntervalMs: 0,
+              onReady: () => {
+                if (!disposed) setNativePhase('ready')
+              },
+            })
+            if (disposed) {
+              controller.dispose()
+              controller = null
+            }
+          })
+          .catch((error) => {
+            if (disposed) return
+            setNativePhase('error')
+            setNativeFailure(toFailure(error))
+          })
+        return () => {
+          disposed = true
+          if (controller !== null) controller.dispose()
+          controller = null
+        }
+      }, [mode, nativeRetry])
+
       const presentation = statusPresentation(phase, engine, failure, t)
 
       return h(
@@ -305,6 +399,17 @@ window.__ModuleLoader__.load({
               {
                 type: 'button',
                 className: 'otn-button',
+                'data-otn-action': 'toggle-mode',
+                'aria-pressed': mode === 'native',
+                onClick: () => setMode((value) => (value === 'native' ? 'iframe' : 'native')),
+              },
+              mode === 'native' ? t('action.showIframe') : t('action.showNative'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'otn-button',
                 'data-otn-action': 'retry',
                 disabled: phase === 'loading',
                 onClick: () => setRetryNonce((value) => value + 1),
@@ -317,7 +422,10 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'otn-button',
                 'data-otn-action': 'reload',
-                onClick: () => setReloadNonce((value) => value + 1),
+                onClick: () => {
+                  setReloadNonce((value) => value + 1)
+                  if (mode === 'native') setNativeRetry((value) => value + 1)
+                },
               },
               t('action.reload'),
             ),
@@ -326,17 +434,46 @@ window.__ModuleLoader__.load({
         h('p', { className: 'otn-detail', 'aria-live': 'polite' }, presentation.detail),
         h(
           'div',
-          { className: 'otn-content' },
+          { className: 'otn-content', 'data-otn-mode': mode },
           h('iframe', {
             key: 'otn-editor-' + reloadNonce,
-            className: 'otn-frame',
+            className: 'otn-frame' + (mode === 'native' ? ' otn-frame--hidden' : ''),
             src: EDITOR_PATH,
             title: t('editorTitle'),
             allow: 'clipboard-read; clipboard-write; fullscreen',
             'data-otn-editor': 'iframe',
           }),
+          h('div', {
+            ref: nativeHostRef,
+            className: 'otn-native-host' + (mode === 'iframe' ? ' otn-native-host--hidden' : ''),
+            'data-otn-editor': 'native',
+          }),
+          mode === 'native' && nativePhase === 'loading'
+            ? h(
+                'p',
+                { className: 'otn-native-state', role: 'status', 'data-otn-native-state': 'loading' },
+                t('native.loading'),
+              )
+            : null,
+          mode === 'native' && nativePhase === 'error'
+            ? h(
+                'div',
+                { className: 'otn-native-state otn-native-state--error', role: 'alert', 'data-otn-native-state': 'error' },
+                h('span', null, t('native.error') + ': ' + failureText(nativeFailure, t)),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'otn-button',
+                    'data-otn-action': 'retry-native',
+                    onClick: () => setNativeRetry((value) => value + 1),
+                  },
+                  t('action.retryNative'),
+                ),
+              )
+            : null,
         ),
-        h('p', { className: 'otn-note' }, t('note.iframe')),
+        h('p', { className: 'otn-note' }, mode === 'native' ? t('note.native') : t('note.iframe')),
       )
     }
 
@@ -490,10 +627,17 @@ window.__ModuleLoader__.load({
       'status.unavailable': 'Engine status unavailable',
       'common.unknown': 'unknown',
       'action.retry': 'Retry',
+      'action.retryNative': 'Retry native preview',
       'action.reload': 'Reload editor',
+      'action.showNative': 'Native preview',
+      'action.showIframe': 'Iframe editor',
+      'native.loading': 'Starting native editor…',
+      'native.error': 'Native editor failed to start',
       'editorTitle': 'OpenTake editor (iframe)',
       'note.iframe':
-        'Native shell: header, status, theme and locale are DSH-native. The editor content still runs in the existing iframe build; a native editor mount is the next milestone.',
+        'Native shell: header, status, theme and locale are DSH-native. The editor content is the working iframe build; switch to native preview for the bounded ShadowRoot mount.',
+      'note.native':
+        'Native preview: home, media, timeline and preview run in a ShadowRoot against the live /engine routes. Inspector, effects, export, motion and the rest remain in the iframe fallback.',
       'error.network': 'Could not reach the Route B engine route.',
       'error.http': 'Engine status request failed (HTTP {status}).',
       'error.invalidResponse': 'The engine status response was not valid JSON.',
@@ -514,10 +658,17 @@ window.__ModuleLoader__.load({
       'status.unavailable': '引擎状态不可用',
       'common.unknown': '未知',
       'action.retry': '重试',
+      'action.retryNative': '重试原生预览',
       'action.reload': '重新加载编辑器',
+      'action.showNative': '原生预览',
+      'action.showIframe': 'Iframe 编辑器',
+      'native.loading': '正在启动原生编辑器…',
+      'native.error': '原生编辑器启动失败',
       'editorTitle': 'OpenTake 编辑器（iframe）',
       'note.iframe':
-        '原生外壳：标题栏、状态、主题与语言由 DSH 原生提供；编辑器内容仍运行在现有 iframe 构建中，原生编辑器挂载是下一步。',
+        '原生外壳：标题栏、状态、主题与语言由 DSH 原生提供；编辑器内容是可用的 iframe 构建；切换到原生预览可使用有界的 ShadowRoot 挂载。',
+      'note.native':
+        '原生预览：主页、素材、时间线和预览在 ShadowRoot 中运行并连接实时 /engine 路由。检查器、效果、导出、Motion 等仍保留在 iframe 回退中。',
       'error.network': '无法连接 Route B 引擎路由。',
       'error.http': '引擎状态请求失败（HTTP {status}）。',
       'error.invalidResponse': '引擎状态响应不是有效的 JSON。',
@@ -549,6 +700,11 @@ window.__ModuleLoader__.load({
       '.otn-detail{margin:0;padding:8px 14px;border-bottom:.5px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}',
       '.otn-content{position:relative;flex:1 1 auto;min-height:0;background:var(--dsw-alias-bg-layer-2)}',
       '.otn-frame{display:block;width:100%;height:100%;border:0;background:var(--dsw-alias-bg-base)}',
+      '.otn-frame--hidden{display:none}',
+      '.otn-native-host{position:absolute;inset:0;display:block;min-width:0;min-height:0}',
+      '.otn-native-host--hidden{display:none}',
+      '.otn-native-state{position:absolute;left:14px;bottom:14px;z-index:2;display:flex;align-items:center;gap:10px;margin:0;padding:7px 10px;border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;box-shadow:0 6px 20px rgba(0,0,0,.22)}',
+      '.otn-native-state--error{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-label-primary);max-width:min(520px,calc(100% - 28px));flex-wrap:wrap;background:var(--dsw-alias-bg-layer-1)}',
       '.otn-note{margin:0;padding:6px 14px;border-top:.5px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}',
       '.otn-glyph{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:currentColor}',
     ].join('')
@@ -625,6 +781,7 @@ window.__ModuleLoader__.load({
       BASE,
       INFO_PATH,
       EDITOR_PATH,
+      NATIVE_BUNDLE_URL,
       POLL_MS,
       requestEngineInfo,
       normalizeEngineInfo,
