@@ -25,6 +25,8 @@ use std::num::NonZeroUsize;
 use std::rc::Rc;
 use opentake_domain::{ClipType, MediaManifestEntry, MediaSource};
 use opentake_media::encode::{mix_clips, ClipAudio, MIX_SAMPLE_RATE};
+use opentake_media::analysis::{analyze_stabilization, track_translation_motion, StabilizationConfig};
+use opentake_media::MediaCancelToken;
 use opentake_media::library::{FavoriteRequest, LibraryStore};
 use opentake_media::decode::pcm::{PcmBuffer, PcmFormat, PcmSpec};
 
@@ -623,6 +625,61 @@ impl Engine {
             spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 },
             samples_f32: mixed,
         })
+    }
+
+    /// Analyze one ordinary video clip into a source-bound stabilization track.
+    #[napi]
+    pub fn analyze_stabilization(&self, clip_id: String) -> Result<String> {
+        let timeline = self.core.get_timeline().timeline;
+        let clip = timeline
+            .tracks
+            .iter()
+            .flat_map(|track| &track.clips)
+            .chain(timeline.nested_sequences.iter().flat_map(|sequence| sequence.timeline.tracks.iter().flat_map(|track| &track.clips)))
+            .find(|clip| clip.id == clip_id)
+            .cloned()
+            .ok_or_else(|| Error::from_reason(format!("clip not found: {clip_id}")))?;
+        if clip.media_type != ClipType::Video || clip.nested_sequence_id.is_some() {
+            return Err(Error::from_reason("stabilization requires an ordinary video clip"));
+        }
+        let entry = self
+            .core
+            .media()
+            .entries
+            .iter()
+            .find(|entry| entry.id == clip.media_ref)
+            .cloned()
+            .ok_or_else(|| Error::from_reason("stabilization source media not found"))?;
+        let path = resolve_media_path(&entry, self.core.project_dir().as_deref())
+            .ok_or_else(|| Error::from_reason("stabilization source path unavailable"))?;
+        let fps = timeline.fps.max(1) as f64;
+        let sample_count = (clip.duration_frames.max(2) as usize).min(48);
+        let last_frame = (clip.duration_frames - 1).max(1);
+        let cache = std::env::temp_dir().join("opentake-route-b").join("cache");
+        let media = opentake_media::MediaEngine::new(&cache, cache.join("models"));
+        let source_start = clip.trim_start_frame.max(0) as f64 / fps;
+        let mut frames = Vec::with_capacity(sample_count);
+        for index in 0..sample_count {
+            let relative = if sample_count <= 1 {
+                0
+            } else {
+                ((index as f64 * last_frame as f64 / (sample_count - 1) as f64).round() as i32).clamp(0, last_frame)
+            };
+            let time = source_start + relative as f64 * clip.speed.max(0.0001) / fps;
+            let Ok((_, rgba)) = media.decode_frame(&path, &opentake_media::decode::FrameRequest {
+                time_secs: time,
+                max_size: (320, 180),
+                tolerance_secs: 0.1,
+                apply_rotation: true,
+            }) else { continue };
+            frames.push((relative, opentake_media::RgbaFrame::new(rgba.width, rgba.height, rgba.rgba)));
+        }
+        let cancel = MediaCancelToken::new();
+        let motion = track_translation_motion(&frames, &cancel)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let track = analyze_stabilization(&motion, clip.media_ref.clone(), StabilizationConfig::default(), &cancel)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&track)
     }
 
     /// Start a chunked export session. Returns `{width,height,fps,total}`.

@@ -31,7 +31,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v30.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v31.node');
 }
 
 function loadAddon() {
@@ -966,6 +966,10 @@ export function apply(ctx) {
       case 'motion_preview_cancel':
       case 'motion_cancel':
         return false;
+      case 'analyze_stabilization':
+        return JSON.parse(state.engine.analyzeStabilization(String(args.clipId ?? args.clip_id ?? '')));
+      case 'cancel_stabilization_analysis':
+        return false;
       case 'search_model_status':
         return {
           installed: false,
@@ -1832,6 +1836,16 @@ export function apply(ctx) {
     },
     async (args) => {
       const value = importFolder(args.path, args.recursive === true);
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_analyze_stabilization',
+    'Analyze a video clip and return an editable stabilization track (apply via edit_apply).',
+    { type: 'object', properties: { clipId: { type: 'string' } }, required: ['clipId'], additionalProperties: false },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().analyzeStabilization(String(args.clipId ?? '')));
       return { text: JSON.stringify(value), data: value };
     },
   );

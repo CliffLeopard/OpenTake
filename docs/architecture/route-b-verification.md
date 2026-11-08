@@ -91,6 +91,7 @@ longer falls back to the warning path.
 | Project new/open/save | verified | API + UI |
 | Timeline edit, split/trim/move, undo/redo | verified | API |
 | Effects, masks, keyframes, transitions | effects/mask API verified; keyframes/transitions not matrix-tested | EditRequest supports them |
+| Stabilization analysis | verified | 48-keyframe track from motion test clip; `applyStabilization` applied to clip |
 | Media import/probe/thumbnail/waveform | verified | API |
 | Folder import | verified | recursive scan + import (video/Lottie) |
 | Lottie JSON/.lottie import and composite | verified | import + simple shape |
