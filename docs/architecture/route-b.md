@@ -93,6 +93,8 @@ by the DSH Host through N-API.
   `playback_frame`. The React preview renders frames as images; audio master
   clock/cpal is not implemented. Verified: play advanced the UI playhead and
   rendered a frame.
+- Export sessions accept `rangeStartFrame`/`rangeEndFrame`: 60-frame source at
+  frames 15..45 exported as a 1.0s H.264+AAC clip (verified).
 - `export_video`: renders every timeline frame, encodes H.264/H.265/ProRes via
   `opentake-media` VideoEncoder, and muxes a linear mono audio mixdown. Verified
   320x180 2 s source → 1280x720 H.264 + AAC, 2.0 s. ProRes 4444 uses a

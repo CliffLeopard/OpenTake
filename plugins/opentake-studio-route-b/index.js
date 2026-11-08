@@ -29,7 +29,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v24.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v25.node');
 }
 
 function loadAddon() {
@@ -1103,7 +1103,13 @@ export function apply(ctx) {
     const job = { operationId, done: 0, total: 0, active: true, cancelled: false, error: null };
     state.exportJob = job;
     try {
-      const start = JSON.parse(state.engine.exportBegin(outPath, req.codec ?? 'h264', req.quality ?? '1080p'));
+      const start = JSON.parse(state.engine.exportBegin(
+        outPath,
+        req.codec ?? 'h264',
+        req.quality ?? '1080p',
+        typeof req.rangeStartFrame === 'number' ? req.rangeStartFrame : null,
+        typeof req.rangeEndFrame === 'number' ? req.rangeEndFrame : null,
+      ));
       job.total = start.total;
       while (job.done < job.total) {
         if (job.cancelled) {

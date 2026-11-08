@@ -11,7 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..', '..');
 const addon =
   process.argv[2] ??
-  path.join(root, 'plugins/opentake-studio-route-b/native', `${process.platform}-${process.arch}`, 'opentake_engine_v24.node');
+  path.join(root, 'plugins/opentake-studio-route-b/native', `${process.platform}-${process.arch}`, 'opentake_engine_v25.node');
 const { Engine } = createRequire(import.meta.url)(addon);
 const engine = new Engine();
 const created = JSON.parse(engine.newProject());

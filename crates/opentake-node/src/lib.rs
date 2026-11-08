@@ -526,6 +526,8 @@ struct ExportSession {
     height: u32,
     fps: i32,
     total: i32,
+    start_frame: i32,
+    end_frame: i32,
     next_frame: i32,
     out_path: std::path::PathBuf,
     audio: Option<PcmBuffer>,
@@ -625,7 +627,14 @@ impl Engine {
 
     /// Start a chunked export session. Returns `{width,height,fps,total}`.
     #[napi]
-    pub fn export_begin(&self, out_path: String, codec: String, quality: String) -> Result<String> {
+    pub fn export_begin(
+        &self,
+        out_path: String,
+        codec: String,
+        quality: String,
+        range_start: Option<i32>,
+        range_end: Option<i32>,
+    ) -> Result<String> {
         self.export_cancel_inner();
         let timeline = self.core.get_timeline().timeline;
         let resolution = match quality.as_str() {
@@ -648,7 +657,10 @@ impl Engine {
         let encoder = opentake_media::VideoEncoder::new(&out, render_size.width, render_size.height, timeline.fps, &preset)
             .map_err(|error| Error::from_reason(error.to_string()))?;
         let audio = self.mix_timeline_audio(&timeline);
-        let total = timeline.total_frames();
+        let timeline_frames = timeline.total_frames().max(1);
+        let start_frame = range_start.unwrap_or(0).clamp(0, timeline_frames - 1);
+        let end_frame = range_end.unwrap_or(timeline_frames).clamp(start_frame + 1, timeline_frames);
+        let total = end_frame - start_frame;
         *self.export.borrow_mut() = Some(ExportSession {
             encoder,
             transparent: matches!(video_codec, opentake_media::VideoCodec::ProRes4444),
@@ -656,7 +668,9 @@ impl Engine {
             height: render_size.height,
             fps: timeline.fps,
             total,
-            next_frame: 0,
+            start_frame,
+            end_frame,
+            next_frame: start_frame,
             out_path: out,
             audio,
         });
@@ -674,7 +688,7 @@ impl Engine {
         let mut guard = self.export.borrow_mut();
         let session = guard.as_mut().ok_or_else(|| Error::from_reason("no export session"))?;
         let size = opentake_render::plan::RenderSize::new(session.width, session.height);
-        let end = (session.next_frame + frames as i32).min(session.total);
+        let end = (session.next_frame + frames as i32).min(session.end_frame);
         while session.next_frame < end {
             let frame = session.next_frame;
             let decoded = composite_frame_decoded(&self.core, frame, size, session.transparent)
@@ -686,7 +700,7 @@ impl Engine {
                 .map_err(|error| Error::from_reason(error.to_string()))?;
             session.next_frame += 1;
         }
-        json(&serde_json::json!({ "done": session.next_frame, "total": session.total }))
+        json(&serde_json::json!({ "done": session.next_frame - session.start_frame, "total": session.total }))
     }
 
     /// Finish the active export and return the UI ExportSummary JSON.
@@ -727,7 +741,7 @@ impl Engine {
     /// Blocking convenience export (used by the agent tool).
     #[napi]
     pub fn export_video(&self, out_path: String, codec: String, quality: String) -> Result<String> {
-        self.export_begin(out_path, codec, quality)?;
+        self.export_begin(out_path, codec, quality, None, None)?;
         loop {
             let done = {
                 let guard = self.export.borrow();
