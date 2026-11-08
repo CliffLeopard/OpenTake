@@ -31,7 +31,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v35.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v36.node');
 }
 
 function loadAddon() {
@@ -1428,11 +1428,14 @@ export function apply(ctx) {
       if (sub === '/engine/preview/frame' && req.method === 'GET') {
         const requestUrl = new URL(req.url ?? '/', 'http://localhost');
         const frame = Number.parseInt(requestUrl.searchParams.get('frame') ?? '0', 10) || 0;
+        const asJpeg = requestUrl.searchParams.get('format') === 'jpeg';
         try {
-          const payload = JSON.parse(ensureEngine().compositeFrame(frame, 1280));
+          const payload = JSON.parse(asJpeg
+            ? ensureEngine().compositeFrameJpeg(frame, 1280, 82)
+            : ensureEngine().compositeFrame(frame, 1280));
           const bytes = Buffer.from(payload.dataUrl.split(',')[1], 'base64');
           res.statusCode = 200;
-          res.setHeader('content-type', 'image/png');
+          res.setHeader('content-type', asJpeg ? 'image/jpeg' : 'image/png');
           res.setHeader('cache-control', 'no-store');
           res.end(bytes);
         } catch (error) {

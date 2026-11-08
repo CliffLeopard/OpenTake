@@ -1507,6 +1507,35 @@ impl Engine {
         json(&serde_json::json!({ "id": imported.id, "name": imported.name, "path": path.to_string_lossy() }))
     }
 
+    /// Composite one frame and return a JPEG data URL (playback transport).
+    #[napi]
+    pub fn composite_frame_jpeg(&self, frame: i32, max_size: Option<i32>, quality: Option<u32>) -> Result<String> {
+        let snapshot = self.core.get_timeline();
+        let decoded = composite_frame_decoded(
+            &self.core,
+            frame,
+            RenderSize::new(snapshot.timeline.width.max(2) as u32, snapshot.timeline.height.max(2) as u32),
+            false,
+        )
+        .map_err(|message| Error::from_reason(message))?;
+        let image = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba)
+            .ok_or_else(|| Error::from_reason("invalid composite buffer"))?;
+        let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
+        let mut bytes = Vec::new();
+        let quality = quality.unwrap_or(82).clamp(1, 100) as u8;
+        let mut cursor = std::io::Cursor::new(&mut bytes);
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality)
+            .encode_image(&rgb)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        json(&serde_json::json!({
+            "width": decoded.width,
+            "height": decoded.height,
+            "dataUrl": format!("data:image/jpeg;base64,{encoded}"),
+            "maxSize": max_size,
+        }))
+    }
+
     /// Export the whole timeline audio mixdown to M4A (AAC) or MP3.
     #[napi]
     pub fn export_audio(&self, out_path: String, format: String) -> Result<String> {
