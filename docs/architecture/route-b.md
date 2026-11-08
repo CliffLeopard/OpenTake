@@ -28,6 +28,9 @@ by the DSH Host through N-API.
 - Lottie import supports both bodymovin `.json` and `.lottie` ZIP containers
   (`animations/*.json` extraction); a simple zipped shape renders in the
   composite.
+- Global library list/favorite/categorize/rename/delete and import-to-project are
+  bridged through `opentake-media::library::LibraryStore`; favorite/list/import
+  were verified.
 - Media relink keeps the asset id and updates the source path (verified via
   Host tool). Project-local low-resolution proxies are generated with
   `opentake-media::proxy::create_proxy` and persisted in the manifest; create

@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v17.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v19.node');
 }
 
 function loadAddon() {
@@ -240,6 +240,28 @@ export function apply(ctx) {
         const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
         return importMedia(paths);
       }
+      case 'library_import_to_project':
+        return JSON.parse(state.engine.libraryImportToProject(String(args.id ?? '')));
+      case 'library_list':
+        return JSON.parse(state.engine.libraryList(typeof args.category === 'string' ? args.category : null));
+      case 'library_favorite':
+        return JSON.parse(state.engine.libraryFavorite(
+          String(args.source ?? ''),
+          String(args.kind ?? 'video'),
+          typeof args.category === 'string' ? args.category : null,
+          typeof args.thumb === 'string' ? args.thumb : null,
+        ));
+      case 'library_unfavorite':
+        return state.engine.libraryUnfavorite(String(args.id ?? ''));
+      case 'library_categorize':
+        return JSON.parse(state.engine.libraryCategorize(
+          String(args.id ?? ''),
+          typeof args.category === 'string' ? args.category : null,
+        ));
+      case 'library_rename':
+        return state.engine.libraryRename(String(args.from ?? ''), typeof args.to === 'string' ? args.to : null);
+      case 'library_delete':
+        return state.engine.libraryDelete(String(args.id ?? ''));
       case 'create_media_proxy': {
         const assetId = typeof args.assetId === 'string' ? args.assetId : '';
         return JSON.parse(state.engine.createMediaProxy(
@@ -610,6 +632,46 @@ export function apply(ctx) {
       const value = JSON.parse(
         ensureEngine().createMediaProxy(args.mediaRef, args.maxWidth ?? 1280, args.maxHeight ?? 720),
       );
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_library_list',
+    'List entries in the global OpenTake asset library.',
+    { type: 'object', properties: { category: { type: 'string' } }, additionalProperties: false },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().libraryList(args.category ?? null));
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_library_favorite',
+    'Copy a local file into the global OpenTake asset library.',
+    {
+      type: 'object',
+      properties: { source: { type: 'string' }, kind: { type: 'string' }, category: { type: 'string' }, thumb: { type: 'string' } },
+      required: ['source', 'kind'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().libraryFavorite(
+        args.source,
+        args.kind,
+        args.category ?? null,
+        args.thumb ?? null,
+      ));
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_library_import',
+    'Import one global-library entry into the current project.',
+    { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().libraryImportToProject(args.id));
       return { text: JSON.stringify(value), data: value };
     },
   );

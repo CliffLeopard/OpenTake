@@ -25,6 +25,7 @@ use std::num::NonZeroUsize;
 use std::rc::Rc;
 use opentake_domain::{ClipType, MediaManifestEntry, MediaSource};
 use opentake_media::encode::{mix_clips, ClipAudio, MIX_SAMPLE_RATE};
+use opentake_media::library::{FavoriteRequest, LibraryStore};
 use opentake_media::decode::pcm::{PcmBuffer, PcmFormat, PcmSpec};
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String> {
@@ -456,13 +457,18 @@ struct ExportSession {
 pub struct Engine {
     core: opentake_core::AppCore,
     export: RefCell<Option<ExportSession>>,
+    library: Option<LibraryStore>,
 }
 
 #[napi]
 impl Engine {
     #[napi(constructor)]
     pub fn new() -> Self {
-        Self { core: opentake_core::AppCore::new(), export: RefCell::new(None) }
+        Self {
+            core: opentake_core::AppCore::new(),
+            export: RefCell::new(None),
+            library: LibraryStore::open_default().ok(),
+        }
     }
 
     /// Reset to a fresh unsaved project and return its timeline snapshot JSON.
@@ -825,6 +831,102 @@ impl Engine {
             }
         }
         result
+    }
+
+    /// Global library entries (optionally filtered; empty string = all).
+    #[napi]
+    pub fn library_list(&self, category: Option<String>) -> Result<String> {
+        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let entries = match category.as_deref() {
+            Some(value) if !value.is_empty() => store.entries_in_category(Some(value)),
+            _ => store.entries(),
+        }
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&entries)
+    }
+
+    /// Favorite a source file into the global library.
+    #[napi]
+    pub fn library_favorite(&self, source: String, kind: String, category: Option<String>, thumb: Option<String>) -> Result<String> {
+        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let path = std::path::PathBuf::from(&source);
+        let favorited_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0);
+        let entry = store
+            .favorite(&FavoriteRequest {
+                source: &path,
+                kind: &kind,
+                category: category.filter(|value| !value.is_empty()),
+                favorited_at,
+                thumb: thumb.filter(|value| !value.is_empty()),
+            })
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&entry)
+    }
+
+    /// Remove one library entry by content id.
+    #[napi]
+    pub fn library_unfavorite(&self, id: String) -> Result<bool> {
+        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        store.remove(&id).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Update one entry's category; returns the updated entry or null.
+    #[napi]
+    pub fn library_categorize(&self, id: String, category: Option<String>) -> Result<String> {
+        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let updated = store
+            .set_category(&id, category.filter(|value| !value.is_empty()))
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&updated)
+    }
+
+    /// Rename a library category (empty target = uncategorized); returns count.
+    #[napi]
+    pub fn library_rename(&self, from: String, to: Option<String>) -> Result<u32> {
+        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let count = store
+            .rename_category(&from, to.filter(|value| !value.is_empty()))
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(count as u32)
+    }
+
+    /// Delete one library entry; returns whether it existed.
+    #[napi]
+    pub fn library_delete(&self, id: String) -> Result<bool> {
+        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        store.remove(&id).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Import one global-library entry into the current project as a new asset.
+    #[napi]
+    pub fn library_import_to_project(&self, id: String) -> Result<String> {
+        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let entries = store.entries().map_err(|error| Error::from_reason(error.to_string()))?;
+        let entry = entries
+            .into_iter()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| Error::from_reason(format!("library entry not found: {id}")))?;
+        let path = store
+            .stored_path(&id)
+            .map_err(|error| Error::from_reason(error.to_string()))?
+            .ok_or_else(|| Error::from_reason("library entry file is missing"))?;
+        let probed = probe_to_probed(&path)
+            .ok_or_else(|| Error::from_reason("cannot probe library entry"))?;
+        let name = entry
+            .source
+            .as_deref()
+            .and_then(|source| std::path::Path::new(source).file_stem())
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("Library asset")
+            .to_string();
+        let imported = self
+            .core
+            .import_media_file(&path, name, &probed)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&serde_json::json!({ "id": imported.id, "name": imported.name, "path": path.to_string_lossy() }))
     }
 
     /// Generate a single-frame poster PNG for one imported asset and return

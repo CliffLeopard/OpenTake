@@ -43,7 +43,8 @@ each platform.
 
 - Media import/probe/list/relink/proxy, direct video preview, thumbnails, video/image/text/
   Lottie (.json/.lottie) GPU composite, and H.264/H.265/ProRes export with a linear audio
-  mixdown (including clip volume/fade envelopes; transparent ProRes 4444) work. Streaming playback,
+  mixdown (including clip volume/fade envelopes; transparent ProRes 4444) work.
+  The global asset library lists/favorites/imports entries. Streaming playback,
   proxies/sprites, export progress/cancel, transcription/search/generation,
   motion documents and account/update surfaces still need their Rust command
   bridges.
