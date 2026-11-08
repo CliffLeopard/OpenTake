@@ -87,6 +87,12 @@ by the DSH Host through N-API.
 - Only `darwin-arm64` was built/tested; native addon needs per-platform builds.
 - `EditRequest` is duplicated until a shared `opentake-ipc` crate is extracted.
 
+## Packaging
+
+See [route-b-packaging.md](route-b-packaging.md). `scripts/package-route-b.sh`
+builds a platform tarball with the native addon; verified with `npm pack` and a
+temporary `npm install` (16 files, 6.2 MB).
+
 ## Milestones
 
 1. Engine addon + project/timeline + UI shell (done).

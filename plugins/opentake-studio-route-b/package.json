@@ -13,7 +13,7 @@
     "client.js",
     "cordis.patch.yml",
     "web/**",
-    "native/*/*/*.node",
+    "native/*/*.node",
     "README.md"
   ],
   "dsh": {
