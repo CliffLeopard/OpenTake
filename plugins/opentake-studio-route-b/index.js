@@ -31,7 +31,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v33.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v34.node');
 }
 
 function loadAddon() {
@@ -991,6 +991,14 @@ export function apply(ctx) {
       case 'motion_preview_cancel':
       case 'motion_cancel':
         return false;
+      case 'analyze_loudness':
+        return JSON.parse(state.engine.analyzeLoudness(
+          String(args.clipId ?? args.clip_id ?? ''),
+          typeof args.targetLufs === 'number' ? args.targetLufs : undefined,
+          typeof args.truePeakCeilingDbtp === 'number' ? args.truePeakCeilingDbtp : undefined,
+        ));
+      case 'cancel_loudness_analysis':
+        return false;
       case 'analyze_stabilization':
         return JSON.parse(state.engine.analyzeStabilization(String(args.clipId ?? args.clip_id ?? '')));
       case 'cancel_stabilization_analysis':
@@ -1865,6 +1873,25 @@ export function apply(ctx) {
     },
     async (args) => {
       const value = importFolder(args.path, args.recursive === true);
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_analyze_loudness',
+    'Analyze an audio-bearing clip and return a loudness-normalization result.',
+    {
+      type: 'object',
+      properties: {
+        clipId: { type: 'string' },
+        targetLufs: { type: 'number' },
+        truePeakCeilingDbtp: { type: 'number' },
+      },
+      required: ['clipId'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().analyzeLoudness(String(args.clipId ?? ''), args.targetLufs, args.truePeakCeilingDbtp));
       return { text: JSON.stringify(value), data: value };
     },
   );

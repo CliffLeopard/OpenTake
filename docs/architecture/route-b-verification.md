@@ -92,6 +92,7 @@ longer falls back to the warning path.
 | Timeline edit, split/trim/move, undo/redo | verified | API |
 | Effects, masks, keyframes, transitions | effects/mask API verified; keyframes/transitions not matrix-tested | EditRequest supports them |
 | Stabilization analysis | verified | 48-keyframe track from motion test clip; `applyStabilization` applied to clip |
+| Loudness analysis | verified | EBU R128 result (-21.84 → -16 LUFS, 5.84 dB gain) applied via `setLoudnessNormalization` |
 | Media import/probe/thumbnail/waveform | verified | API |
 | Folder import | verified | recursive scan + import (video/Lottie) |
 | Lottie JSON/.lottie import and composite | verified | import + simple shape |

@@ -28,7 +28,7 @@ use std::num::NonZeroUsize;
 use std::rc::Rc;
 use opentake_domain::{ClipType, MediaManifestEntry, MediaSource};
 use opentake_media::encode::{mix_clips, ClipAudio, MIX_SAMPLE_RATE};
-use opentake_media::analysis::{analyze_stabilization, track_translation_motion, StabilizationConfig};
+use opentake_media::analysis::{analyze_loudness, analyze_stabilization, track_translation_motion, LoudnessNormalizationConfig, StabilizationConfig};
 use opentake_media::MediaCancelToken;
 use opentake_media::library::{FavoriteRequest, LibraryStore};
 use opentake_media::decode::pcm::{PcmBuffer, PcmFormat, PcmSpec};
@@ -794,6 +794,64 @@ impl Engine {
         if let Some(playback) = self.playback.borrow_mut().take() {
             let _ = playback.stream.pause();
         }
+    }
+
+    /// Analyze one audio-bearing clip's visible window and return a persisted
+    /// loudness-normalization result (no project mutation).
+    #[napi]
+    pub fn analyze_loudness(
+        &self,
+        clip_id: String,
+        target_lufs: Option<f64>,
+        true_peak_ceiling_dbtp: Option<f64>,
+    ) -> Result<String> {
+        let timeline = self.core.get_timeline().timeline;
+        let clip = timeline
+            .tracks
+            .iter()
+            .flat_map(|track| &track.clips)
+            .chain(timeline.nested_sequences.iter().flat_map(|sequence| sequence.timeline.tracks.iter().flat_map(|track| &track.clips)))
+            .find(|clip| clip.id == clip_id)
+            .cloned()
+            .ok_or_else(|| Error::from_reason(format!("clip not found: {clip_id}")))?;
+        if !matches!(clip.media_type, ClipType::Audio | ClipType::Video) || clip.nested_sequence_id.is_some() {
+            return Err(Error::from_reason("loudness requires an ordinary audio-bearing clip"));
+        }
+        let entry = self
+            .core
+            .media()
+            .entries
+            .iter()
+            .find(|entry| entry.id == clip.media_ref)
+            .cloned()
+            .ok_or_else(|| Error::from_reason("loudness source media not found"))?;
+        let path = resolve_media_path(&entry, self.core.project_dir().as_deref())
+            .ok_or_else(|| Error::from_reason("loudness source path unavailable"))?;
+        let fps = timeline.fps.max(1) as f64;
+        let start = clip.trim_start_frame.max(0) as f64 / fps;
+        let end = start + clip.duration_frames.max(1) as f64 / fps;
+        let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
+        let pcm = opentake_media::extract_pcm(&path, &spec, Some((start, end)))
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        if pcm.samples_f32.is_empty() {
+            return Err(Error::from_reason("loudness_unreadable_audio: empty PCM window"));
+        }
+        let config = LoudnessNormalizationConfig {
+            target_lufs: target_lufs.unwrap_or(-16.0),
+            true_peak_ceiling_dbtp: true_peak_ceiling_dbtp.unwrap_or(-1.0),
+        };
+        let result = analyze_loudness(&pcm.samples_f32, pcm.spec.sample_rate, config)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let normalization = opentake_domain::LoudnessNormalization {
+            target_lufs: result.target_lufs,
+            true_peak_ceiling_dbtp: result.true_peak_ceiling_dbtp,
+            input_integrated_lufs: result.input_integrated_lufs,
+            input_true_peak_dbtp: result.input_true_peak_dbtp,
+            gain_db: result.gain_db,
+            output_integrated_lufs: result.output_integrated_lufs,
+            output_true_peak_dbtp: result.output_true_peak_dbtp,
+        };
+        json(&normalization)
     }
 
     /// Analyze one ordinary video clip into a source-bound stabilization track.
