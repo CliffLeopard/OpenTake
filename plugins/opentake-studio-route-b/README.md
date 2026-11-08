@@ -65,10 +65,10 @@ not runtime-tested on this machine.
   to SRT/VTT; XMEML/EDL/OTIO/FCPXML interchange export is bridged. Provider
   ASR (OpenAI-compatible verbose JSON) can transcribe and generate captions;
   configure `OPENTAKE_ASR_URL`/`OPENAI_API_KEY`. Basic streaming playback is
-  emulated by a wall-clock Host loop and `/engine/preview/frame`. Streaming playback,
-  proxies/sprites, export progress/cancel, transcription/search/generation,
-  motion documents and account/update surfaces still need their Rust command
-  bridges.
+  emulated by a wall-clock Host loop and `/engine/preview/frame`. Proxies,
+  thumbnails and timeline sprite grids are bridged; export progress/cancel,
+  transcription/search/generation, motion documents and account/update surfaces
+  still need their Rust command bridges. Recursive folder import is available.
 - The Tauri file dialogs are stubbed to `/tmp/opentake-route-b/demo.opentake`;
   native DSH dialogs are a later milestone.
 - The iframe is a stepping stone; a native DSH React mount is the target.

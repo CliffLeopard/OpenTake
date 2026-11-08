@@ -95,6 +95,7 @@ longer falls back to the warning path.
 | Folder import | verified | recursive scan + import (video/Lottie) |
 | Lottie JSON/.lottie import and composite | verified | import + simple shape |
 | Proxies, relink, library, favorites | verified | API |
+| Timeline sprites | verified | 24-frame 800x450 JPEG tile grid |
 | Composite video/image/text | verified (video/effects/mask/text) | Lottie simple |
 | Playback | WebKit direct path verified; native API verified | no cpal master clock; native route not used by UI for simple stacks |
 | Export H.264/AAC, range, alpha, audio-only | verified | current run |
@@ -115,10 +116,9 @@ longer falls back to the warning path.
 2. Real streaming/cpal playback and exact A/V master clock.
 3. Ducking, 10-bit/HDR export contracts.
 4. Motion template/code publish path and per-frame Chrome performance.
-5. Timeline sprite endpoint (`request_timeline_sprite`).
-6. Folder import and broader UI module verification.
-7. Windows/Linux builds, signing, notarization, updater/account surfaces.
-8. Real ASR/generation provider credentials (only mocks used).
+5. Broader UI module verification (folder import is verified).
+6. Windows/Linux builds, signing, notarization, updater/account surfaces.
+7. Real ASR/generation provider credentials (only mocks used).
 
 ## 8. Verdict
 
