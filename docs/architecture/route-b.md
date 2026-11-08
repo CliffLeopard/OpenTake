@@ -28,6 +28,9 @@ by the DSH Host through N-API.
 - Verified in DSH: full home/editor render, new project writes a real
   `.opentake` bundle, media import returns ffprobe metadata, double-click adds
   video+linked-audio clips, inspector loads, and the direct video preview plays.
+- Poster thumbnails generated through `opentake-media` decode; the media card
+  displays the real frame. Waveform buckets are bridged via `get_waveform`.
+- Node smoke test: `node crates/opentake-node/test/smoke.mjs`.
 
 ## Known gaps
 
@@ -43,7 +46,8 @@ by the DSH Host through N-API.
 
 1. Engine addon + project/timeline + UI shell (done).
 2. Media import/probe/list + timeline insert + direct preview (done).
-3. GPU preview/playback + thumbnails/proxies/waveforms.
+3. Poster thumbnails and waveform buckets (done); GPU composite/playback,
+   proxies and sprite filmstrips remain.
 4. Export pipeline.
 5. AI/transcription/search/generation and Motion.
 6. Packaging, signing, Windows/Linux, full parity verification.

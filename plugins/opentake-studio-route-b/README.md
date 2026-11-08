@@ -19,7 +19,8 @@ No Tauri window, no sidecar process, no MCP bridge.
   a new project through the UI drives the Rust engine; `edit_apply`/undo/redo
   work from Host tools. Media can be imported (ffprobe metadata), shown in the
   media panel, double-clicked onto the timeline, and the direct video preview
-  plays inside DSH.
+  plays inside DSH. Media cards get generated poster thumbnails; waveform
+  buckets are available through the Host IPC/tool.
 
 ## Build
 
