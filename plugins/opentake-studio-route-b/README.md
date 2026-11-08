@@ -39,6 +39,12 @@ Then install `plugins/opentake-studio-route-b` as a DSH bundle and restart the
 plugin. The native binary is intentionally gitignored; run the build script on
 each platform.
 
+## Cross-build
+
+`ROUTE_B_TARGET=x86_64-apple-darwin ./scripts/build-route-b-addon.sh` places a
+macOS x64 addon; the plugin selects the file by platform/arch. x64 is built but
+not runtime-tested on this machine.
+
 ## Current limits
 
 - Media import/probe/list/relink/proxy, direct video preview, thumbnails, video/image/text/

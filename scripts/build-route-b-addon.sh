@@ -2,32 +2,40 @@
 # Build the OpenTake Rust engine Node-API addon and place it where the Route B
 # DSH plugin expects it.
 #
-# Requires: Rust stable (cargo) and the platform C/C++ toolchain.
+# Usage:
+#   ./scripts/build-route-b-addon.sh                       # host target
+#   ROUTE_B_TARGET=x86_64-apple-darwin ./scripts/build-... # cross target
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if ! command -v cargo >/dev/null 2>&1 && [ -f "$HOME/.cargo/env" ]; then
   . "$HOME/.cargo/env"
 fi
 
-cargo build -p opentake-node --release
+TARGET="${ROUTE_B_TARGET:-}"
+if [ -n "$TARGET" ]; then
+  cargo build -p opentake-node --release --target "$TARGET"
+  OUT="target/$TARGET/release"
+  HOST="$TARGET"
+else
+  cargo build -p opentake-node --release
+  OUT="target/release"
+  HOST="$(rustc -vV | awk '/^host:/ {print $2}')"
+fi
 
-case "$(uname -s)" in
-  Darwin) LIB="target/release/libopentake_node.dylib" ;;
-  Linux)  LIB="target/release/libopentake_node.so" ;;
-  MINGW*|MSYS*|CYGWIN*) LIB="target/release/opentake_node.dll" ;;
-  *) echo "Unsupported platform: $(uname -s)" >&2; exit 1 ;;
+case "$HOST" in
+  *apple-darwin) LIB="$OUT/libopentake_node.dylib" ;;
+  *linux*) LIB="$OUT/libopentake_node.so" ;;
+  *windows*) LIB="$OUT/opentake_node.dll" ;;
+  *) echo "Unsupported target: $HOST" >&2; exit 1 ;;
 esac
 
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-case "$OS" in
-  darwin) OS="darwin" ;;
-  linux) OS="linux" ;;
-  mingw*|msys*|cygwin*) OS="win32" ;;
-esac
-ARCH="$(uname -m)"
-case "$ARCH" in
-  arm64|aarch64) ARCH="arm64" ;;
-  x86_64|amd64) ARCH="x64" ;;
+case "$HOST" in
+  aarch64-apple-darwin) OS=darwin; ARCH=arm64 ;;
+  x86_64-apple-darwin) OS=darwin; ARCH=x64 ;;
+  x86_64-unknown-linux-gnu) OS=linux; ARCH=x64 ;;
+  aarch64-unknown-linux-gnu) OS=linux; ARCH=arm64 ;;
+  x86_64-pc-windows-msvc) OS=win32; ARCH=x64 ;;
+  *) echo "Unsupported target: $HOST" >&2; exit 1 ;;
 esac
 
 DEST="plugins/opentake-studio-route-b/native/${OS}-${ARCH}"

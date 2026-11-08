@@ -28,9 +28,19 @@ The plugin serves its own React app from `/opentake-studio-route-b/app/`.
 | Target | Engine needs | Status |
 |---|---|---|
 | macOS arm64 | Metal/wgpu, system ffmpeg | built + tested |
-| macOS x64 | Metal/wgpu, system ffmpeg | not built |
+| macOS x64 | Metal/wgpu, system ffmpeg | cross-built; not runtime-tested (no Rosetta) |
 | Windows x64 | D3D12/wgpu, bundled ffmpeg expected | not built |
 | Linux x64 | Vulkan/wgpu, system ffmpeg | not built |
+
+## Cross-build
+
+```bash
+ROUTE_B_TARGET=x86_64-apple-darwin ./scripts/build-route-b-addon.sh
+```
+
+The resulting tarball can contain both `native/darwin-arm64` and
+`native/darwin-x64`; the plugin selects by `process.arch`. The x64 addon built
+successfully at 17.4 MB but was not executed on this machine (Rosetta absent).
 
 ## ABI and signing
 
