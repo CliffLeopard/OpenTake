@@ -483,7 +483,7 @@ export function apply(ctx) {
 
   registerTool(
     'opentake_route_b_export_video',
-    'Render every timeline frame and encode it to an H.264/H.265/ProRes file (video only for now).',
+    'Render every timeline frame, encode H.264/H.265/ProRes, and mux the linear audio mixdown.',
     {
       type: 'object',
       properties: {
