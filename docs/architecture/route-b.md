@@ -25,6 +25,9 @@ by the DSH Host through N-API.
   existing React UI command payloads are accepted unchanged.
 - DSH plugin serves the built React app and injects a Tauri shim
   (`invoke`, events, `convertFileSrc`, file-dialog prototype).
+- Lottie import supports both bodymovin `.json` and `.lottie` ZIP containers
+  (`animations/*.json` extraction); a simple zipped shape renders in the
+  composite.
 - Media relink keeps the asset id and updates the source path (verified via
   Host tool).
 - Verified in DSH: full home/editor render, new project writes a real

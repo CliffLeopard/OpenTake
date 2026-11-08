@@ -38,8 +38,26 @@ fn resolve_media_path(entry: &MediaManifestEntry, project_dir: Option<&std::path
     }
 }
 
-fn lottie_probe(path: &std::path::Path) -> Option<ProbedMedia> {
+fn lottie_document_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
     let bytes = std::fs::read(path).ok()?;
+    if path.extension().and_then(|value| value.to_str()).is_none_or(|value| !value.eq_ignore_ascii_case("lottie")) {
+        return Some(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).ok()?;
+        let name = file.name().to_ascii_lowercase();
+        if file.is_file() && name.starts_with("animations/") && name.ends_with(".json") {
+            let mut json = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut json).ok()?;
+            return Some(json);
+        }
+    }
+    None
+}
+
+fn lottie_probe(path: &std::path::Path) -> Option<ProbedMedia> {
+    let bytes = lottie_document_bytes(path)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let width = value.get("w")?.as_i64()? as i32;
     let height = value.get("h")?.as_i64()? as i32;
@@ -58,7 +76,7 @@ fn lottie_probe(path: &std::path::Path) -> Option<ProbedMedia> {
 
 fn probe_to_probed(path: &std::path::Path) -> Option<ProbedMedia> {
     let extension = path.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
-    if extension.as_deref() == Some("json") {
+    if extension.as_deref() == Some("json") || extension.as_deref() == Some("lottie") {
         return lottie_probe(path);
     }
     let probe = opentake_media::probe(path).ok()?;
@@ -161,7 +179,7 @@ impl LottieState {
         render_box: (u32, u32),
     ) -> Option<Rc<GpuTexture>> {
         if !self.documents.contains_key(path) {
-            let bytes = std::fs::read(path).ok()?;
+            let bytes = lottie_document_bytes(path)?;
             let composition = std::panic::catch_unwind(|| velato::Composition::from_slice(&bytes))
                 .ok()?
                 .ok()?;
