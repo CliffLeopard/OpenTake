@@ -768,17 +768,19 @@ impl Engine {
 
     #[napi]
     pub fn playback_audio_pause(&self) -> Result<bool> {
-        let guard = self.playback.borrow();
-        let Some(playback) = guard.as_ref() else { return Ok(false); };
+        let mut guard = self.playback.borrow_mut();
+        let Some(playback) = guard.as_mut() else { return Ok(false); };
         playback.stream.pause().map_err(|error| Error::from_reason(error.to_string()))?;
+        playback.paused = true;
         Ok(true)
     }
 
     #[napi]
     pub fn playback_audio_resume(&self) -> Result<bool> {
-        let guard = self.playback.borrow();
-        let Some(playback) = guard.as_ref() else { return Ok(false); };
+        let mut guard = self.playback.borrow_mut();
+        let Some(playback) = guard.as_mut() else { return Ok(false); };
         playback.stream.play().map_err(|error| Error::from_reason(error.to_string()))?;
+        playback.paused = false;
         Ok(true)
     }
 
