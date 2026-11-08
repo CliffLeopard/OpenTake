@@ -394,3 +394,43 @@ Transition = {
 - Host 测试覆盖新路由/工具；
 - UI 截图 + 交互验证；
 - 文档更新。
+
+## 12. Phase 7 扩展契约：遮罩、混合模式、轨道音量
+
+### 12.1 字段
+
+```js
+Clip.mask = null | {
+  shape: 'rect' | 'ellipse',
+  x: number, y: number, width: number, height: number, // 0..1，相对 clip 的 transform 框，x+w<=1
+  feather: number,   // 0..1，默认 0；矩形边缘/椭圆边缘的羽化比例
+  invert: boolean,   // 默认 false
+}
+Clip.blendMode = 'normal'|'screen'|'multiply'|'overlay'|'darken'|'lighten'|'add'|'difference'
+Track.volume = 1     // 0..2，默认 1；与 clip.volume、clip 音量关键帧相乘
+```
+
+- `mask` 在 clip 的 transform 框内应用（先 crop/scale，再 mask，再 overlay）。
+- `mask` 支持 video/image/text/caption；drawtext 回退无法应用 mask，浏览器 PNG 可以。
+- `blendMode` 仅在片段覆盖整个项目帧（transform 0,0,1,1，无 rotation/crop/mask）时尝试真实 `blend` 滤镜；其他情况回退普通 overlay（文档化）。
+- `Track.volume` 参与所有该轨道音频（audio clip 与 video-clip audio）的最终音量；`muted` 优先级更高。
+
+### 12.2 操作
+
+- `set-mask { clipId, mask: object|null }`
+- `set-blend-mode { clipId, blendMode }`
+- `update-track` 增加可选 `volume`（0..2）；已有 name/muted/hidden。
+
+### 12.3 导出/预览
+
+- mask：在缩放后的 RGBA 层上用 `geq` 的 alpha 表达式实现矩形/椭圆+feather；`invert` 反转 alpha。
+- blend：全帧+无变换的片段的合成层用 `blend=all_mode=<mode>`；其余回退 `overlay`。
+- 轨道音量：音频链在 clip 音量之后乘 `track.volume`；预览音频同样乘。
+- 预览：Canvas clip path（rect/ellipse，feather 用 shadow/gradient 或近似）；blend 用 Canvas `globalCompositeOperation` 近似。
+
+### 12.4 验收
+
+- model 单测：默认值、mask 校验、blend 枚举、track volume、trim/split/move 保留、purity。
+- export 测试：mask alpha 滤镜、blend 全帧与回退、track volume 音频链；真实导出/像素抽样。
+- Host 测试：新操作/工具/状态字段。
+- UI：检查器 mask/blend 控件、轨道音量滑块；截图验证。
