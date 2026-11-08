@@ -30,6 +30,7 @@ import {
   resolveTools,
 } from './lib/media.js';
 import { runExport } from './lib/export.js';
+import { captionClipFromSegments, parseSubtitles, projectCaptionSegments, serializeSubtitles } from './lib/captions.js';
 
 export const name = 'opentake-studio';
 export const inject = ['tools', 'webServer', 'connection'];
@@ -75,6 +76,14 @@ function sendJson(res, status, payload) {
   res.setHeader('content-type', 'application/json; charset=utf-8');
   res.setHeader('cache-control', 'no-store');
   res.end(JSON.stringify(payload));
+}
+
+function sendText(res, status, text, contentType = 'text/plain; charset=utf-8', filename = null) {
+  res.statusCode = status;
+  res.setHeader('content-type', contentType);
+  res.setHeader('cache-control', 'no-store');
+  if (filename !== null) res.setHeader('content-disposition', `attachment; filename="${filename}"`);
+  res.end(text);
 }
 
 function sendMethodNotAllowed(res, allow) {
@@ -320,6 +329,60 @@ export function apply(ctx) {
           }
         }
         op.text = normalizeTextStyle(op.text, op.content);
+      } else if (op.type === 'add-effect') {
+        if (!isRecord(op.effect)) throw new RouteError('add-effect needs an effect object', 'invalid-input');
+        op.effect = {
+          ...op.effect,
+          id: typeof op.effect.id === 'string' && op.effect.id.length > 0 ? op.effect.id : randomUUID(),
+          enabled: op.effect.enabled !== false,
+        };
+      } else if (op.type === 'add-marker') {
+        if (!isRecord(op.marker)) throw new RouteError('add-marker needs a marker object', 'invalid-input');
+        op.marker = {
+          ...op.marker,
+          id: typeof op.marker.id === 'string' && op.marker.id.length > 0 ? op.marker.id : randomUUID(),
+          frame: intOr(op.marker.frame, 0),
+          label: typeof op.marker.label === 'string' ? op.marker.label : 'Marker',
+          color: typeof op.marker.color === 'string' ? op.marker.color : '#fbbf24',
+        };
+      } else if (op.type === 'add-transition') {
+        if (!isRecord(op.transition)) throw new RouteError('add-transition needs a transition object', 'invalid-input');
+        op.transition = {
+          ...op.transition,
+          id:
+            typeof op.transition.id === 'string' && op.transition.id.length > 0
+              ? op.transition.id
+              : randomUUID(),
+          type: typeof op.transition.type === 'string' ? op.transition.type : 'dissolve',
+          durationFrames: Math.max(1, intOr(op.transition.durationFrames, Math.round(project.fps / 2))),
+        };
+      } else if (op.type === 'add-caption') {
+        op.clipId = typeof op.clipId === 'string' && op.clipId.length > 0 ? op.clipId : randomUUID();
+        op.splitRightClipId = randomUUID();
+        op.startFrame = intOr(op.startFrame, 0);
+        op.durationFrames = Math.max(1, intOr(op.durationFrames, 90));
+        const rangeEnd = op.startFrame + op.durationFrames;
+        if (typeof op.trackId === 'string' && op.trackId.length > 0) {
+          op.trackId = pickTrack(project, 'video', op.trackId, createdTracks);
+        } else {
+          const existingCaption = project.tracks.find(
+            (track) =>
+              track.type === 'video' &&
+              track.name === 'Captions' &&
+              !track.clips.some(
+                (clip) => clip.startFrame < rangeEnd && clip.startFrame + clip.durationFrames > op.startFrame,
+              ),
+          );
+          if (existingCaption !== undefined) {
+            op.trackId = existingCaption.id;
+          } else {
+            op.trackId = randomUUID();
+            createdTracks.set(op.trackId, 'video');
+            expanded.push({ type: 'add-track', trackId: op.trackId, trackType: 'video', name: 'Captions' });
+          }
+        }
+        op.style = normalizeCaptionStyle(op.style);
+        op.segments = Array.isArray(op.segments) ? op.segments : [];
       } else if (op.type === 'move-clip') {
         op.splitRightClipId = randomUUID();
       } else if (op.type === 'split-clip') {
@@ -339,6 +402,17 @@ export function apply(ctx) {
       color: typeof style.color === 'string' ? style.color : '#ffffff',
       fontWeight: style.fontWeight === '400' || style.fontWeight === '700' ? style.fontWeight : '600',
       align: style.align === 'left' || style.align === 'right' ? style.align : 'center',
+    };
+  }
+
+  function normalizeCaptionStyle(input) {
+    const style = isRecord(input) ? input : {};
+    return {
+      fontSize: intOr(style.fontSize, 48) || 48,
+      color: typeof style.color === 'string' ? style.color : '#ffffff',
+      fontWeight: style.fontWeight === '400' || style.fontWeight === '700' ? style.fontWeight : '600',
+      align: style.align === 'left' || style.align === 'right' ? style.align : 'center',
+      background: typeof style.background === 'string' ? style.background : 'rgba(0,0,0,0.35)',
     };
   }
 
@@ -605,8 +679,18 @@ export function apply(ctx) {
           opacity: clip.opacity,
           transform: clip.transform,
           ...(clip.text === null ? {} : { text: clip.text.content }),
+          ...(clip.speed === undefined ? {} : { speed: clip.speed }),
+          ...(clip.fadeInFrames === undefined ? {} : { fadeInFrames: clip.fadeInFrames }),
+          ...(clip.fadeOutFrames === undefined ? {} : { fadeOutFrames: clip.fadeOutFrames }),
+          ...(Array.isArray(clip.effects) && clip.effects.length > 0 ? { effects: clip.effects } : {}),
+          ...(clip.keyframes !== undefined && Object.keys(clip.keyframes).length > 0
+            ? { keyframes: clip.keyframes }
+            : {}),
+          ...(clip.caption === undefined ? {} : { caption: clip.caption }),
         })),
       })),
+      ...(project.markers === undefined ? {} : { markers: project.markers }),
+      ...(project.transitions === undefined ? {} : { transitions: project.transitions }),
     };
   }
 
@@ -675,8 +759,15 @@ export function apply(ctx) {
       throw new RouteError('clipId is not a safe file identifier', 'invalid-input');
     }
     const found = clipId.length === 0 ? null : findClip(project, clipId);
-    if (found === null || found.clip.type !== 'text') {
-      throw new RouteError('renderTextAsset needs an existing text clip id', 'invalid-input');
+    if (found === null || (found.clip.type !== 'text' && found.clip.type !== 'caption')) {
+      throw new RouteError('renderTextAsset needs an existing text or caption clip id', 'invalid-input');
+    }
+    const segmentIndex = input.segmentIndex === undefined ? null : Number(input.segmentIndex);
+    if (segmentIndex !== null && (!Number.isInteger(segmentIndex) || segmentIndex < 0)) {
+      throw new RouteError('segmentIndex must be a non-negative integer', 'invalid-input');
+    }
+    if (found.clip.type === 'caption' && segmentIndex === null) {
+      throw new RouteError('caption renders need a segmentIndex', 'invalid-input');
     }
     const dataUrl = typeof input.dataUrl === 'string' ? input.dataUrl : '';
     const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
@@ -687,8 +778,66 @@ export function apply(ctx) {
     }
     const renderDir = path.join(state.paths.root, 'renders');
     await mkdir(renderDir, { recursive: true });
-    await writeFile(path.join(renderDir, `${clipId}.png`), bytes);
-    return { text: 'Text render saved', data: { clipId, bytes: bytes.length } };
+    const fileName = segmentIndex === null ? `${clipId}.png` : `${clipId}-seg-${segmentIndex}.png`;
+    await writeFile(path.join(renderDir, fileName), bytes);
+    return { text: 'Text render saved', data: { clipId, segmentIndex, bytes: bytes.length } };
+  }
+
+  async function uploadLut(req, rawName) {
+    ensureProject();
+    const safeName = String(rawName ?? '')
+      .replace(/[^A-Za-z0-9._-]+/g, '-')
+      .replace(/^[-.]+|[-.]+$/g, '')
+      .slice(0, 120);
+    if (!safeName.toLowerCase().endsWith('.cube')) {
+      throw new RouteError('A .cube LUT file name is required', 'invalid-input');
+    }
+    const dir = path.join(state.paths.root, 'luts');
+    await mkdir(dir, { recursive: true });
+    const target = path.join(dir, safeName);
+    let size = 0;
+    try {
+      await new Promise((resolve, reject) => {
+        const out = createWriteStream(target, { flags: 'wx' });
+        let failed = false;
+        req.on('data', (chunk) => {
+          if (failed) return;
+          size += chunk.byteLength;
+          if (size > 32 * 1024 * 1024) {
+            failed = true;
+            req.unpipe(out);
+            out.destroy();
+            reject(new RouteError('The LUT is too large (max 32 MiB)', 'invalid-input', 413));
+          }
+        });
+        req.on('error', reject);
+        out.on('error', reject);
+        out.on('finish', resolve);
+        req.pipe(out);
+      });
+    } catch (error) {
+      await rm(target, { force: true }).catch(() => {});
+      throw error;
+    }
+    return { text: 'LUT saved', data: { file: safeName, bytes: size } };
+  }
+
+  async function importCaptions(input) {
+    const project = ensureProject();
+    const text = typeof input.text === 'string' ? input.text : '';
+    const parsed = parseSubtitles(text);
+    const caption = captionClipFromSegments(project, parsed.segments, {
+      style: isRecord(input.style) ? input.style : undefined,
+      ...(typeof input.trackId === 'string' ? { trackId: input.trackId } : {}),
+    });
+    return applyOperations([{ type: 'add-caption', ...caption }]);
+  }
+
+  function exportCaptions(format) {
+    const project = ensureProject();
+    const normalized = format === 'vtt' ? 'vtt' : 'srt';
+    const segments = projectCaptionSegments(project);
+    return { text: serializeSubtitles(segments, normalized), format: normalized };
   }
 
   async function startExport(input) {
@@ -851,6 +1000,21 @@ export function apply(ctx) {
         sendJson(res, 200, await redo());
         return;
       }
+      if (sub === '/luts/upload' && req.method === 'POST') {
+        const uploaded = await uploadLut(req, url.searchParams.get('name') ?? '');
+        sendJson(res, 200, { ok: true, ...uploaded.data });
+        return;
+      }
+      if (sub === '/captions/import' && req.method === 'POST') {
+        sendJson(res, 200, await importCaptions(await readBoundedJson(req, 4 * 1024 * 1024)));
+        return;
+      }
+      if ((sub === '/captions/export' || sub === '/captions/export.srt' || sub === '/captions/export.vtt') && req.method === 'GET') {
+        const format = sub.endsWith('.vtt') ? 'vtt' : sub.endsWith('.srt') ? 'srt' : (url.searchParams.get('format') === 'vtt' ? 'vtt' : 'srt');
+        const exported = exportCaptions(format);
+        sendText(res, 200, exported.text, 'text/plain; charset=utf-8', `captions.${exported.format}`);
+        return;
+      }
       if (sub === '/text/render' && req.method === 'POST') {
         const body = await readBoundedJson(req, 16 * 1024 * 1024);
         await renderTextAsset(body);
@@ -941,6 +1105,61 @@ export function apply(ctx) {
       const project = ensureProject();
       const media = summaryOf(project).media;
       return { text: JSON.stringify(media), data: { media } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_edit',
+    'Apply high-level edit operations to the current project (speed, keyframes, effects, fades, markers, transitions, captions, plus existing timeline operations). Returns the updated state.',
+    {
+      type: 'object',
+      properties: {
+        operations: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'object' },
+          description: 'Operation objects; see the plugin DESIGN §11.2 for shapes.',
+        },
+      },
+      required: ['operations'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await applyOperations(args.operations);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_import_captions',
+    'Import SRT or WebVTT subtitle text into a caption clip on a dedicated Captions track.',
+    {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Full SRT or WebVTT file contents' },
+        style: { type: 'object' },
+        trackId: { type: 'string' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await importCaptions(args);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_export_captions',
+    'Export every caption clip in the current project as SRT (default) or WebVTT text.',
+    {
+      type: 'object',
+      properties: { format: { type: 'string', enum: ['srt', 'vtt'] } },
+      additionalProperties: false,
+    },
+    async (args) => {
+      const exported = exportCaptions(args.format);
+      return { text: exported.text, data: { format: exported.format } };
     },
   );
 

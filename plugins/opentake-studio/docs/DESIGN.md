@@ -285,7 +285,7 @@ type StateResponse = {
 
 ## 9. 测试与验收
 
-- `node --check` 所有 JS；`node --test plugins/opentake-studio/test/` 全绿（当前 163 项）。
+- `node --check` 所有 JS；`node --test plugins/opentake-studio/test/` 全绿（当前 241 项）。
 - model 测试：建工程、add/move/trim/split/remove、重叠裁剪/拆分、撤销快照服务（服务层测试可选）。
 - media 测试：生成测试媒体（ffmpeg `testsrc`/`sine`）在临时目录，probe/import/thumb。
 - export 测试：`buildExportArgs` 断言 filter graph，真实 ffmpeg 导出 2 秒 MP4 并用 ffprobe 校验时长/流。
@@ -300,7 +300,7 @@ type StateResponse = {
 3. 导出（media-dev）+ 集成测试。
 4. 安装、E2E、截图、文档。
 
-## 11. Phase 1 扩展契约（完整复刻路线 A）
+## 11. Phase 1 扩展契约（完整复刻路线 A，已实现）
 
 路线 A（纯 TS/JS）下，下一阶段扩展以下数据与行为。实现顺序：model → export → UI → Host 路由/工具 → 测试。
 

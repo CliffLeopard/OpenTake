@@ -1,6 +1,6 @@
 # OpenTake Studio：完整功能复刻差距与路线
 
-状态：规划 · 2026-11-08 · 分支 `feat/dsh-native-studio`
+状态：Phase 1 已实现 · 2026-11-08 · 分支 `feat/dsh-native-studio`
 
 当前 `plugins/opentake-studio` 是**纯 DSH 原生编辑器 MVP**（工程、媒体、时间线、预览、文本、基础导出、15 个 Agent 工具），
 不是 Rust/Tauri 版 OpenTake 的完整功能复刻。本文是“完整功能”的验收清单与路线，避免把 MVP 当成完成。
@@ -32,17 +32,20 @@ Rust/Tauri 版包含：
 | Agent | 15 个原生工具，与 UI 共用服务 |
 | 测试 | 163 项（model/project/media/export/host） |
 
-## 3. 未完成清单（按验收域）
+## 3. 未完成清单（按验收域；Phase 1 项已划掉）
 
 ### A. NLE 核心
-- 转场（交叉溶解、推拉、擦除；时间线拖入、时长编辑、导出）
-- 关键帧（任意属性动画、曲线、复制/粘贴、导出用 ffmpeg 表达式或逐帧渲染）
-- 变速（0.25x–4x、变速后音频 atempo/pitch、时间线保持）
-- 多轨合成/混合模式、画中画、遮罩、裁剪、旋转导出
-- 音频：淡入淡出、ducking、增益自动化、独立轨道音量/静音、5.1/采样率策略
-- 字幕：SRT/VTT 导入导出、字幕组样式批量同步、逐词时间轴
-- 时间线高级：吸附、波纹编辑、滚动编辑、复制/粘贴、多选、标记、分组、嵌套序列、多工程
-- 播放引擎：帧精确、丢帧策略、音频/视频同步、代理媒体、HDR/色彩管理
+- ✅ 转场（Phase 1：fadeToBlack 精确；dissolve/wipe 为淡入淡出近似）
+- ✅ 关键帧 volume/opacity/x/y（width/height/rotation 预览，导出静态降级）
+- ✅ 变速 0.25–4x（视频 setpts / 音频 atempo）
+- ✅ 淡入淡出、每片段效果（eq/colorbalance/gblur/unsharp/chromakey/lut3d）
+- ✅ SRT/VTT 导入导出、字幕片段编辑；逐词时间轴待 Phase 2
+- ✅ 吸附加标记/多选/复制粘贴/波纹删除/快照 undo
+- ❌ 多轨混合模式、画中画、遮罩/裁剪、旋转导出
+- ❌ 音频 ducking/增益自动化、独立轨道音量/静音 UI、5.1/采样率策略
+- ❌ 帧精确播放/丢帧策略/代理媒体/HDR/色彩管理
+- ❌ 字幕组批量同步、逐词时间轴
+- ❌ 嵌套序列、多工程、分组、滚动编辑
 
 ### B. 媒体/AI
 - 媒体库全局/跨工程、收藏、文件夹、重链接、代理、波形

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, it } from 'node:test';
@@ -29,6 +29,82 @@ const CLIP_DEFAULTS = {
   transform: { x: 0, y: 0, width: 1, height: 1, rotation: 0 },
   text: null,
 };
+
+const IDENTITY_CUBE = [
+  'TITLE "identity"',
+  'LUT_3D_SIZE 2',
+  '0 0 0',
+  '1 0 0',
+  '0 1 0',
+  '1 1 0',
+  '0 0 1',
+  '1 0 1',
+  '0 1 1',
+  '1 1 1',
+].join('\n');
+
+// ---------------------------------------------------------------------------
+// Phase 1 fixtures (speed/fades/keyframes/effects/captions/transitions)
+// ---------------------------------------------------------------------------
+
+let phaseRoot = null;
+let phaseRealProject = null;
+
+function mediaEntry(overrides = {}) {
+  return {
+    id: 'media-video',
+    name: 'clip.mp4',
+    kind: 'video',
+    fileName: 'video.mp4',
+    durationFrames: 120,
+    sourceDurationSeconds: 4,
+    width: 320,
+    height: 180,
+    hasAudio: true,
+    sizeBytes: 1000,
+    importedAt: 1,
+    ...overrides,
+  };
+}
+
+function makeClip(overrides = {}) {
+  const { transform, ...rest } = overrides;
+  return {
+    ...CLIP_DEFAULTS,
+    ...rest,
+    transform: { ...CLIP_DEFAULTS.transform, ...(transform ?? {}) },
+  };
+}
+
+function makeProject({
+  media = [mediaEntry()],
+  clips = [],
+  transitions = [],
+  extraTracks = [],
+  width = 320,
+  height = 180,
+  fps = 30,
+} = {}) {
+  return {
+    version: 1,
+    name: 'phase',
+    fps,
+    width,
+    height,
+    createdAt: 0,
+    updatedAt: 0,
+    media,
+    tracks: [
+      { id: 'track-video', type: 'video', name: 'Video 1', muted: false, hidden: false, clips },
+      ...extraTracks,
+    ],
+    transitions,
+  };
+}
+
+function buildPhase(project, outputPath = path.join(phaseRoot, 'out.mp4')) {
+  return buildExportArgs({ project, projectRoot: phaseRoot, outputPath });
+}
 
 function createFixtureProject() {
   return {
@@ -221,10 +297,64 @@ before(async () => {
       },
     ],
   };
+
+  // Phase 1 real fixture: speed 2 (2s source -> 1s timeline), fades and a
+  // representative effect stack including chroma key and a 3D LUT.
+  const phaseVideoMedia = byName.get('clip.mp4');
+  await mkdir(path.join(exportProjectRoot, 'luts'), { recursive: true });
+  await writeFile(path.join(exportProjectRoot, 'luts', 'film.cube'), IDENTITY_CUBE);
+  phaseRealProject = {
+    version: 1,
+    name: 'phase-real',
+    fps: 30,
+    width: 320,
+    height: 180,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    media: imported.media,
+    tracks: [
+      {
+        id: 'phase-video', type: 'video', name: 'Video 1', muted: false, hidden: false,
+        clips: [
+          makeClip({
+            id: 'phase-real-clip',
+            type: 'video',
+            mediaId: phaseVideoMedia.id,
+            startFrame: 0,
+            durationFrames: 30,
+            speed: 2,
+            fadeInFrames: 5,
+            fadeOutFrames: 5,
+            effects: [
+              { id: 'fx-brightness', type: 'brightness', enabled: true, params: { amount: 1.3 } },
+              { id: 'fx-blur', type: 'blur', enabled: true, params: { radius: 1 } },
+              {
+                id: 'fx-chroma', type: 'chromaKey', enabled: true,
+                params: { keyColor: '#00ff00', similarity: 0.2, blend: 0.1 },
+              },
+              { id: 'fx-lut', type: 'lut', enabled: true, params: { file: 'film.cube' } },
+            ],
+          }),
+        ],
+      },
+    ],
+    transitions: [],
+  };
+});
+
+before(async () => {
+  phaseRoot = await mkdtemp(path.join(os.tmpdir(), 'ots-export-phase-'));
+  await mkdir(path.join(phaseRoot, 'luts'), { recursive: true });
+  await mkdir(path.join(phaseRoot, 'renders'), { recursive: true });
+  await writeFile(path.join(phaseRoot, 'luts', 'film.cube'), IDENTITY_CUBE);
 });
 
 after(async () => {
   if (exportTemp !== null) await rm(exportTemp, { recursive: true, force: true });
+});
+
+after(async () => {
+  if (phaseRoot !== null) await rm(phaseRoot, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -541,3 +671,407 @@ it(
     assert.equal(existsSync(outputPath), false);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Phase 1: speed, fades, keyframes, effects, captions, transitions
+// ---------------------------------------------------------------------------
+
+it('applies clip speed to video and audio', () => {
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: 'speed-video', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30, speed: 2,
+      }),
+    ],
+  });
+  const built = buildPhase(project);
+  const filter = filterOf(built);
+
+  // durationFrames is timeline time; the source window is duration*speed.
+  assert.equal(built.durationFrames, 30);
+  assert.ok(hasPair(built.args, '-t', '1'), 'output covers 30 timeline frames');
+  assert.ok(hasPair(built.args, '-t', '2'), 'video input consumes 60 source frames = 2s');
+  assert.match(filter, /\[1:v\]scale=320:180,setsar=1,fps=30,setpts=\(PTS-STARTPTS\)\/2\+0\/TB/);
+  assert.match(filter, /\[1:a\]atrim=duration=2,asetpts=PTS-STARTPTS,atempo=2/);
+
+  const slowProject = makeProject({
+    clips: [
+      makeClip({
+        id: 'slow-video', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30, speed: 0.25,
+      }),
+    ],
+  });
+  const slowBuilt = buildPhase(slowProject);
+  const slowFilter = filterOf(slowBuilt);
+  assert.match(slowFilter, /setpts=\(PTS-STARTPTS\)\/0\.25\+0\/TB/);
+  assert.match(slowFilter, /atempo=0\.5,atempo=0\.5/);
+  assert.ok(hasPair(slowBuilt.args, '-t', '0.25'), 'slow motion consumes 7.5 source frames = 0.25s');
+
+  const audioProject = makeProject({
+    media: [
+      mediaEntry(),
+      mediaEntry({
+        id: 'media-audio', name: 'music.m4a', kind: 'audio', fileName: 'music.m4a',
+        durationFrames: 120, sourceDurationSeconds: 4, width: null, height: null, hasAudio: true,
+      }),
+    ],
+    clips: [],
+    extraTracks: [
+      {
+        id: 'track-audio', type: 'audio', name: 'Audio 1', muted: false, hidden: false,
+        clips: [
+          makeClip({
+            id: 'speed-audio', type: 'audio', mediaId: 'media-audio',
+            startFrame: 0, durationFrames: 30, speed: 2,
+          }),
+        ],
+      },
+    ],
+  });
+  const audioFilter = filterOf(buildPhase(audioProject));
+  assert.match(audioFilter, /\[1:a\]atrim=duration=2,asetpts=PTS-STARTPTS,atempo=2/);
+  assert.match(audioFilter, /amix=inputs=1:normalize=0/);
+});
+
+it('applies fade in/out to video and audio', () => {
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: 'fade-clip', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 45, fadeInFrames: 10, fadeOutFrames: 15,
+      }),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+
+  // 45 frames @30fps = 1.5s; 10 in = 0.333333s, 15 out = 0.5s.
+  assert.match(filter, /fade=t=in:st=0:d=0\.333333/);
+  assert.match(filter, /fade=t=out:st=1:d=0\.5/);
+  assert.match(filter, /\[1:a\]atrim=duration=1\.5,asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0\.333333/);
+  assert.match(filter, /afade=t=out:st=1:d=0\.5/);
+});
+
+it('builds keyframe volume and overlay position expressions', () => {
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: 'keyframe-clip', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30, volume: 0.9,
+        keyframes: {
+          volume: [
+            { frame: 0, value: 0, easing: 'linear' },
+            { frame: 15, value: 1, easing: 'ease-in-out' },
+            { frame: 30, value: 0.2, easing: 'linear' },
+          ],
+          x: [
+            { frame: 0, value: 0, easing: 'linear' },
+            { frame: 30, value: 0.5, easing: 'ease-out' },
+          ],
+          y: [{ frame: 0, value: 0.25, easing: 'linear' }],
+        },
+      }),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+
+  // Keyframe volume replaces the static 0.9 with an eval=frame expression.
+  assert.match(filter, /volume=eval=frame:volume='if\(lt\(t,0\),0,if\(lt\(t,0\.5\),/);
+  assert.ok(filter.includes('0+(1-0)*((t-0)/(0.5))'), 'linear volume segment');
+  assert.ok(filter.includes('if(lt((t-0.5)/(0.5),0.5)'), 'ease-in-out segment');
+  assert.ok(filter.includes(',0.2)))'), 'final volume keyframe');
+
+  // x is normalized 0..1 and scaled to the 320px project width; y to 180px.
+  assert.ok(
+    filter.includes("x='if(lt(t,0),0,if(lt(t,1),0+(160-0)*((t-0)/(1)),160))'"),
+    filter,
+  );
+  assert.ok(filter.includes("y='if(lt(t,0),45,45)'"), filter);
+});
+
+it('applies ordered effects, chroma key and LUT filters', () => {
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: 'effects-clip', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30,
+        effects: [
+          { id: 'e-brightness', type: 'brightness', enabled: true, params: { amount: 1.5 } },
+          { id: 'e-contrast', type: 'contrast', enabled: true, params: { amount: 0.8 } },
+          { id: 'e-saturation', type: 'saturation', enabled: true, params: { amount: 1.2 } },
+          { id: 'e-temperature', type: 'temperature', enabled: true, params: { amount: 0.3 } },
+          { id: 'e-blur', type: 'blur', enabled: true, params: { radius: 4 } },
+          { id: 'e-sharpen', type: 'sharpen', enabled: true, params: { amount: 0.6 } },
+          {
+            id: 'e-chroma', type: 'chromaKey', enabled: true,
+            params: { keyColor: '#00ff00', similarity: 0.2, blend: 0.1 },
+          },
+          { id: 'e-lut', type: 'lut', enabled: true, params: { file: 'film.cube' } },
+          { id: 'e-disabled', type: 'blur', enabled: false, params: { radius: 10 } },
+        ],
+      }),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+
+  const lutPath = path.join(phaseRoot, 'luts', 'film.cube');
+  const ordered = [
+    'eq=brightness=0.5',
+    'eq=contrast=0.8',
+    'eq=saturation=1.2',
+    'colorbalance=rs=0.3:bs=-0.3',
+    'gblur=sigma=4',
+    'unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=0.6',
+    'format=rgba,chromakey=color=0x00ff00:similarity=0.2:blend=0.1',
+    `lut3d=file='${lutPath}'`,
+  ];
+  let previous = -1;
+  for (const fragment of ordered) {
+    const index = filter.indexOf(fragment);
+    assert.ok(index >= 0, `missing effect fragment: ${fragment}\n${filter}`);
+    assert.ok(index > previous, `effects must keep clip.effects order: ${fragment}`);
+    previous = index;
+  }
+  assert.ok(!filter.includes('gblur=sigma=10'), 'disabled effects are skipped');
+});
+
+it('rejects missing or escaping LUT files with a clear ExportError', () => {
+  const projectWithLut = (file) => makeProject({
+    clips: [
+      makeClip({
+        id: 'lut-clip', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30,
+        effects: [{ id: 'e-lut', type: 'lut', enabled: true, params: { file } }],
+      }),
+    ],
+  });
+
+  assert.throws(
+    () => buildPhase(projectWithLut('missing.cube')),
+    (error) => error instanceof ExportError && error.code === 'lut-missing',
+  );
+  assert.throws(
+    () => buildPhase(projectWithLut('../escape.cube')),
+    (error) => error instanceof ExportError && error.code === 'invalid-input',
+  );
+  assert.throws(
+    () => buildPhase(projectWithLut('')),
+    (error) => error instanceof ExportError && error.code === 'lut-missing',
+  );
+});
+
+it('renders caption segments as timed drawtext overlays', () => {
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: 'caption-clip', type: 'caption', mediaId: null,
+        startFrame: 30, durationFrames: 50,
+        transform: { x: 0.05, y: 0.8, width: 0.9, height: 0.15, rotation: 0 },
+        caption: {
+          segments: [
+            { startFrame: 0, durationFrames: 20, text: 'First line' },
+            { startFrame: 25, durationFrames: 20, text: 'Second line' },
+          ],
+          style: {
+            fontSize: 18, color: '#ffff00', fontWeight: '600',
+            align: 'center', background: '#000000',
+          },
+        },
+      }),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+
+  assert.equal((filter.match(/drawtext=/g) ?? []).length, 2);
+  assert.ok(filter.includes("text='First line'"));
+  assert.ok(filter.includes("text='Second line'"));
+  assert.ok(filter.includes("fontcolor='#ffff00'"));
+  assert.ok(filter.includes('fontsize=18'));
+  assert.ok(filter.includes("boxcolor='#000000'"));
+  // Caption clip starts at frame 30 (1s); segments are relative to the clip.
+  assert.ok(filter.includes("enable='between(t,1,1.666667)'"), filter);
+  assert.ok(filter.includes("enable='between(t,1.833333,2.5)'"), filter);
+  // Centered inside the 0.9-wide transform box (x=16px, width=288px).
+  assert.ok(filter.includes('x=16+(288-text_w)/2'), filter);
+});
+
+it('uses browser-rendered PNGs for text and caption clips', async () => {
+  const textClipId = 'phase-png-text';
+  const captionClipId = 'phase-png-caption';
+  const textPng = path.join(phaseRoot, 'renders', `${textClipId}.png`);
+  const captionPng = path.join(phaseRoot, 'renders', `${captionClipId}.png`);
+  await writeFile(textPng, 'fake png for argv-only assertions');
+  await writeFile(captionPng, 'fake png for argv-only assertions');
+
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: textClipId, type: 'text', mediaId: null,
+        startFrame: 0, durationFrames: 30,
+        text: { content: 'SHOULD NOT DRAW', fontSize: 24, color: '#ffffff', fontWeight: '400', align: 'left' },
+      }),
+      makeClip({
+        id: captionClipId, type: 'caption', mediaId: null,
+        startFrame: 30, durationFrames: 30,
+        caption: { segments: [{ startFrame: 0, durationFrames: 30, text: 'SHOULD NOT DRAW CAPTION' }], style: {} },
+      }),
+    ],
+  });
+  const built = buildPhase(project);
+  const filter = filterOf(built);
+  const inputs = inputsOf(built.args);
+
+  assert.ok(inputs.includes(textPng), 'text render PNG is an ffmpeg input');
+  assert.ok(inputs.includes(captionPng), 'caption render PNG is an ffmpeg input');
+  assert.ok(!filter.includes("text='SHOULD NOT DRAW'"));
+  assert.ok(!filter.includes("text='SHOULD NOT DRAW CAPTION'"));
+  assert.equal((filter.match(/overlay=/g) ?? []).length, 2);
+});
+
+it('uses per-segment caption PNG renders when present', async () => {
+  const clipId = 'phase-seg-caption';
+  const segmentPng = path.join(phaseRoot, 'renders', `${clipId}-seg-1.png`);
+  await writeFile(segmentPng, 'fake segment png for argv-only assertions');
+
+  const project = makeProject({
+    clips: [
+      makeClip({
+        id: clipId, type: 'caption', mediaId: null,
+        startFrame: 30, durationFrames: 50,
+        transform: { x: 0.05, y: 0.8, width: 0.9, height: 0.15, rotation: 0 },
+        caption: {
+          segments: [
+            { startFrame: 0, durationFrames: 20, text: 'First segment text' },
+            { startFrame: 25, durationFrames: 20, text: 'Second segment text' },
+          ],
+          style: { fontSize: 18, color: '#ffff00', fontWeight: '600', align: 'center' },
+        },
+      }),
+    ],
+  });
+  const built = buildPhase(project);
+  const filter = filterOf(built);
+
+  assert.ok(inputsOf(built.args).includes(segmentPng), 'segment render PNG is an input');
+  assert.ok(filter.includes("text='First segment text'"), 'segment 0 still falls back to drawtext');
+  assert.ok(!filter.includes("text='Second segment text'"), 'segment 1 uses its PNG render');
+  assert.equal((filter.match(/drawtext=/g) ?? []).length, 1);
+  assert.equal((filter.match(/overlay=/g) ?? []).length, 1);
+});
+
+it('approximates transitions with fade out/in fades', () => {
+  const media = [
+    mediaEntry(),
+    mediaEntry({
+      id: 'media-image', name: 'card.png', kind: 'image', fileName: 'image.png',
+      durationFrames: null, sourceDurationSeconds: null, hasAudio: false,
+    }),
+  ];
+  const clips = [
+    makeClip({ id: 'tr-a', type: 'video', mediaId: 'media-video', startFrame: 0, durationFrames: 45 }),
+    makeClip({ id: 'tr-b', type: 'image', mediaId: 'media-image', startFrame: 45, durationFrames: 45 }),
+  ];
+  const transitionProject = (type) => makeProject({
+    media,
+    clips,
+    transitions: [{
+      id: 'tr-1', trackId: 'track-video', fromClipId: 'tr-a', toClipId: 'tr-b',
+      type, durationFrames: 20,
+    }],
+  });
+
+  // 20 transition frames => 10 frames (0.333333s) on each side.
+  for (const type of ['fadeToBlack', 'dissolve', 'wipeLeft', 'wipeRight']) {
+    const filter = filterOf(buildPhase(transitionProject(type)));
+    assert.ok(filter.includes('fade=t=out:st=1.166667:d=0.333333'), `${type} outgoing fade`);
+    assert.ok(filter.includes('fade=t=in:st=1.5:d=0.333333'), `${type} incoming fade`);
+  }
+
+  const unsupported = makeProject({
+    media,
+    clips,
+    transitions: [{
+      id: 'tr-unknown', trackId: 'track-video', fromClipId: 'tr-a', toClipId: 'tr-b',
+      type: 'mystery', durationFrames: 20,
+    }],
+  });
+  assert.ok(!filterOf(buildPhase(unsupported)).includes('fade=t='));
+
+  // Text clips are not valid transition endpoints (DESIGN §11.1).
+  const textProject = makeProject({
+    clips: [
+      makeClip({
+        id: 'tr-text', type: 'text', mediaId: null, startFrame: 0, durationFrames: 30,
+        text: { content: 'no transition', fontSize: 20, color: '#ffffff', fontWeight: '400', align: 'left' },
+      }),
+      makeClip({ id: 'tr-video', type: 'video', mediaId: 'media-video', startFrame: 30, durationFrames: 30 }),
+    ],
+    transitions: [{
+      id: 'tr-text', trackId: 'track-video', fromClipId: 'tr-text', toClipId: 'tr-video',
+      type: 'fadeToBlack', durationFrames: 10,
+    }],
+  });
+  assert.ok(!filterOf(buildPhase(textProject)).includes('fade=t='));
+});
+
+it('degrades unsupported keyframes to the static transform', () => {
+  const project = makeProject({
+    width: 320,
+    height: 180,
+    clips: [
+      makeClip({
+        id: 'unsupported-keyframes', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30,
+        keyframes: {
+          width: [{ frame: 0, value: 0.5 }, { frame: 30, value: 1 }],
+          height: [{ frame: 0, value: 0.5 }, { frame: 30, value: 1 }],
+          rotation: [{ frame: 0, value: 0 }, { frame: 30, value: 90 }],
+          opacity: [{ frame: 0, value: 0 }, { frame: 30, value: 1 }],
+        },
+      }),
+    ],
+  });
+  const filter = filterOf(buildPhase(project));
+  assert.match(filter, /\[1:v\]scale=320:180,setsar=1,fps=30,setpts=PTS-STARTPTS\+0\/TB/);
+  assert.ok(filter.includes('overlay=x=0:y=0'), 'static transform is used');
+  assert.ok(!filter.includes('colorchannelmixer'), 'static opacity is used for opacity keyframes');
+  assert.ok(!filter.includes('if(lt(t,'), 'no dynamic width/height/rotation expressions');
+});
+
+it('exports with speed, fades and effects, verified by ffprobe', { skip: toolSkip }, async () => {
+  const outputPath = path.join(exportTemp, 'phase-speed-fades-effects.mp4');
+  const progress = [];
+  const result = await runExport({
+    project: phaseRealProject,
+    projectRoot: exportProjectRoot,
+    outputPath,
+    onProgress: (value) => progress.push(value),
+  });
+
+  assert.equal(result.outputPath, outputPath);
+  assert.equal(result.durationFrames, 30);
+
+  const info = await stat(outputPath);
+  assert.ok(info.size > 1000, `expected a non-trivial MP4, got ${info.size} bytes`);
+
+  const probe = await probeMedia(outputPath);
+  assert.equal(probe.kind, 'video');
+  assert.equal(probe.width, 320);
+  assert.equal(probe.height, 180);
+  assert.equal(probe.hasAudio, true);
+  assert.ok(probe.durationSeconds > 0.5 && probe.durationSeconds < 1.5, `duration ${probe.durationSeconds}`);
+
+  const parsed = JSON.parse(await runFfprobe([
+    '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+  ]));
+  const videoStream = parsed.streams.find((stream) => stream.codec_type === 'video');
+  const audioStream = parsed.streams.find((stream) => stream.codec_type === 'audio');
+  assert.ok(videoStream, 'output has a video stream');
+  assert.ok(audioStream, 'output has an audio stream');
+  assert.equal(videoStream.codec_name, 'h264');
+  assert.equal(audioStream.codec_name, 'aac');
+
+  assert.ok(progress.length >= 1);
+  assert.equal(progress.at(-1), 1);
+});

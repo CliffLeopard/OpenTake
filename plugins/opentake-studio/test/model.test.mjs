@@ -19,6 +19,8 @@ import {
   secondsToFrames,
   framesToSeconds,
   snapFrame,
+  evaluateKeyframes,
+  sourceFrameForTimeline,
 } from '../lib/model.js';
 
 const FPS = 30;
@@ -484,7 +486,7 @@ describe('normalizeProject', () => {
     expectModelError(() => withClip({ transform: { x: 2 } }), 'invalid-clip');
     expectModelError(() => withClip({ volume: 1.5 }), 'invalid-clip');
     expectModelError(() => withClip({ opacity: -0.1 }), 'invalid-clip');
-    expectModelError(() => withClip({ speed: 2 }), 'invalid-clip');
+    expectModelError(() => withClip({ speed: 0.1 }), 'invalid-clip');
     expectModelError(() => withClip({ startFrame: 1.5 }), 'invalid-clip');
     expectModelError(() => withClip({ startFrame: -1 }), 'invalid-clip');
     expectModelError(() => withClip({ durationFrames: 0 }), 'invalid-clip');
@@ -1957,5 +1959,1668 @@ describe('purity and determinism', () => {
     assert.equal(next.updatedAt, 5_000);
     assert.equal(next.createdAt, 5_000);
     t.mock.timers.reset();
+  });
+});
+
+// ===========================================================================
+// Phase 1 (DESIGN §11): speed, keyframes, fades, effects, markers,
+// transitions, captions.
+// ===========================================================================
+
+function phase1Fixture() {
+  return addClip(fixture(), { clipId: 'c1', startFrame: 0, durationFrames: 100 });
+}
+
+function adjacentFixture() {
+  let project = fixture();
+  project = addClip(project, { clipId: 'a', startFrame: 0, durationFrames: 100 });
+  project = addClip(project, { clipId: 'b', startFrame: 100, durationFrames: 100 });
+  return project;
+}
+
+function addCaption(project, options = {}) {
+  const durationFrames = options.durationFrames ?? 60;
+  const operation = {
+    type: 'add-caption',
+    clipId: options.clipId,
+    startFrame: options.startFrame ?? 0,
+    durationFrames,
+    segments:
+      options.segments ??
+      [{ startFrame: 0, durationFrames, text: 'Hello' }],
+  };
+  if (options.trackId !== undefined) operation.trackId = options.trackId;
+  if (options.style !== undefined) operation.style = options.style;
+  if (options.splitRightClipId !== undefined) operation.splitRightClipId = options.splitRightClipId;
+  return applyOperation(project, operation);
+}
+
+describe('phase 1 defaults and migration', () => {
+  it('createProject starts with empty markers and transitions', () => {
+    const project = createProject();
+    assert.deepEqual(project.markers, []);
+    assert.deepEqual(project.transitions, []);
+  });
+
+  it('clips start with phase 1 defaults', () => {
+    const clip = clipById(phase1Fixture(), 'c1');
+    assert.equal(clip.speed, 1);
+    assert.equal(clip.fadeInFrames, 0);
+    assert.equal(clip.fadeOutFrames, 0);
+    assert.deepEqual(clip.keyframes, {});
+    assert.deepEqual(clip.effects, []);
+    assert.equal(clip.caption, null);
+  });
+
+  it('migrates pre-phase-1 projects and normalizes idempotently', () => {
+    const raw = rawProject();
+    const project = normalizeProject(raw);
+    assert.deepEqual(project.markers, []);
+    assert.deepEqual(project.transitions, []);
+    const clip = project.tracks[0].clips[0];
+    assert.equal(clip.speed, 1);
+    assert.equal(clip.fadeInFrames, 0);
+    assert.equal(clip.fadeOutFrames, 0);
+    assert.deepEqual(clip.keyframes, {});
+    assert.deepEqual(clip.effects, []);
+    assert.equal(clip.caption, null);
+    assert.deepEqual(normalizeProject(project), project);
+  });
+
+  it('clamps stale fades and sorts/dedupes keyframes on normalize', () => {
+    const raw = mutatedRaw((value) => {
+      const clip = value.tracks[0].clips[0];
+      clip.fadeInFrames = 500;
+      clip.fadeOutFrames = 500;
+      clip.keyframes = {
+        volume: [
+          { frame: 40, value: 0.2 },
+          { frame: 10, value: 1 },
+          { frame: 10, value: 0.5 },
+        ],
+      };
+    });
+    const clip = normalizeProject(raw).tracks[0].clips.find((item) => item.id === 'c2');
+    assert.equal(clip.fadeInFrames, 50);
+    assert.equal(clip.fadeOutFrames, 50);
+    assert.deepEqual(clip.keyframes.volume, [
+      { frame: 10, value: 0.5, easing: 'linear' },
+      { frame: 40, value: 0.2, easing: 'linear' },
+    ]);
+  });
+
+  it('rejects invalid phase 1 clip fields on normalize', () => {
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.tracks[0].clips[0].speed = 5;
+          }),
+        ),
+      'invalid-clip',
+    );
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.tracks[0].clips[0].fadeInFrames = -1;
+          }),
+        ),
+      'invalid-clip',
+    );
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.tracks[0].clips[0].keyframes = { volume: [{ frame: 60, value: 1 }] };
+          }),
+        ),
+      'invalid-clip',
+    );
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.tracks[0].clips[0].effects = [
+              { id: 'e1', type: 'brightness' },
+              { id: 'e1', type: 'blur' },
+            ];
+          }),
+        ),
+      'duplicate-id',
+    );
+    expectModelError(
+      () =>
+        normalizeProject({
+          tracks: [
+            {
+              id: 't',
+              type: 'video',
+              clips: [{ id: 'c', type: 'caption', mediaId: null, startFrame: 0, durationFrames: 30 }],
+            },
+          ],
+        }),
+      'invalid-clip',
+    );
+    expectModelError(
+      () =>
+        normalizeProject({
+          media: [{ id: 'i', kind: 'image', fileName: 'i.png' }],
+          tracks: [
+            {
+              id: 't',
+              type: 'video',
+              clips: [
+                { id: 'ic', type: 'image', mediaId: 'i', startFrame: 0, durationFrames: 30, speed: 2 },
+              ],
+            },
+          ],
+        }),
+      'invalid-clip',
+    );
+  });
+});
+
+describe('set-speed', () => {
+  it('keeps the source range by rescaling durationFrames', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 2 });
+    let clip = clipById(project, 'c1');
+    assert.equal(clip.speed, 2);
+    assert.equal(clip.durationFrames, 50);
+    project = applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 0.5 });
+    clip = clipById(project, 'c1');
+    assert.equal(clip.speed, 0.5);
+    assert.equal(clip.durationFrames, 200);
+  });
+
+  it('maps timeline frames to source frames through speed', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 2 });
+    project = applyOperation(project, { type: 'move-clip', clipId: 'c1', startFrame: 20 });
+    const clip = clipById(project, 'c1');
+    assert.equal(sourceFrameForTimeline(clip, 20), 0);
+    assert.equal(sourceFrameForTimeline(clip, 30), 20);
+    assert.equal(sourceFrameForTimeline(clip, 45), 50);
+    expectModelError(() => sourceFrameForTimeline(clip, Number.NaN), 'invalid-input');
+    expectModelError(() => sourceFrameForTimeline(null, 1), 'invalid-input');
+  });
+
+  it('scales keyframes with the new duration', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'c1',
+      property: 'opacity',
+      keyframes: [
+        { frame: 0, value: 1 },
+        { frame: 50, value: 0 },
+      ],
+    });
+    project = applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 2 });
+    const clip = clipById(project, 'c1');
+    assert.equal(clip.durationFrames, 50);
+    assert.deepEqual(clip.keyframes.opacity.map((keyframe) => keyframe.frame), [0, 25]);
+  });
+
+  it('clamps fades when the clip gets shorter', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-fades',
+      clipId: 'c1',
+      fadeInFrames: 40,
+      fadeOutFrames: 80,
+    });
+    project = applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 4 });
+    const clip = clipById(project, 'c1');
+    assert.equal(clip.durationFrames, 25);
+    assert.equal(clip.fadeInFrames, 25);
+    assert.equal(clip.fadeOutFrames, 25);
+  });
+
+  it('rejects speed changes that exceed media source bounds', () => {
+    let project = emptyProject();
+    project = applyOperation(project, {
+      type: 'add-media',
+      media: media({ id: 'ms', durationFrames: 6 }),
+    });
+    project = applyOperation(project, { type: 'add-track', trackId: 'tv', trackType: 'video' });
+    project = addClip(project, {
+      clipId: 'short',
+      mediaId: 'ms',
+      trackId: 'tv',
+      startFrame: 0,
+      trimStartFrame: 3,
+      durationFrames: 3,
+    });
+    expectModelError(
+      () => applyOperation(project, { type: 'set-speed', clipId: 'short', speed: 2 }),
+      'out-of-bounds',
+    );
+  });
+
+  it('rejects image/text/caption clips, bad speeds and unknown clips', () => {
+    let project = phase1Fixture();
+    project = addClip(project, {
+      clipId: 'img',
+      mediaId: 'm-image',
+      startFrame: 200,
+      durationFrames: 50,
+    });
+    project = addText(project, { clipId: 'txt', startFrame: 300, durationFrames: 30 });
+    project = addCaption(project, { clipId: 'cap', startFrame: 400, durationFrames: 30 });
+    for (const clipId of ['img', 'txt', 'cap']) {
+      expectModelError(
+        () => applyOperation(project, { type: 'set-speed', clipId, speed: 2 }),
+        'invalid-input',
+      );
+    }
+    expectModelError(
+      () => applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 0.1 }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 5 }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-speed', clipId: 'c1' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-speed', clipId: 'ghost', speed: 2 }),
+      'clip-not-found',
+    );
+  });
+});
+
+describe('keyframes', () => {
+  it('set-keyframes replaces, sorts, defaults easing and drops duplicates', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'c1',
+      property: 'volume',
+      keyframes: [
+        { frame: 50, value: 0.2 },
+        { frame: 0, value: 1 },
+      ],
+    });
+    let clip = clipById(project, 'c1');
+    assert.deepEqual(clip.keyframes.volume, [
+      { frame: 0, value: 1, easing: 'linear' },
+      { frame: 50, value: 0.2, easing: 'linear' },
+    ]);
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'c1',
+      property: 'volume',
+      keyframes: [
+        { frame: 0, value: 1 },
+        { frame: 0, value: 0.5 },
+      ],
+    });
+    clip = clipById(project, 'c1');
+    assert.deepEqual(clip.keyframes.volume, [{ frame: 0, value: 0.5, easing: 'linear' }]);
+  });
+
+  it('an empty array clears one property', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'c1',
+      property: 'opacity',
+      keyframes: [{ frame: 0, value: 0.5 }],
+    });
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'c1',
+      property: 'opacity',
+      keyframes: [],
+    });
+    assert.deepEqual(clipById(project, 'c1').keyframes, {});
+  });
+
+  it('set-clip-properties only changes static values, never keyframes', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'c1',
+      property: 'volume',
+      keyframes: [
+        { frame: 0, value: 1 },
+        { frame: 100, value: 0 },
+      ],
+    });
+    project = applyOperation(project, {
+      type: 'set-clip-properties',
+      clipIds: ['c1'],
+      volume: 0.4,
+    });
+    const clip = clipById(project, 'c1');
+    assert.equal(clip.volume, 0.4);
+    assert.equal(clip.keyframes.volume.length, 2);
+  });
+
+  it('evaluateKeyframes interpolates linearly and clamps endpoints', () => {
+    const list = [
+      { frame: 10, value: 0 },
+      { frame: 90, value: 1 },
+    ];
+    assert.equal(evaluateKeyframes(list, 10, 9), 0);
+    assert.equal(evaluateKeyframes(list, 50, 9), 0.5);
+    assert.equal(evaluateKeyframes(list, 90, 9), 1);
+    assert.equal(evaluateKeyframes(list, 0, 9), 0);
+    assert.equal(evaluateKeyframes(list, 200, 9), 1);
+    assert.equal(evaluateKeyframes([], 5, 0.7), 0.7);
+    assert.equal(evaluateKeyframes(undefined, 5, 0.7), 0.7);
+    assert.equal(evaluateKeyframes([{ frame: 10, value: 0.3 }], 0, 9), 0.3);
+    assert.equal(evaluateKeyframes(list, Number.NaN, 9), 9);
+  });
+
+  it('evaluateKeyframes applies the left keyframe easing', () => {
+    const easeIn = evaluateKeyframes(
+      [
+        { frame: 0, value: 0, easing: 'ease-in' },
+        { frame: 100, value: 1, easing: 'linear' },
+      ],
+      50,
+      0,
+    );
+    const easeOut = evaluateKeyframes(
+      [
+        { frame: 0, value: 0, easing: 'ease-out' },
+        { frame: 100, value: 1, easing: 'linear' },
+      ],
+      50,
+      0,
+    );
+    const easeInOut = evaluateKeyframes(
+      [
+        { frame: 0, value: 0, easing: 'ease-in-out' },
+        { frame: 100, value: 1, easing: 'linear' },
+      ],
+      50,
+      0,
+    );
+    assert.equal(easeIn, 0.25);
+    assert.equal(easeOut, 0.75);
+    assert.equal(easeInOut, 0.5);
+  });
+
+  it('rejects invalid set-keyframes input', () => {
+    const project = phase1Fixture();
+    const set = (property, keyframes) =>
+      applyOperation(project, { type: 'set-keyframes', clipId: 'c1', property, keyframes });
+    expectModelError(() => set('color', []), 'invalid-input');
+    expectModelError(() => set('volume', 'nope'), 'invalid-keyframe');
+    expectModelError(() => set('volume', [{ frame: 101, value: 1 }]), 'invalid-keyframe');
+    expectModelError(() => set('volume', [{ frame: 0, value: 2 }]), 'invalid-keyframe');
+    expectModelError(() => set('volume', [{ frame: 0, value: 1, easing: 'bounce' }]), 'invalid-keyframe');
+    expectModelError(() => set('rotation', [{ frame: 0, value: Number.NaN }]), 'invalid-keyframe');
+    expectModelError(
+      () => applyOperation(project, { type: 'set-keyframes', clipId: 'ghost', property: 'volume', keyframes: [] }),
+      'clip-not-found',
+    );
+  });
+
+  it('split partitions keyframes with a continuous boundary value', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'c1',
+      property: 'volume',
+      keyframes: [
+        { frame: 0, value: 1 },
+        { frame: 100, value: 0 },
+      ],
+    });
+    project = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'c1',
+      atFrame: 40,
+      leftClipId: 'L',
+      rightClipId: 'R',
+    });
+    const left = clipById(project, 'L');
+    const right = clipById(project, 'R');
+    assert.deepEqual(left.keyframes.volume.map((keyframe) => keyframe.frame), [0, 40]);
+    assert.deepEqual(right.keyframes.volume.map((keyframe) => keyframe.frame), [0, 60]);
+    assert.ok(Math.abs(left.keyframes.volume[1].value - 0.6) < 1e-12);
+    assert.ok(Math.abs(right.keyframes.volume[0].value - 0.6) < 1e-12);
+    assert.ok(Math.abs(evaluateKeyframes(left.keyframes.volume, 20, 0) - 0.8) < 1e-12);
+    assert.ok(Math.abs(evaluateKeyframes(right.keyframes.volume, 30, 0) - 0.3) < 1e-12);
+  });
+
+  it('trim shifts head keyframes and truncates tail keyframes', () => {
+    let project = fixture();
+    project = addClip(project, { clipId: 'k', startFrame: 0, durationFrames: 200 });
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'k',
+      property: 'opacity',
+      keyframes: [
+        { frame: 0, value: 1 },
+        { frame: 100, value: 0 },
+      ],
+    });
+    let trimmed = applyOperation(project, { type: 'trim-clip', clipId: 'k', trimStartFrame: 20 });
+    let clip = clipById(trimmed, 'k');
+    assert.equal(clip.startFrame, 20);
+    assert.equal(clip.durationFrames, 180);
+    assert.deepEqual(clip.keyframes.opacity.map((keyframe) => keyframe.frame), [0, 80]);
+    assert.ok(Math.abs(clip.keyframes.opacity[0].value - 0.8) < 1e-12);
+
+    trimmed = applyOperation(project, { type: 'trim-clip', clipId: 'k', durationFrames: 100 });
+    clip = clipById(trimmed, 'k');
+    assert.equal(clip.durationFrames, 100);
+    // frame == durationFrames is a valid end-of-clip keyframe (``[0, duration]``).
+    assert.deepEqual(clip.keyframes.opacity.map((keyframe) => keyframe.frame), [0, 100]);
+    trimmed = applyOperation(project, { type: 'trim-clip', clipId: 'k', durationFrames: 80 });
+    clip = clipById(trimmed, 'k');
+    assert.deepEqual(clip.keyframes.opacity.map((keyframe) => keyframe.frame), [0]);
+  });
+
+  it('overlap trimming truncates a neighbour keyframes', () => {
+    let project = fixture();
+    project = addClip(project, { clipId: 'a', startFrame: 0, durationFrames: 100 });
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'a',
+      property: 'volume',
+      keyframes: [
+        { frame: 0, value: 1 },
+        { frame: 100, value: 0 },
+      ],
+    });
+    project = addClip(project, { clipId: 'b', startFrame: 50, durationFrames: 50 });
+    const clip = clipById(project, 'a');
+    assert.equal(clip.durationFrames, 50);
+    assert.deepEqual(clip.keyframes.volume.map((keyframe) => keyframe.frame), [0]);
+  });
+});
+
+describe('set-fades', () => {
+  it('sets both fades and updates one at a time', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-fades',
+      clipId: 'c1',
+      fadeInFrames: 10,
+      fadeOutFrames: 20,
+    });
+    let clip = clipById(project, 'c1');
+    assert.equal(clip.fadeInFrames, 10);
+    assert.equal(clip.fadeOutFrames, 20);
+    project = applyOperation(project, { type: 'set-fades', clipId: 'c1', fadeInFrames: 5 });
+    clip = clipById(project, 'c1');
+    assert.equal(clip.fadeInFrames, 5);
+    assert.equal(clip.fadeOutFrames, 20);
+  });
+
+  it('rejects out-of-range or malformed fades', () => {
+    const project = phase1Fixture();
+    expectModelError(
+      () => applyOperation(project, { type: 'set-fades', clipId: 'c1', fadeInFrames: 101 }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-fades', clipId: 'c1', fadeOutFrames: -1 }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-fades', clipId: 'c1', fadeInFrames: 1.5 }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-fades', clipId: 'c1' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-fades', clipId: 'ghost', fadeInFrames: 1 }),
+      'clip-not-found',
+    );
+  });
+
+  it('trims clamp fades and split moves them to the outer edges', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-fades',
+      clipId: 'c1',
+      fadeInFrames: 10,
+      fadeOutFrames: 80,
+    });
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'c1', durationFrames: 50 });
+    assert.equal(clipById(project, 'c1').fadeOutFrames, 50);
+
+    project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-fades',
+      clipId: 'c1',
+      fadeInFrames: 10,
+      fadeOutFrames: 20,
+    });
+    project = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'c1',
+      atFrame: 40,
+      leftClipId: 'L',
+      rightClipId: 'R',
+    });
+    const left = clipById(project, 'L');
+    const right = clipById(project, 'R');
+    assert.equal(left.fadeInFrames, 10);
+    assert.equal(left.fadeOutFrames, 0);
+    assert.equal(right.fadeInFrames, 0);
+    assert.equal(right.fadeOutFrames, 20);
+  });
+});
+
+describe('effects', () => {
+  const defaultParams = {
+    brightness: { amount: 1 },
+    contrast: { amount: 1 },
+    saturation: { amount: 1 },
+    temperature: { amount: 0 },
+    blur: { radius: 0 },
+    sharpen: { amount: 0 },
+    chromaKey: { keyColor: '#00ff00', similarity: 0.1, blend: 0.1 },
+    lut: { file: 'film.cube' },
+  };
+
+  it('adds every effect type with DESIGN defaults and enabled true', () => {
+    let project = phase1Fixture();
+    for (const type of Object.keys(defaultParams)) {
+      const effect = { id: `e-${type}`, type };
+      if (type === 'lut') effect.params = { file: 'film.cube' };
+      project = applyOperation(project, { type: 'add-effect', clipId: 'c1', effect });
+    }
+    const effects = clipById(project, 'c1').effects;
+    assert.deepEqual(
+      effects.map((effect) => effect.id),
+      Object.keys(defaultParams).map((type) => `e-${type}`),
+    );
+    for (const effect of effects) {
+      assert.equal(effect.enabled, true);
+      assert.deepEqual(effect.params, defaultParams[effect.type]);
+    }
+  });
+
+  it('rejects invalid effect definitions', () => {
+    const project = phase1Fixture();
+    const add = (effect) => applyOperation(project, { type: 'add-effect', clipId: 'c1', effect });
+    expectModelError(() => add({ id: 'x', type: 'glow' }), 'invalid-effect');
+    expectModelError(
+      () => add({ id: 'x', type: 'brightness', params: { amount: 3 } }),
+      'invalid-effect',
+    );
+    expectModelError(
+      () => add({ id: 'x', type: 'temperature', params: { amount: 2 } }),
+      'invalid-effect',
+    );
+    expectModelError(() => add({ id: 'x', type: 'blur', params: { radius: -1 } }), 'invalid-effect');
+    expectModelError(
+      () => add({ id: 'x', type: 'chromaKey', params: { keyColor: 'green' } }),
+      'invalid-effect',
+    );
+    expectModelError(
+      () => add({ id: 'x', type: 'chromaKey', params: { similarity: 0.9 } }),
+      'invalid-effect',
+    );
+    expectModelError(() => add({ id: 'x', type: 'lut' }), 'invalid-effect');
+    expectModelError(() => add({ id: 'x', type: 'lut', params: { file: '/tmp/a.cube' } }), 'invalid-effect');
+    expectModelError(() => add({ id: 'x', type: 'lut', params: { file: '../a.cube' } }), 'invalid-effect');
+    expectModelError(() => add({ id: 'x', type: 'lut', params: { file: 'a.txt' } }), 'invalid-effect');
+    expectModelError(() => add({ id: 'x', type: 'brightness', enabled: 'yes' }), 'invalid-effect');
+    expectModelError(
+      () => applyOperation(project, { type: 'add-effect', clipId: 'ghost', effect: { id: 'x', type: 'blur' } }),
+      'clip-not-found',
+    );
+    expectModelError(() => applyOperation(project, { type: 'add-effect', clipId: 'c1' }), 'invalid-input');
+  });
+
+  it('rejects duplicate effect ids on one clip', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'add-effect',
+      clipId: 'c1',
+      effect: { id: 'e1', type: 'brightness' },
+    });
+    expectModelError(
+      () => applyOperation(project, { type: 'add-effect', clipId: 'c1', effect: { id: 'e1', type: 'blur' } }),
+      'duplicate-id',
+    );
+  });
+
+  it('updates effect params, enabled and type via patch', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'add-effect',
+      clipId: 'c1',
+      effect: { id: 'e1', type: 'brightness', params: { amount: 1.5 } },
+    });
+    project = applyOperation(project, {
+      type: 'update-effect',
+      clipId: 'c1',
+      effectId: 'e1',
+      patch: { enabled: false, params: { amount: 0.5 } },
+    });
+    let effect = clipById(project, 'c1').effects[0];
+    assert.equal(effect.enabled, false);
+    assert.deepEqual(effect.params, { amount: 0.5 });
+
+    project = applyOperation(project, {
+      type: 'update-effect',
+      clipId: 'c1',
+      effectId: 'e1',
+      patch: { type: 'blur' },
+    });
+    effect = clipById(project, 'c1').effects[0];
+    assert.equal(effect.type, 'blur');
+    assert.deepEqual(effect.params, { radius: 0 });
+
+    project = applyOperation(project, {
+      type: 'update-effect',
+      clipId: 'c1',
+      effectId: 'e1',
+      patch: { enabled: true, params: { radius: 3 } },
+    });
+    effect = clipById(project, 'c1').effects[0];
+    assert.equal(effect.enabled, true);
+    assert.deepEqual(effect.params, { radius: 3 });
+  });
+
+  it('rejects invalid effect updates', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'add-effect',
+      clipId: 'c1',
+      effect: { id: 'e1', type: 'brightness' },
+    });
+    expectModelError(
+      () => applyOperation(project, { type: 'update-effect', clipId: 'c1', effectId: 'e1' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'update-effect',
+          clipId: 'c1',
+          effectId: 'e1',
+          patch: { enabled: 'yes' },
+        }),
+      'invalid-input',
+    );
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'update-effect',
+          clipId: 'c1',
+          effectId: 'e1',
+          patch: { params: { amount: 4 } },
+        }),
+      'invalid-input',
+    );
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'update-effect',
+          clipId: 'ghost',
+          effectId: 'e1',
+          patch: { enabled: false },
+        }),
+      'clip-not-found',
+    );
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'update-effect',
+          clipId: 'c1',
+          effectId: 'ghost',
+          patch: { enabled: false },
+        }),
+      'effect-not-found',
+    );
+  });
+
+  it('reorders and removes effects', () => {
+    let project = phase1Fixture();
+    for (const id of ['e1', 'e2', 'e3']) {
+      project = applyOperation(project, {
+        type: 'add-effect',
+        clipId: 'c1',
+        effect: { id, type: 'brightness' },
+      });
+    }
+    project = applyOperation(project, {
+      type: 'reorder-effects',
+      clipId: 'c1',
+      effectIds: ['e3', 'e1', 'e2'],
+    });
+    assert.deepEqual(
+      clipById(project, 'c1').effects.map((effect) => effect.id),
+      ['e3', 'e1', 'e2'],
+    );
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'reorder-effects',
+          clipId: 'c1',
+          effectIds: ['e1', 'e2'],
+        }),
+      'invalid-input',
+    );
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'reorder-effects',
+          clipId: 'c1',
+          effectIds: ['e1', 'e2', 'ghost'],
+        }),
+      'invalid-input',
+    );
+    project = applyOperation(project, { type: 'remove-effect', clipId: 'c1', effectId: 'e1' });
+    assert.deepEqual(
+      clipById(project, 'c1').effects.map((effect) => effect.id),
+      ['e3', 'e2'],
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'remove-effect', clipId: 'c1', effectId: 'e1' }),
+      'effect-not-found',
+    );
+  });
+
+  it('normalizes effect defaults and strips unknown params', () => {
+    const raw = mutatedRaw((value) => {
+      value.tracks[0].clips[0].effects = [
+        { id: 'e1', type: 'brightness', params: { amount: 1.5, bogus: 9 }, bogus: true },
+        { id: 'e2', type: 'chromaKey' },
+      ];
+    });
+    const clip = normalizeProject(raw).tracks[0].clips.find((item) => item.id === 'c2');
+    assert.deepEqual(clip.effects, [
+      { id: 'e1', type: 'brightness', enabled: true, params: { amount: 1.5 } },
+      {
+        id: 'e2',
+        type: 'chromaKey',
+        enabled: true,
+        params: { keyColor: '#00ff00', similarity: 0.1, blend: 0.1 },
+      },
+    ]);
+  });
+});
+
+describe('markers', () => {
+  it('adds markers with defaults and keeps them sorted by frame', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'add-marker',
+      marker: { id: 'm2', frame: 100, label: 'B' },
+    });
+    project = applyOperation(project, {
+      type: 'add-marker',
+      marker: { id: 'm1', frame: 10, label: 'A', color: '#112233' },
+    });
+    assert.deepEqual(project.markers, [
+      { id: 'm1', frame: 10, label: 'A', color: '#112233' },
+      { id: 'm2', frame: 100, label: 'B', color: '#ffcc00' },
+    ]);
+  });
+
+  it('updates and removes markers', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'add-marker', marker: { id: 'm1', frame: 10 } });
+    project = applyOperation(project, { type: 'add-marker', marker: { id: 'm2', frame: 20 } });
+    project = applyOperation(project, {
+      type: 'update-marker',
+      markerId: 'm1',
+      frame: 30,
+      label: 'later',
+      color: '#abcdef',
+    });
+    assert.deepEqual(project.markers.map((marker) => marker.id), ['m2', 'm1']);
+    assert.deepEqual(
+      project.markers.find((marker) => marker.id === 'm1'),
+      { id: 'm1', frame: 30, label: 'later', color: '#abcdef' },
+    );
+    project = applyOperation(project, { type: 'remove-marker', markerId: 'm2' });
+    assert.deepEqual(project.markers.map((marker) => marker.id), ['m1']);
+  });
+
+  it('rejects invalid markers and missing ids', () => {
+    const project = phase1Fixture();
+    expectModelError(
+      () => applyOperation(project, { type: 'add-marker', marker: { id: 'm', frame: -1 } }),
+      'invalid-marker',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'add-marker', marker: { id: 'm', frame: 1.5 } }),
+      'invalid-marker',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'add-marker', marker: { id: 'm', frame: 0, color: 'red' } }),
+      'invalid-marker',
+    );
+    expectModelError(() => applyOperation(project, { type: 'add-marker' }), 'invalid-input');
+    expectModelError(
+      () => applyOperation(project, { type: 'update-marker', markerId: 'ghost', frame: 1 }),
+      'marker-not-found',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'remove-marker', markerId: 'ghost' }),
+      'marker-not-found',
+    );
+    let withMarker = applyOperation(project, { type: 'add-marker', marker: { id: 'm', frame: 0 } });
+    expectModelError(
+      () => applyOperation(withMarker, { type: 'add-marker', marker: { id: 'm', frame: 1 } }),
+      'duplicate-id',
+    );
+    expectModelError(
+      () => applyOperation(withMarker, { type: 'update-marker', markerId: 'm' }),
+      'invalid-input',
+    );
+  });
+
+  it('normalizes, sorts and strips unknown marker fields', () => {
+    const raw = mutatedRaw((value) => {
+      value.markers = [
+        { id: 'm2', frame: 50, label: 'B', bogus: 1 },
+        { id: 'm1', frame: 5 },
+      ];
+      value.tracks[0].clips[0].bogus = true;
+    });
+    const project = normalizeProject(raw);
+    assert.deepEqual(project.markers, [
+      { id: 'm1', frame: 5, label: '', color: '#ffcc00' },
+      { id: 'm2', frame: 50, label: 'B', color: '#ffcc00' },
+    ]);
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.markers = [
+              { id: 'm', frame: 0 },
+              { id: 'm', frame: 1 },
+            ];
+          }),
+        ),
+      'duplicate-id',
+    );
+  });
+
+  it('markers survive clip edits', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'add-marker', marker: { id: 'm1', frame: 10 } });
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'c1', durationFrames: 50 });
+    project = applyOperation(project, { type: 'remove-clips', clipIds: ['c1'] });
+    assert.deepEqual(project.markers.map((marker) => marker.id), ['m1']);
+  });
+});
+
+describe('transitions', () => {
+  it('adds a transition between adjacent clips', () => {
+    const project = applyOperation(adjacentFixture(), {
+      type: 'add-transition',
+      transition: {
+        id: 'tr1',
+        trackId: 't-video',
+        fromClipId: 'a',
+        toClipId: 'b',
+        type: 'dissolve',
+        durationFrames: 20,
+      },
+    });
+    assert.deepEqual(project.transitions, [
+      {
+        id: 'tr1',
+        trackId: 't-video',
+        fromClipId: 'a',
+        toClipId: 'b',
+        type: 'dissolve',
+        durationFrames: 20,
+      },
+    ]);
+  });
+
+  it('rejects invalid transition definitions', () => {
+    const project = adjacentFixture();
+    const add = (transition) => applyOperation(project, { type: 'add-transition', transition });
+    const base = {
+      id: 'tr',
+      trackId: 't-video',
+      fromClipId: 'a',
+      toClipId: 'b',
+      type: 'dissolve',
+      durationFrames: 10,
+    };
+    expectModelError(() => add({ ...base, durationFrames: 0 }), 'invalid-transition');
+    expectModelError(() => add({ ...base, durationFrames: 101 }), 'invalid-transition');
+    expectModelError(() => add({ ...base, durationFrames: 1.5 }), 'invalid-transition');
+    expectModelError(() => add({ ...base, type: 'wipeUp' }), 'invalid-transition');
+    expectModelError(() => add({ ...base, trackId: 'ghost' }), 'invalid-transition');
+    expectModelError(() => add({ ...base, fromClipId: 'ghost' }), 'invalid-transition');
+    expectModelError(() => add({ ...base, trackId: 't-audio' }), 'invalid-transition');
+    expectModelError(() => applyOperation(project, { type: 'add-transition' }), 'invalid-input');
+
+    let notAdjacent = fixture();
+    notAdjacent = addClip(notAdjacent, { clipId: 'a', startFrame: 0, durationFrames: 100 });
+    notAdjacent = addClip(notAdjacent, { clipId: 'b', startFrame: 150, durationFrames: 100 });
+    expectModelError(
+      () =>
+        applyOperation(notAdjacent, {
+          type: 'add-transition',
+          transition: { ...base, id: 'tr2' },
+        }),
+      'invalid-transition',
+    );
+
+    let textEdge = adjacentFixture();
+    textEdge = addText(textEdge, { clipId: 'txt', startFrame: 200, durationFrames: 30 });
+    expectModelError(
+      () =>
+        applyOperation(textEdge, {
+          type: 'add-transition',
+          transition: { ...base, id: 'tr3', fromClipId: 'b', toClipId: 'txt' },
+        }),
+      'invalid-transition',
+    );
+  });
+
+  it('rejects duplicate ids and duplicate boundaries', () => {
+    let project = adjacentFixture();
+    project = applyOperation(project, {
+      type: 'add-transition',
+      transition: {
+        id: 'tr1',
+        trackId: 't-video',
+        fromClipId: 'a',
+        toClipId: 'b',
+        type: 'dissolve',
+        durationFrames: 10,
+      },
+    });
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'add-transition',
+          transition: {
+            id: 'tr1',
+            trackId: 't-video',
+            fromClipId: 'a',
+            toClipId: 'b',
+            type: 'fadeToBlack',
+            durationFrames: 5,
+          },
+        }),
+      'duplicate-id',
+    );
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'add-transition',
+          transition: {
+            id: 'tr2',
+            trackId: 't-video',
+            fromClipId: 'a',
+            toClipId: 'b',
+            type: 'fadeToBlack',
+            durationFrames: 5,
+          },
+        }),
+      'invalid-transition',
+    );
+  });
+
+  it('updates and removes transitions', () => {
+    let project = adjacentFixture();
+    project = applyOperation(project, {
+      type: 'add-transition',
+      transition: {
+        id: 'tr1',
+        trackId: 't-video',
+        fromClipId: 'a',
+        toClipId: 'b',
+        type: 'dissolve',
+        durationFrames: 10,
+      },
+    });
+    project = applyOperation(project, {
+      type: 'update-transition',
+      transitionId: 'tr1',
+      transitionType: 'wipeLeft',
+      durationFrames: 30,
+    });
+    assert.deepEqual(project.transitions[0], {
+      id: 'tr1',
+      trackId: 't-video',
+      fromClipId: 'a',
+      toClipId: 'b',
+      type: 'wipeLeft',
+      durationFrames: 30,
+    });
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'update-transition',
+          transitionId: 'tr1',
+          durationFrames: 101,
+        }),
+      'invalid-transition',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-transition', transitionId: 'tr1' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'update-transition',
+          transitionId: 'ghost',
+          durationFrames: 5,
+        }),
+      'transition-not-found',
+    );
+    project = applyOperation(project, { type: 'remove-transition', transitionId: 'tr1' });
+    assert.deepEqual(project.transitions, []);
+    expectModelError(
+      () => applyOperation(project, { type: 'remove-transition', transitionId: 'tr1' }),
+      'transition-not-found',
+    );
+  });
+
+  it('prunes transitions when clips move, trim, split or vanish', () => {
+    let project = adjacentFixture();
+    project = applyOperation(project, {
+      type: 'add-transition',
+      transition: {
+        id: 'tr1',
+        trackId: 't-video',
+        fromClipId: 'a',
+        toClipId: 'b',
+        type: 'dissolve',
+        durationFrames: 10,
+      },
+    });
+    const moved = applyOperation(project, { type: 'move-clip', clipId: 'b', startFrame: 150 });
+    assert.deepEqual(moved.transitions, []);
+    const trimmed = applyOperation(project, { type: 'trim-clip', clipId: 'a', durationFrames: 50 });
+    assert.deepEqual(trimmed.transitions, []);
+    const removed = applyOperation(project, { type: 'remove-clips', clipIds: ['b'] });
+    assert.deepEqual(removed.transitions, []);
+    const split = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'a',
+      atFrame: 50,
+      leftClipId: 'a',
+      rightClipId: 'aR',
+    });
+    assert.deepEqual(split.transitions, []);
+    const noMedia = applyOperation(project, { type: 'remove-media', mediaId: 'm-video' });
+    assert.deepEqual(noMedia.transitions, []);
+  });
+
+  it('normalizes transitions and strips unknown fields', () => {
+    const raw = {
+      version: 1,
+      name: 'transitions',
+      fps: 30,
+      media: [{ id: 'm', kind: 'video', fileName: 'm.mp4', durationFrames: 300 }],
+      tracks: [
+        {
+          id: 't',
+          type: 'video',
+          clips: [
+            { id: 'a', type: 'video', mediaId: 'm', startFrame: 0, durationFrames: 100 },
+            { id: 'b', type: 'video', mediaId: 'm', startFrame: 100, durationFrames: 100 },
+          ],
+        },
+      ],
+      transitions: [
+        {
+          id: 'tr',
+          trackId: 't',
+          fromClipId: 'a',
+          toClipId: 'b',
+          type: 'fadeToBlack',
+          durationFrames: 20,
+          bogus: true,
+        },
+      ],
+    };
+    const project = normalizeProject(raw);
+    assert.deepEqual(project.transitions, [
+      {
+        id: 'tr',
+        trackId: 't',
+        fromClipId: 'a',
+        toClipId: 'b',
+        type: 'fadeToBlack',
+        durationFrames: 20,
+      },
+    ]);
+    expectModelError(() => normalizeProject({ ...raw, transitions: [{ ...raw.transitions[0], durationFrames: 101 }] }), 'invalid-transition');
+    expectModelError(() => normalizeProject({ ...raw, transitions: [{ ...raw.transitions[0], type: 'wipeUp' }] }), 'invalid-transition');
+    expectModelError(
+      () => normalizeProject({ ...raw, transitions: [raw.transitions[0], { ...raw.transitions[0] }] }),
+      'duplicate-id',
+    );
+  });
+});
+
+describe('captions', () => {
+  it('creates a caption clip on an auto-created video track', () => {
+    const project = addCaption(emptyProject(), {
+      clipId: 'cap1',
+      startFrame: 0,
+      durationFrames: 90,
+      segments: [
+        { startFrame: 30, durationFrames: 30, text: 'Second' },
+        { startFrame: 0, durationFrames: 30, text: 'First' },
+      ],
+      style: { fontSize: 36, align: 'left', background: '#000000' },
+    });
+    assert.equal(project.tracks.length, 1);
+    assert.equal(project.tracks[0].id, 'caption-track-cap1');
+    assert.equal(project.tracks[0].type, 'video');
+    const clip = clipById(project, 'cap1');
+    assert.equal(clip.type, 'caption');
+    assert.equal(clip.mediaId, null);
+    assert.equal(clip.trimStartFrame, 0);
+    assert.equal(clip.speed, 1);
+    assert.equal(clip.text, null);
+    assert.deepEqual(clip.caption.segments, [
+      { startFrame: 0, durationFrames: 30, text: 'First' },
+      { startFrame: 30, durationFrames: 30, text: 'Second' },
+    ]);
+    assert.deepEqual(clip.caption.style, {
+      fontSize: 36,
+      color: '#ffffff',
+      fontWeight: '600',
+      align: 'left',
+      background: '#000000',
+    });
+    assert.equal(clip.caption.style.background, '#000000');
+  });
+
+  it('reuses or auto-creates video tracks', () => {
+    let project = addCaption(fixture(), { clipId: 'cap1', startFrame: 0, durationFrames: 60 });
+    assert.equal(findClip(project, 'cap1').track.id, 't-video');
+
+    project = addCaption(fixture(), {
+      clipId: 'cap2',
+      trackId: 't-video2',
+      startFrame: 0,
+      durationFrames: 60,
+    });
+    assert.equal(findClip(project, 'cap2').track.id, 't-video2');
+
+    let busy = fixture();
+    busy = addClip(busy, { clipId: 'v1', startFrame: 0, durationFrames: 100 });
+    busy = addClip(busy, {
+      clipId: 'v2',
+      trackId: 't-video2',
+      startFrame: 0,
+      durationFrames: 100,
+    });
+    busy = addCaption(busy, { clipId: 'cap3', startFrame: 0, durationFrames: 60 });
+    assert.equal(findClip(busy, 'cap3').track.id, 'caption-track-cap3');
+    assert.equal(busy.tracks.length, 4);
+  });
+
+  it('rejects invalid caption targets and duplicate ids', () => {
+    const project = fixture();
+    expectModelError(
+      () => addCaption(project, { clipId: 'cap', trackId: 't-audio' }),
+      'incompatible-track-type',
+    );
+    expectModelError(
+      () => addCaption(project, { clipId: 'cap', trackId: 'ghost' }),
+      'track-not-found',
+    );
+    const withClip = addClip(project, { clipId: 'cap', startFrame: 0, durationFrames: 50 });
+    expectModelError(() => addCaption(withClip, { clipId: 'cap' }), 'duplicate-id');
+  });
+
+  it('validates caption segments and style', () => {
+    const project = fixture();
+    expectModelError(
+      () =>
+        addCaption(project, {
+          clipId: 'cap',
+          durationFrames: 30,
+          segments: [{ startFrame: 0, durationFrames: 31, text: 'X' }],
+        }),
+      'invalid-caption',
+    );
+    expectModelError(
+      () =>
+        addCaption(project, {
+          clipId: 'cap',
+          durationFrames: 60,
+          segments: [
+            { startFrame: 0, durationFrames: 40, text: 'A' },
+            { startFrame: 30, durationFrames: 20, text: 'B' },
+          ],
+        }),
+      'invalid-caption',
+    );
+    expectModelError(
+      () =>
+        addCaption(project, {
+          clipId: 'cap',
+          durationFrames: 30,
+          segments: [{ startFrame: 0, durationFrames: 10 }],
+        }),
+      'invalid-caption',
+    );
+    expectModelError(
+      () => addCaption(project, { clipId: 'cap', style: { align: 'justify' } }),
+      'invalid-caption',
+    );
+    expectModelError(
+      () => addCaption(project, { clipId: 'cap', style: { fontWeight: '900' } }),
+      'invalid-caption',
+    );
+    expectModelError(
+      () => addCaption(project, { clipId: 'cap', style: { fontSize: 0 } }),
+      'invalid-caption',
+    );
+  });
+
+  it('updates caption segments and style', () => {
+    let project = addCaption(fixture(), { clipId: 'cap', startFrame: 0, durationFrames: 90 });
+    project = applyOperation(project, {
+      type: 'update-caption',
+      clipId: 'cap',
+      segments: [
+        { startFrame: 10, durationFrames: 20, text: 'Only' },
+        { startFrame: 50, durationFrames: 20, text: 'Two' },
+      ],
+      style: { color: '#ff0000', align: 'right' },
+    });
+    const clip = clipById(project, 'cap');
+    assert.deepEqual(
+      clip.caption.segments.map((segment) => [segment.startFrame, segment.text]),
+      [
+        [10, 'Only'],
+        [50, 'Two'],
+      ],
+    );
+    assert.equal(clip.caption.style.color, '#ff0000');
+    assert.equal(clip.caption.style.align, 'right');
+    assert.equal(clip.caption.style.fontSize, 48);
+
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'update-caption',
+          clipId: 'cap',
+          segments: [
+            { startFrame: 0, durationFrames: 20, text: 'A' },
+            { startFrame: 10, durationFrames: 20, text: 'B' },
+          ],
+        }),
+      'invalid-caption',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-caption', clipId: 'cap', style: { align: 'justify' } }),
+      'invalid-caption',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-caption', clipId: 'cap' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-caption', clipId: 'ghost', segments: [] }),
+      'clip-not-found',
+    );
+    let videoClip = addClip(project, { clipId: 'v1', startFrame: 200, durationFrames: 50 });
+    expectModelError(
+      () => applyOperation(videoClip, { type: 'update-caption', clipId: 'v1', segments: [] }),
+      'not-caption-clip',
+    );
+  });
+
+  it('splits caption segments at the cut', () => {
+    let project = addCaption(fixture(), {
+      clipId: 'cap',
+      startFrame: 0,
+      durationFrames: 90,
+      segments: [
+        { startFrame: 0, durationFrames: 30, text: 'A' },
+        { startFrame: 30, durationFrames: 30, text: 'B' },
+      ],
+    });
+    project = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'cap',
+      atFrame: 45,
+      leftClipId: 'capL',
+      rightClipId: 'capR',
+    });
+    const left = clipById(project, 'capL');
+    const right = clipById(project, 'capR');
+    assert.deepEqual(
+      left.caption.segments.map((segment) => [segment.startFrame, segment.durationFrames, segment.text]),
+      [
+        [0, 30, 'A'],
+        [30, 15, 'B'],
+      ],
+    );
+    assert.deepEqual(
+      right.caption.segments.map((segment) => [segment.startFrame, segment.durationFrames, segment.text]),
+      [[0, 15, 'B']],
+    );
+    assert.equal(left.durationFrames, 45);
+    assert.equal(right.durationFrames, 45);
+  });
+
+  it('trims caption duration and shifts caption heads on overlap', () => {
+    let project = addCaption(fixture(), {
+      clipId: 'cap',
+      startFrame: 0,
+      durationFrames: 90,
+      segments: [
+        { startFrame: 0, durationFrames: 30, text: 'A' },
+        { startFrame: 30, durationFrames: 30, text: 'B' },
+      ],
+    });
+    const trimmed = applyOperation(project, { type: 'trim-clip', clipId: 'cap', durationFrames: 45 });
+    assert.deepEqual(
+      clipById(trimmed, 'cap').caption.segments.map((segment) => [segment.startFrame, segment.durationFrames]),
+      [
+        [0, 30],
+        [30, 15],
+      ],
+    );
+
+    const covered = addClip(project, {
+      clipId: 'cover',
+      startFrame: 20,
+      durationFrames: 30,
+      splitRightClipId: 'capR',
+    });
+    const right = clipById(covered, 'capR');
+    // The removed middle [20, 50) drops the tail of A and the head of B.
+    assert.deepEqual(
+      right.caption.segments.map((segment) => [segment.startFrame, segment.durationFrames, segment.text]),
+      [[0, 10, 'B']],
+    );
+  });
+
+  it('normalizes caption clips and strips unknown style fields', () => {
+    const raw = {
+      version: 1,
+      name: 'captions',
+      fps: 30,
+      tracks: [
+        {
+          id: 't',
+          type: 'video',
+          clips: [
+            {
+              id: 'cap',
+              type: 'caption',
+              mediaId: null,
+              startFrame: 0,
+              durationFrames: 60,
+              caption: {
+                segments: [
+                  { startFrame: 30, durationFrames: 20, text: 'B', bogus: 1 },
+                  { startFrame: 0, durationFrames: 10, text: 'A' },
+                ],
+                style: { fontSize: 24, bogus: true },
+                bogus: true,
+              },
+              bogus: true,
+            },
+          ],
+        },
+      ],
+    };
+    const project = normalizeProject(raw);
+    const clip = project.tracks[0].clips[0];
+    assert.deepEqual(clip.caption.segments, [
+      { startFrame: 0, durationFrames: 10, text: 'A' },
+      { startFrame: 30, durationFrames: 20, text: 'B' },
+    ]);
+    assert.deepEqual(clip.caption.style, {
+      fontSize: 24,
+      color: '#ffffff',
+      fontWeight: '600',
+      align: 'center',
+      background: null,
+    });
+    expectModelError(
+      () =>
+        normalizeProject({
+          tracks: [
+            {
+              id: 't',
+              type: 'video',
+              clips: [
+                { id: 'cap', type: 'caption', mediaId: 'm', startFrame: 0, durationFrames: 30, caption: { segments: [] } },
+              ],
+            },
+          ],
+        }),
+      'invalid-clip',
+    );
+    expectModelError(
+      () =>
+        normalizeProject({
+          tracks: [
+            {
+              id: 'a',
+              type: 'audio',
+              clips: [
+                { id: 'cap', type: 'caption', mediaId: null, startFrame: 0, durationFrames: 30, caption: { segments: [] } },
+              ],
+            },
+          ],
+        }),
+      'incompatible-track-type',
+    );
+  });
+});
+
+describe('phase 1 normalize, purity and invariants', () => {
+  function richProject() {
+    let project = adjacentFixture();
+    project = applyOperation(project, {
+      type: 'add-transition',
+      transition: {
+        id: 'tr1',
+        trackId: 't-video',
+        fromClipId: 'a',
+        toClipId: 'b',
+        type: 'dissolve',
+        durationFrames: 20,
+      },
+    });
+    project = applyOperation(project, { type: 'add-marker', marker: { id: 'm1', frame: 10, label: 'X' } });
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'a',
+      property: 'volume',
+      keyframes: [
+        { frame: 0, value: 1 },
+        { frame: 100, value: 0, easing: 'ease-in-out' },
+      ],
+    });
+    project = applyOperation(project, {
+      type: 'add-effect',
+      clipId: 'a',
+      effect: { id: 'e1', type: 'chromaKey', params: { keyColor: '#123456' } },
+    });
+    project = applyOperation(project, {
+      type: 'set-fades',
+      clipId: 'a',
+      fadeInFrames: 5,
+      fadeOutFrames: 5,
+    });
+    project = addCaption(project, {
+      clipId: 'cap',
+      startFrame: 300,
+      durationFrames: 60,
+      segments: [{ startFrame: 0, durationFrames: 60, text: 'Hi' }],
+      style: { background: '#000000' },
+    });
+    return project;
+  }
+
+  it('normalizeProject is idempotent for a project using every new field', () => {
+    const project = richProject();
+    assert.deepEqual(normalizeProject(project), project);
+    assert.deepEqual(normalizeProject(normalizeProject(project)), project);
+    assert.equal(project.transitions.length, 1);
+    assert.equal(project.markers.length, 1);
+    assert.equal(findClip(project, 'cap').clip.type, 'caption');
+  });
+
+  it('strips unknown properties at every level', () => {
+    const project = richProject();
+    project.bogus = true;
+    project.markers[0].bogus = true;
+    project.transitions[0].bogus = true;
+    const clip = clipById(project, 'a');
+    clip.bogus = true;
+    clip.keyframes.volume[0].bogus = true;
+    clip.effects[0].bogus = true;
+    clip.effects[0].params.bogus = true;
+    const captionClip = clipById(project, 'cap');
+    captionClip.caption.bogus = true;
+    captionClip.caption.style.bogus = true;
+    captionClip.caption.segments[0].bogus = true;
+    const normalized = normalizeProject(project);
+    assert.equal('bogus' in normalized, false);
+    assert.equal('bogus' in normalized.markers[0], false);
+    assert.equal('bogus' in normalized.transitions[0], false);
+    const normalizedClip = findClip(normalized, 'a').clip;
+    assert.equal('bogus' in normalizedClip, false);
+    assert.equal('bogus' in normalizedClip.keyframes.volume[0], false);
+    assert.equal('bogus' in normalizedClip.effects[0], false);
+    assert.equal('bogus' in normalizedClip.effects[0].params, false);
+    const normalizedCaption = findClip(normalized, 'cap').clip;
+    assert.equal('bogus' in normalizedCaption.caption, false);
+    assert.equal('bogus' in normalizedCaption.caption.style, false);
+    assert.equal('bogus' in normalizedCaption.caption.segments[0], false);
+  });
+
+  it('is pure for every new operation', () => {
+    let project = richProject();
+    const before = JSON.stringify(project);
+    const operations = [
+      { type: 'set-speed', clipId: 'b', speed: 2 },
+      { type: 'set-keyframes', clipId: 'b', property: 'opacity', keyframes: [{ frame: 0, value: 0.5 }] },
+      { type: 'add-effect', clipId: 'b', effect: { id: 'e2', type: 'blur', params: { radius: 2 } } },
+      { type: 'set-fades', clipId: 'b', fadeInFrames: 3 },
+      { type: 'add-marker', marker: { id: 'm2', frame: 20 } },
+      { type: 'update-transition', transitionId: 'tr1', durationFrames: 5 },
+      { type: 'update-marker', markerId: 'm1', frame: 15 },
+      { type: 'update-caption', clipId: 'cap', style: { color: '#ff0000' } },
+      { type: 'add-caption', clipId: 'cap2', startFrame: 400, durationFrames: 30, segments: [] },
+      { type: 'reorder-tracks', trackId: 't-audio', toIndex: 0 },
+    ];
+    for (const operation of operations) {
+      const operationBefore = JSON.stringify(operation);
+      applyOperation(project, operation);
+      assert.equal(JSON.stringify(project), before);
+      assert.equal(JSON.stringify(operation), operationBefore);
+    }
+  });
+
+  it('two identical phase 1 operations produce the same result', () => {
+    const project = richProject();
+    const operation = { type: 'set-speed', clipId: 'b', speed: 2 };
+    assert.deepEqual(applyOperation(project, operation), applyOperation(project, operation));
+  });
+
+  it('markers do not extend the timeline duration', () => {
+    let project = phase1Fixture();
+    assert.equal(timelineDurationFrames(project), 100);
+    project = applyOperation(project, { type: 'add-marker', marker: { id: 'm', frame: 5000 } });
+    assert.equal(timelineDurationFrames(project), 100);
+  });
+
+  it('supports speed changes on audio clips', () => {
+    let project = fixture();
+    project = addClip(project, {
+      clipId: 'aud',
+      mediaId: 'm-audio',
+      trackId: 't-audio',
+      startFrame: 0,
+      durationFrames: 100,
+    });
+    project = applyOperation(project, { type: 'set-speed', clipId: 'aud', speed: 2 });
+    const clip = clipById(project, 'aud');
+    assert.equal(clip.speed, 2);
+    assert.equal(clip.durationFrames, 50);
+    assert.equal(sourceFrameForTimeline(clip, 50), 100);
+  });
+
+  it('sorts multiple transitions by track and clip order', () => {
+    let project = fixture();
+    project = addClip(project, { clipId: 'c1', startFrame: 0, durationFrames: 50 });
+    project = addClip(project, { clipId: 'c2', startFrame: 50, durationFrames: 50 });
+    project = addClip(project, { clipId: 'c3', startFrame: 100, durationFrames: 50 });
+    const makeTransition = (id, fromClipId, toClipId) => ({
+      id,
+      trackId: 't-video',
+      fromClipId,
+      toClipId,
+      type: 'fadeToBlack',
+      durationFrames: 10,
+    });
+    project = applyOperation(project, {
+      type: 'add-transition',
+      transition: makeTransition('tr2', 'c2', 'c3'),
+    });
+    project = applyOperation(project, {
+      type: 'add-transition',
+      transition: makeTransition('tr1', 'c1', 'c2'),
+    });
+    assert.deepEqual(project.transitions.map((transition) => transition.id), ['tr1', 'tr2']);
+  });
+
+  it('rejects an unknown phase 1 effect type through normalize', () => {
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.tracks[0].clips[0].effects = [{ id: 'e', type: 'glow' }];
+          }),
+        ),
+      'invalid-clip',
+    );
+  });
+
+  it('rejects duplicate transition boundaries through normalize', () => {
+    const raw = {
+      version: 1,
+      name: 'dup',
+      fps: 30,
+      media: [{ id: 'm', kind: 'video', fileName: 'm.mp4', durationFrames: 300 }],
+      tracks: [
+        {
+          id: 't',
+          type: 'video',
+          clips: [
+            { id: 'a', type: 'video', mediaId: 'm', startFrame: 0, durationFrames: 100 },
+            { id: 'b', type: 'video', mediaId: 'm', startFrame: 100, durationFrames: 100 },
+          ],
+        },
+      ],
+      transitions: [
+        { id: 'tr1', trackId: 't', fromClipId: 'a', toClipId: 'b', type: 'dissolve', durationFrames: 10 },
+        { id: 'tr2', trackId: 't', fromClipId: 'a', toClipId: 'b', type: 'fadeToBlack', durationFrames: 10 },
+      ],
+    };
+    expectModelError(() => normalizeProject(raw), 'invalid-transition');
+  });
+
+  it('caption clips default to a full-frame transform', () => {
+    const project = addCaption(fixture(), { clipId: 'cap', startFrame: 0, durationFrames: 30 });
+    assert.deepEqual(clipById(project, 'cap').transform, { x: 0.05, y: 0.78, width: 0.9, height: 0.16, rotation: 0 });
   });
 });

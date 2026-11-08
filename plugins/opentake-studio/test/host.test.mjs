@@ -54,6 +54,9 @@ const PREFIX = '/opentake-studio';
 const EXPECTED_TOOLS = [
   'opentake_studio_get_state',
   'opentake_studio_list_media',
+  'opentake_studio_edit',
+  'opentake_studio_import_captions',
+  'opentake_studio_export_captions',
   'opentake_studio_new_project',
   'opentake_studio_open_project',
   'opentake_studio_import_media',
@@ -1768,4 +1771,118 @@ test('maps a missing ffmpeg to a 503 ffmpeg-unavailable state and tool error', a
     else process.env.OPENTAKE_STUDIO_FFPROBE = saved.OPENTAKE_STUDIO_FFPROBE;
     resetToolCache();
   }
+});
+
+test('Phase 1 edit operations, captions and text renders are wired end to end', async () => {
+  await withHost(async (host) => {
+    const { root } = await createProjectOn(host, 'phase1');
+    const media = {
+      id: 'phase-media',
+      name: 'phase.mp4',
+      kind: 'video',
+      fileName: 'phase.mp4',
+      durationFrames: 60,
+      sourceDurationSeconds: 2,
+      width: 320,
+      height: 180,
+      hasAudio: true,
+      sizeBytes: 10,
+      importedAt: Date.now(),
+    };
+    const batch = await edit(host, [
+      { type: 'add-track', trackId: 'phase-track', trackType: 'video', name: 'Video' },
+      { type: 'add-media', media },
+      { type: 'add-clip', clipId: 'phase-a', mediaId: media.id, trackId: 'phase-track', startFrame: 0, durationFrames: 60 },
+      { type: 'add-clip', clipId: 'phase-b', mediaId: media.id, trackId: 'phase-track', startFrame: 60, durationFrames: 60 },
+      { type: 'set-speed', clipId: 'phase-b', speed: 2 },
+      { type: 'set-fades', clipId: 'phase-a', fadeInFrames: 5, fadeOutFrames: 5 },
+      {
+        type: 'set-keyframes',
+        clipId: 'phase-a',
+        property: 'volume',
+        keyframes: [
+          { frame: 0, value: 0 },
+          { frame: 60, value: 1, easing: 'ease-in' },
+        ],
+      },
+      {
+        type: 'add-effect',
+        clipId: 'phase-a',
+        effect: { type: 'brightness', params: { amount: 1.2 } },
+      },
+      { type: 'add-marker', marker: { frame: 30, label: 'Beat', color: '#ffcc00' } },
+      {
+        type: 'add-transition',
+        transition: {
+          trackId: 'phase-track',
+          fromClipId: 'phase-a',
+          toClipId: 'phase-b',
+          type: 'fadeToBlack',
+          durationFrames: 10,
+        },
+      },
+      {
+        type: 'add-caption',
+        startFrame: 0,
+        durationFrames: 60,
+        segments: [
+          { startFrame: 0, durationFrames: 30, text: 'Hello' },
+          { startFrame: 30, durationFrames: 30, text: 'World' },
+        ],
+        style: { fontSize: 36, color: '#ffff00' },
+      },
+    ]);
+    assert.equal(batch.status, 200, batch.text);
+    assert.equal(batch.json.project.markers.length, 1);
+    assert.equal(batch.json.project.transitions.length, 1);
+    const clips = allClips(batch.json);
+    const first = clips.find((clip) => clip.id === 'phase-a');
+    assert.equal(first.speed, 1);
+    assert.equal(first.fadeInFrames, 5);
+    assert.equal(first.effects.length, 1);
+    assert.equal(first.keyframes.volume.length, 2);
+    const second = clips.find((clip) => clip.id === 'phase-b');
+    assert.equal(second.speed, 2);
+    const caption = clips.find((clip) => clip.type === 'caption');
+    assert.ok(caption, 'caption clip should exist');
+    assert.equal(caption.caption.segments.length, 2);
+    assert.equal(caption.caption.style.fontSize, 36);
+    assert.equal(caption.transform.y, 0.78);
+    assert.equal(caption.trackName, 'Captions');
+
+    const imported = await host.request('POST', `${PREFIX}/captions/import`, {
+      body: JSON.stringify({
+        text: '1\n00:00:01,000 --> 00:00:02,000\nImported\n',
+        style: { fontSize: 28 },
+      }),
+    });
+    assert.equal(imported.status, 200, imported.text);
+    assert.ok(allClips(imported.json).some((clip) => clip.type === 'caption'));
+
+    const exportedSrt = await host.request('GET', `${PREFIX}/captions/export.srt`);
+    assert.equal(exportedSrt.status, 200, exportedSrt.text);
+    assert.match(exportedSrt.text, /Hello/);
+    assert.match(exportedSrt.text, /Imported/);
+    const exportedVtt = await host.request('GET', `${PREFIX}/captions/export.vtt`);
+    assert.equal(exportedVtt.status, 200, exportedVtt.text);
+    assert.match(exportedVtt.text, /^WEBVTT/);
+
+    // Browser-side caption segment PNGs are stored next to text renders.
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    ).toString('base64');
+    const rendered = await host.request('POST', `${PREFIX}/text/render`, {
+      body: JSON.stringify({ clipId: caption.id, segmentIndex: 0, dataUrl: `data:image/png;base64,${png}` }),
+    });
+    assert.equal(rendered.status, 200, rendered.text);
+    assert.ok(existsSync(path.join(root, 'renders', `${caption.id}-seg-0.png`)));
+
+    const editTool = await callTool(host, 'opentake_studio_edit', {
+      operations: [{ type: 'add-marker', marker: { frame: 12, label: 'Tool' } }],
+    });
+    assert.match(editTool.text, /Tool/);
+    const captionsTool = await callTool(host, 'opentake_studio_export_captions', { format: 'vtt' });
+    assert.match(captionsTool.text, /^WEBVTT/);
+  });
 });

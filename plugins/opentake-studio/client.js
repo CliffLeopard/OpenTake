@@ -193,8 +193,296 @@ window.__ModuleLoader__.load({
 			return next;
 		}
 
+		function newId() {
+			try {
+				if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
+					return crypto.randomUUID();
+				}
+			} catch (error) {
+				/* fall through */
+			}
+			return `ots-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+		}
+
+		function deepCopy(value) {
+			try {
+				return JSON.parse(JSON.stringify(value));
+			} catch (error) {
+				return value;
+			}
+		}
+
+		// Phase 1: speed, fades, keyframes, effects, captions, markers, transitions.
+		const KEYFRAME_PROPERTIES = ['volume', 'opacity', 'x', 'y', 'width', 'height', 'rotation'];
+		const KEYFRAME_EASINGS = ['linear', 'ease-in', 'ease-out', 'ease-in-out'];
+		const EFFECT_TYPES = ['brightness', 'contrast', 'saturation', 'temperature', 'blur', 'sharpen', 'chromaKey', 'lut'];
+		const TRANSITION_TYPES = ['dissolve', 'fadeToBlack', 'wipeLeft', 'wipeRight'];
+		const DEFAULT_CAPTION_STYLE = Object.freeze({
+			fontSize: 48,
+			color: '#ffffff',
+			fontWeight: '600',
+			align: 'center',
+			background: null,
+		});
+		const DEFAULT_CAPTION_TRANSFORM = Object.freeze({ x: 0.05, y: 0.78, width: 0.9, height: 0.16, rotation: 0 });
+
+		function effectDefaultParams(type) {
+			switch (type) {
+				case 'brightness':
+				case 'contrast':
+				case 'saturation':
+					return { amount: 1 };
+				case 'temperature':
+					return { amount: 0 };
+				case 'blur':
+					return { radius: 0 };
+				case 'sharpen':
+					return { amount: 0 };
+				case 'chromaKey':
+					return { keyColor: '#00ff00', similarity: 0.1, blend: 0.1 };
+				case 'lut':
+					return { file: 'look.cube' };
+				default:
+					return {};
+			}
+		}
+
+		function clipSpeedOf(clip) {
+			return clamp(finiteNumber(clip && clip.speed, 1), 0.25, 4);
+		}
+
+		function clipDurationOf(clip) {
+			return Math.max(1, Math.round(finiteNumber(clip && clip.durationFrames, 1)));
+		}
+
+		function clipFadeInFrames(clip) {
+			return clamp(Math.round(finiteNumber(clip && clip.fadeInFrames, 0)), 0, clipDurationOf(clip));
+		}
+
+		function clipFadeOutFrames(clip) {
+			return clamp(Math.round(finiteNumber(clip && clip.fadeOutFrames, 0)), 0, clipDurationOf(clip));
+		}
+
+		function clipFadeFactor(clip, frame) {
+			const duration = clipDurationOf(clip);
+			const relative = frame - clip.startFrame;
+			let factor = 1;
+			const fadeIn = clipFadeInFrames(clip);
+			const fadeOut = clipFadeOutFrames(clip);
+			if (fadeIn > 0) factor *= clamp01(relative / fadeIn);
+			if (fadeOut > 0) factor *= clamp01((duration - relative) / fadeOut);
+			return clamp01(factor);
+		}
+
+		function applyEasing(progress, easing) {
+			const value = clamp01(progress);
+			switch (easing) {
+				case 'ease-in':
+					return value * value;
+				case 'ease-out':
+					return 1 - (1 - value) * (1 - value);
+				case 'ease-in-out':
+					return value < 0.5 ? 2 * value * value : 1 - 2 * (1 - value) * (1 - value);
+				default:
+					return value;
+			}
+		}
+
+		function keyframesOf(clip, property) {
+			const keyframes = clip && clip.keyframes;
+			const list = keyframes && keyframes[property];
+			if (!Array.isArray(list) || list.length === 0) return [];
+			return list
+				.filter((keyframe) => keyframe && Number.isFinite(Number(keyframe.frame)) && Number.isFinite(Number(keyframe.value)))
+				.map((keyframe) => ({
+					frame: Number(keyframe.frame),
+					value: Number(keyframe.value),
+					easing: KEYFRAME_EASINGS.includes(keyframe.easing) ? keyframe.easing : 'linear',
+				}))
+				.sort((a, b) => a.frame - b.frame);
+		}
+
+		function evaluateKeyframes(list, frame, fallback) {
+			if (!Array.isArray(list) || list.length === 0) return fallback;
+			const sorted = list
+				.filter((keyframe) => keyframe && Number.isFinite(Number(keyframe.frame)) && Number.isFinite(Number(keyframe.value)))
+				.slice()
+				.sort((a, b) => Number(a.frame) - Number(b.frame));
+			if (sorted.length === 0) return fallback;
+			const value = Number(frame);
+			if (value <= Number(sorted[0].frame)) return Number(sorted[0].value);
+			if (value >= Number(sorted[sorted.length - 1].frame)) return Number(sorted[sorted.length - 1].value);
+			for (let index = 0; index < sorted.length - 1; index += 1) {
+				const current = sorted[index];
+				const next = sorted[index + 1];
+				if (value >= Number(current.frame) && value <= Number(next.frame)) {
+					const span = Number(next.frame) - Number(current.frame);
+					const progress = span <= 0 ? 1 : (value - Number(current.frame)) / span;
+					const eased = applyEasing(progress, next.easing || 'linear');
+					return Number(current.value) + (Number(next.value) - Number(current.value)) * eased;
+				}
+			}
+			return fallback;
+		}
+
+		function clipPropertyAt(clip, property, relativeFrame, fallback) {
+			return evaluateKeyframes(keyframesOf(clip, property), relativeFrame, fallback);
+		}
+
+		function baseTransformForClip(clip) {
+			if (clip && clip.transform) return normalizeTransform(clip.transform);
+			if (clip && clip.type === 'caption') return Object.assign({}, DEFAULT_CAPTION_TRANSFORM);
+			return normalizeTransform(undefined);
+		}
+
+		function clipTransformAt(clip, relativeFrame) {
+			const base = baseTransformForClip(clip);
+			return {
+				x: clamp01(clipPropertyAt(clip, 'x', relativeFrame, base.x)),
+				y: clamp01(clipPropertyAt(clip, 'y', relativeFrame, base.y)),
+				width: clamp01(clipPropertyAt(clip, 'width', relativeFrame, base.width)),
+				height: clamp01(clipPropertyAt(clip, 'height', relativeFrame, base.height)),
+				rotation: finiteNumber(clipPropertyAt(clip, 'rotation', relativeFrame, base.rotation), base.rotation),
+			};
+		}
+
+		function clipEffects(clip) {
+			return clip && Array.isArray(clip.effects) ? clip.effects : [];
+		}
+
+		function effectsFilterOf(effects) {
+			const parts = [];
+			let temperature = 0;
+			const skipped = [];
+			for (const effect of effects) {
+				if (!effect || effect.enabled === false) continue;
+				const params = effect.params && typeof effect.params === 'object' ? effect.params : {};
+				if (effect.type === 'brightness') {
+					parts.push(`brightness(${clamp(finiteNumber(params.amount, 1), 0, 2)})`);
+				} else if (effect.type === 'contrast') {
+					parts.push(`contrast(${clamp(finiteNumber(params.amount, 1), 0, 2)})`);
+				} else if (effect.type === 'saturation') {
+					parts.push(`saturate(${clamp(finiteNumber(params.amount, 1), 0, 2)})`);
+				} else if (effect.type === 'blur') {
+					const radius = clamp(finiteNumber(params.radius, 0), 0, 30);
+					if (radius > 0) parts.push(`blur(${radius}px)`);
+				} else if (effect.type === 'sharpen') {
+					parts.push(`contrast(${1 + clamp(finiteNumber(params.amount, 0), 0, 2) * 0.2})`);
+				} else if (effect.type === 'temperature') {
+					temperature = clamp(temperature + finiteNumber(params.amount, 0), -1, 1);
+				} else {
+					skipped.push(effect.type);
+				}
+			}
+			if (temperature > 0) {
+				parts.push(`sepia(${(temperature * 0.35).toFixed(3)})`, `saturate(${(1 + temperature * 0.15).toFixed(3)})`);
+			} else if (temperature < 0) {
+				parts.push(`hue-rotate(${(temperature * 30).toFixed(2)}deg)`, `saturate(${(1 + temperature * 0.1).toFixed(3)})`);
+			}
+			return {
+				filter: parts.length > 0 ? parts.join(' ') : 'none',
+				skipped,
+			};
+		}
+
+		function projectMarkers(project) {
+			return project && Array.isArray(project.markers) ? project.markers : [];
+		}
+
+		function projectTransitions(project) {
+			return project && Array.isArray(project.transitions) ? project.transitions : [];
+		}
+
+		function transitionEntryForClip(project, clip) {
+			if (!clip) return null;
+			for (const transition of projectTransitions(project)) {
+				if (!transition) continue;
+				if (transition.fromClipId === clip.id) return { role: 'from', transition };
+				if (transition.toClipId === clip.id) return { role: 'to', transition };
+			}
+			return null;
+		}
+
+		function transitionBoundaryOf(project, clip, entry) {
+			const transition = entry.transition;
+			const duration = Math.max(1, Math.round(finiteNumber(transition.durationFrames, 1)));
+			const half = duration / 2;
+			if (entry.role === 'from') {
+				const boundary = clip.startFrame + clip.durationFrames;
+				return { boundary, half, start: boundary - half, end: boundary + half };
+			}
+			const boundary = clip.startFrame;
+			return { boundary, half, start: boundary - half, end: boundary + half };
+		}
+
+		function clipIsVisibleAt(project, clip, frame) {
+			if (frame >= clip.startFrame && frame < clip.startFrame + clip.durationFrames) return true;
+			const entry = transitionEntryForClip(project, clip);
+			if (!entry) return false;
+			const windowInfo = transitionBoundaryOf(project, clip, entry);
+			return frame >= windowInfo.start && frame < windowInfo.end;
+		}
+
+		function transitionOpacityAt(project, clip, frame) {
+			const entry = transitionEntryForClip(project, clip);
+			if (!entry) return 1;
+			const windowInfo = transitionBoundaryOf(project, clip, entry);
+			if (frame < windowInfo.start || frame >= windowInfo.end) return 1;
+			const span = Math.max(0.0001, windowInfo.end - windowInfo.start);
+			const progress = clamp01((frame - windowInfo.start) / span);
+			const type = TRANSITION_TYPES.includes(entry.transition.type) ? entry.transition.type : 'dissolve';
+			if (type === 'fadeToBlack') {
+				if (entry.role === 'from') return progress < 0.5 ? 1 - progress * 2 : 0;
+				return progress > 0.5 ? (progress - 0.5) * 2 : 0;
+			}
+			return entry.role === 'from' ? 1 - progress : progress;
+		}
+
+		function captionOf(clip) {
+			if (clip && clip.caption && typeof clip.caption === 'object') return clip.caption;
+			return { segments: [], style: {} };
+		}
+
+		function captionSegmentsOf(clip) {
+			const caption = captionOf(clip);
+			return Array.isArray(caption.segments) ? caption.segments : [];
+		}
+
+		function captionStyleOf(clip) {
+			const caption = captionOf(clip);
+			return Object.assign({}, DEFAULT_CAPTION_STYLE, caption.style && typeof caption.style === 'object' ? caption.style : {});
+		}
+
+		function captionSegmentAt(clip, relativeFrame) {
+			for (const segment of captionSegmentsOf(clip)) {
+				if (!segment) continue;
+				const start = Math.round(finiteNumber(segment.startFrame, 0));
+				const duration = Math.max(1, Math.round(finiteNumber(segment.durationFrames, 1)));
+				if (relativeFrame >= start && relativeFrame < start + duration) return segment;
+			}
+			return null;
+		}
+
+		function clipRelativeFrame(clip, frame) {
+			return frame - clip.startFrame;
+		}
+
+		function clipSourceSeconds(clip, frame, fps) {
+			const speed = clipSpeedOf(clip);
+			return (finiteNumber(clip.trimStartFrame, 0) + clipRelativeFrame(clip, frame) * speed) / Math.max(1, fps);
+		}
+
 		function activeVisualClipsAt(project, frame) {
-			return activeClipsAt(project, frame).filter(({ clip }) => clip.type !== 'audio');
+			const rows = [];
+			if (!project) return rows;
+			for (const track of project.tracks) {
+				if (track.hidden || track.type !== 'video') continue;
+				for (const clip of track.clips) {
+					if (clip.type === 'audio') continue;
+					if (clipIsVisibleAt(project, clip, frame)) rows.push({ track, clip });
+				}
+			}
+			return rows;
 		}
 
 		function clipDisplayLabel(project, clip, fallback) {
@@ -203,8 +491,174 @@ window.__ModuleLoader__.load({
 				const firstLine = content.split('\n')[0].trim();
 				return firstLine.length > 0 ? firstLine : fallback;
 			}
+			if (clip.type === 'caption') {
+				for (const segment of captionSegmentsOf(clip)) {
+					if (segment && typeof segment.text === 'string' && segment.text.trim().length > 0) {
+						return segment.text.split('\n')[0].trim();
+					}
+				}
+				return fallback;
+			}
 			const media = findMedia(project, clip.mediaId);
 			return media ? media.name : fallback;
+		}
+
+		function downloadTextFile(filename, text) {
+			try {
+				if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof Blob === 'undefined') return;
+				const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+				const url = URL.createObjectURL(blob);
+				const anchor = document.createElement('a');
+				anchor.href = url;
+				anchor.download = filename;
+				if (document.body && typeof document.body.appendChild === 'function') document.body.appendChild(anchor);
+				if (typeof anchor.click === 'function') anchor.click();
+				if (typeof anchor.remove === 'function') anchor.remove();
+				if (typeof URL.revokeObjectURL === 'function') setTimeout(() => URL.revokeObjectURL(url), 1000);
+			} catch (error) {
+				/* download is best-effort */
+			}
+		}
+
+		function buildPasteOperations(entries, targetFrame) {
+			const operations = [];
+			const createdIds = [];
+			if (!Array.isArray(entries) || entries.length === 0) return { operations, createdIds };
+			let minStart = Infinity;
+			for (const entry of entries) {
+				if (entry && entry.clip) minStart = Math.min(minStart, finiteNumber(entry.clip.startFrame, 0));
+			}
+			if (!Number.isFinite(minStart)) minStart = 0;
+			for (const entry of entries) {
+				if (!entry || !entry.clip) continue;
+				const clip = entry.clip;
+				const startFrame = Math.max(0, Math.round(targetFrame + (finiteNumber(clip.startFrame, 0) - minStart)));
+				const clipId = newId();
+				createdIds.push(clipId);
+				if (clip.type === 'text') {
+					operations.push({
+						type: 'add-text',
+						clipId,
+						trackId: entry.trackId,
+						startFrame,
+						durationFrames: Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1))),
+						content: clip.text && typeof clip.text.content === 'string' ? clip.text.content : '',
+						text: deepCopy(clip.text || {}),
+						transform: deepCopy(clip.transform || undefined),
+					});
+					operations.push({
+						type: 'set-clip-properties',
+						clipIds: [clipId],
+						volume: clamp01(finiteNumber(clip.volume, 1)),
+						opacity: clamp01(finiteNumber(clip.opacity, 1)),
+						transform: deepCopy(clip.transform || normalizeTransform(clip.transform)),
+					});
+				} else if (clip.type === 'caption') {
+					operations.push({
+						type: 'add-caption',
+						clipId,
+						trackId: entry.trackId,
+						startFrame,
+						durationFrames: Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1))),
+						segments: deepCopy(captionSegmentsOf(clip)),
+						style: deepCopy(captionStyleOf(clip)),
+					});
+					operations.push({
+						type: 'set-clip-properties',
+						clipIds: [clipId],
+						volume: clamp01(finiteNumber(clip.volume, 1)),
+						opacity: clamp01(finiteNumber(clip.opacity, 1)),
+						transform: deepCopy(clip.transform || DEFAULT_CAPTION_TRANSFORM),
+					});
+				} else if (clip.mediaId) {
+					const speed = clipSpeedOf(clip);
+					const timelineDuration = Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1)));
+					const sourceDuration = Math.max(1, Math.round(timelineDuration * speed));
+					operations.push({
+						type: 'add-clip',
+						clipId,
+						mediaId: clip.mediaId,
+						trackId: entry.trackId,
+						startFrame,
+						durationFrames: clip.type === 'video' || clip.type === 'audio' ? sourceDuration : timelineDuration,
+						trimStartFrame: Math.max(0, Math.round(finiteNumber(clip.trimStartFrame, 0))),
+					});
+					operations.push({
+						type: 'set-clip-properties',
+						clipIds: [clipId],
+						volume: clamp01(finiteNumber(clip.volume, 1)),
+						opacity: clamp01(finiteNumber(clip.opacity, 1)),
+						transform: deepCopy(clip.transform || normalizeTransform(undefined)),
+					});
+				} else {
+					continue;
+				}
+				if (clip.type === 'video' || clip.type === 'audio') {
+					if (Math.abs(clipSpeedOf(clip) - 1) > 0.0001) {
+						operations.push({ type: 'set-speed', clipId, speed: clipSpeedOf(clip) });
+					}
+				}
+				if (clipFadeInFrames(clip) > 0 || clipFadeOutFrames(clip) > 0) {
+					operations.push({
+						type: 'set-fades',
+						clipId,
+						fadeInFrames: clipFadeInFrames(clip),
+						fadeOutFrames: clipFadeOutFrames(clip),
+					});
+				}
+				for (const property of KEYFRAME_PROPERTIES) {
+					const list = keyframesOf(clip, property);
+					if (list.length > 0) operations.push({ type: 'set-keyframes', clipId, property, keyframes: list });
+				}
+				for (const effect of clipEffects(clip)) {
+					if (!effect) continue;
+					operations.push({
+						type: 'add-effect',
+						clipId,
+						effect: {
+							id: newId(),
+							type: effect.type,
+							enabled: effect.enabled !== false,
+							params: deepCopy(effect.params || {}),
+						},
+					});
+				}
+			}
+			return { operations, createdIds };
+		}
+
+		function buildRippleOperations(project, entries) {
+			const operations = [];
+			const selectedIds = new Set();
+			const byTrack = new Map();
+			for (const entry of entries) {
+				if (!entry || !entry.clip || !entry.track) continue;
+				selectedIds.add(entry.clip.id);
+				const list = byTrack.get(entry.track.id) || [];
+				list.push(entry.clip);
+				byTrack.set(entry.track.id, list);
+			}
+			if (selectedIds.size === 0) return { operations, clipIds: [] };
+			operations.push({ type: 'remove-clips', clipIds: Array.from(selectedIds) });
+			for (const track of project.tracks) {
+				const removed = byTrack.get(track.id);
+				if (!removed || removed.length === 0) continue;
+				for (const clip of track.clips) {
+					if (selectedIds.has(clip.id)) continue;
+					let shift = 0;
+					for (const removedClip of removed) {
+						if (removedClip.startFrame < clip.startFrame) shift += Math.max(1, removedClip.durationFrames);
+					}
+					if (shift > 0) {
+						operations.push({
+							type: 'move-clip',
+							clipId: clip.id,
+							startFrame: Math.max(0, clip.startFrame - shift),
+						});
+					}
+				}
+			}
+			return { operations, clipIds: Array.from(selectedIds) };
 		}
 
 		function nextClipIdAfter(previousProject, nextProject, predicate) {
@@ -310,6 +764,39 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		function drawCaptionClip(context, clip, relativeFrame, box) {
+			const segment = captionSegmentAt(clip, relativeFrame);
+			if (!segment || typeof segment.text !== 'string' || segment.text.length === 0) return;
+			const style = captionStyleOf(clip);
+			const fontSize = Math.max(1, finiteNumber(style.fontSize, 48));
+			const weight = style.fontWeight === '400' || style.fontWeight === '700' ? style.fontWeight : '600';
+			const align = style.align === 'left' || style.align === 'right' ? style.align : 'center';
+			const inset = 6;
+			context.font = `${weight} ${fontSize}px -apple-system, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif`;
+			const lines = wrapTextLines(context, segment.text, Math.max(1, box.width - inset * 2));
+			const lineHeight = fontSize * 1.2;
+			const totalHeight = lines.length * lineHeight;
+			let widest = 0;
+			for (const line of lines) widest = Math.max(widest, context.measureText(line).width);
+			const blockWidth = Math.min(box.width, Math.max(1, widest + inset * 2));
+			const blockHeight = Math.min(box.height, Math.max(1, totalHeight + inset * 2));
+			const blockX = align === 'left' ? -box.width / 2 : align === 'right' ? box.width / 2 - blockWidth : -blockWidth / 2;
+			const blockY = -box.height / 2 + Math.max(0, (box.height - blockHeight) / 2);
+			context.textAlign = align;
+			context.textBaseline = 'top';
+			if (typeof style.background === 'string' && style.background.length > 0) {
+				context.fillStyle = style.background;
+				context.fillRect(blockX, blockY, blockWidth, blockHeight);
+			}
+			context.fillStyle = typeof style.color === 'string' && style.color.length > 0 ? style.color : '#ffffff';
+			const anchorX = align === 'left' ? blockX + inset : align === 'right' ? blockX + blockWidth - inset : 0;
+			let y = blockY + Math.max(0, (blockHeight - totalHeight) / 2);
+			for (const line of lines) {
+				context.fillText(line, anchorX, y);
+				y += lineHeight;
+			}
+		}
+
 		function wrapTextLines(context, content, maxWidth) {
 			const paragraphs = String(content || '').split('\n');
 			const lines = [];
@@ -344,11 +831,11 @@ window.__ModuleLoader__.load({
 			return lines.length > 0 ? lines : [''];
 		}
 
-		function renderTextClipToDataUrl(clip, project) {
+		function renderTextContentToDataUrl(content, style, transform, project, padding, background) {
 			if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
 				throw new Error('Canvas is unavailable in this browser');
 			}
-			const box = transformBox(clip.transform, project.width, project.height);
+			const box = transformBox(transform, project.width, project.height);
 			const width = Math.max(1, Math.round(box.width));
 			const height = Math.max(1, Math.round(box.height));
 			const canvas = document.createElement('canvas');
@@ -356,20 +843,31 @@ window.__ModuleLoader__.load({
 			canvas.height = height;
 			const context = canvas.getContext ? canvas.getContext('2d') : null;
 			if (!context) throw new Error('A 2D canvas context is unavailable');
-			const text = clip.text || {};
-			const fontSize = Math.max(1, finiteNumber(text.fontSize, 48));
-			const weight = text.fontWeight === '400' || text.fontWeight === '700' ? text.fontWeight : '600';
-			const align = text.align === 'left' || text.align === 'right' ? text.align : 'center';
+			const fontSize = Math.max(1, finiteNumber(style && style.fontSize, 48));
+			const weight = style && (style.fontWeight === '400' || style.fontWeight === '700') ? style.fontWeight : '600';
+			const align = style && (style.align === 'left' || style.align === 'right') ? style.align : 'center';
+			const inset = padding === undefined ? 2 : Math.max(0, padding);
 			context.clearRect(0, 0, width, height);
-			context.fillStyle = typeof text.color === 'string' && text.color.length > 0 ? text.color : '#ffffff';
+			context.fillStyle = style && typeof style.color === 'string' && style.color.length > 0 ? style.color : '#ffffff';
 			context.font = `${weight} ${fontSize}px -apple-system, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif`;
 			context.textAlign = align;
 			context.textBaseline = 'top';
-			const lines = wrapTextLines(context, text.content || '', Math.max(1, width - 4));
+			const lines = wrapTextLines(context, content || '', Math.max(1, width - inset * 2));
 			const lineHeight = fontSize * 1.2;
 			const totalHeight = lines.length * lineHeight;
-			const x = align === 'left' ? 2 : align === 'right' ? width - 2 : width / 2;
-			let y = Math.max(0, (height - totalHeight) / 2);
+			let widest = 0;
+			for (const line of lines) widest = Math.max(widest, context.measureText(line).width);
+			const blockWidth = Math.min(width, Math.max(1, widest + inset * 2));
+			const blockHeight = Math.min(height, Math.max(1, totalHeight + inset * 2));
+			const blockX = align === 'left' ? 0 : align === 'right' ? width - blockWidth : (width - blockWidth) / 2;
+			const blockY = Math.max(0, (height - blockHeight) / 2);
+			if (typeof background === 'string' && background.length > 0) {
+				context.fillStyle = background;
+				context.fillRect(blockX, blockY, blockWidth, blockHeight);
+				context.fillStyle = style && typeof style.color === 'string' && style.color.length > 0 ? style.color : '#ffffff';
+			}
+			const x = align === 'left' ? blockX + inset : align === 'right' ? blockX + blockWidth - inset : width / 2;
+			let y = blockY + Math.max(0, (blockHeight - totalHeight) / 2);
 			for (const line of lines) {
 				if (line.length > 0) context.fillText(line, x, y);
 				y += lineHeight;
@@ -378,13 +876,47 @@ window.__ModuleLoader__.load({
 			return canvas.toDataURL('image/png');
 		}
 
+		function renderTextClipToDataUrl(clip, project) {
+			const text = clip.text || {};
+			return renderTextContentToDataUrl(
+				typeof text.content === 'string' ? text.content : '',
+				text,
+				clip.transform,
+				project,
+				2,
+				null,
+			);
+		}
+
+		function renderCaptionSegmentToDataUrl(clip, segment, project) {
+			const style = captionStyleOf(clip);
+			const content = segment && typeof segment.text === 'string' ? segment.text : '';
+			const background = typeof style.background === 'string' && style.background.length > 0 ? style.background : null;
+			return renderTextContentToDataUrl(
+				content,
+				style,
+				clip.transform || DEFAULT_CAPTION_TRANSFORM,
+				project,
+				6,
+				background,
+			);
+		}
+
 		function collectTextClips(project) {
+			return collectClipsOfType(project, 'text');
+		}
+
+		function collectCaptionClips(project) {
+			return collectClipsOfType(project, 'caption');
+		}
+
+		function collectClipsOfType(project, type) {
 			const seen = new Set();
 			const rows = [];
 			if (!project) return rows;
 			for (const track of project.tracks) {
 				for (const clip of track.clips) {
-					if (clip.type !== 'text' || seen.has(clip.id)) continue;
+					if (clip.type !== type || seen.has(clip.id)) continue;
 					seen.add(clip.id);
 					rows.push(clip);
 				}
@@ -392,10 +924,34 @@ window.__ModuleLoader__.load({
 			return rows;
 		}
 
-		async function prepareTextRenders(project, clips) {
-			for (const clip of clips) {
+		function countExportRenders(project) {
+			let count = collectTextClips(project).length;
+			for (const clip of collectCaptionClips(project)) {
+				const segments = captionSegmentsOf(clip);
+				for (const segment of segments) {
+					if (segment && typeof segment.text === 'string' && segment.text.length > 0) count += 1;
+				}
+			}
+			return count;
+		}
+
+		async function prepareExportRenders(project) {
+			for (const clip of collectTextClips(project)) {
 				const dataUrl = renderTextClipToDataUrl(clip, project);
 				await hostRequest('text/render', { method: 'POST', body: { clipId: clip.id, dataUrl } });
+			}
+			for (const clip of collectCaptionClips(project)) {
+				const segments = captionSegmentsOf(clip);
+				for (let index = 0; index < segments.length; index += 1) {
+					const segment = segments[index];
+					const hasText = segment && typeof segment.text === 'string' && segment.text.length > 0;
+					if (!hasText) continue;
+					const dataUrl = renderCaptionSegmentToDataUrl(clip, segment, project);
+					await hostRequest('text/render', {
+						method: 'POST',
+						body: { clipId: clip.id, segmentIndex: index, dataUrl },
+					});
+				}
 			}
 		}
 
@@ -405,23 +961,38 @@ window.__ModuleLoader__.load({
 			context.save();
 			context.setTransform(1, 0, 0, 1, 0, 0);
 			context.globalAlpha = 1;
+			context.filter = 'none';
 			context.fillStyle = '#000000';
 			context.fillRect(0, 0, width, height);
 			for (const track of project.tracks) {
 				if (track.hidden || track.type !== 'video') continue;
 				for (const clip of track.clips) {
-					if (frame < clip.startFrame || frame >= clip.startFrame + clip.durationFrames) continue;
-					const opacity = clamp01(finiteNumber(clip.opacity, 1));
-					if (opacity <= 0) continue;
+					if (!clipIsVisibleAt(project, clip, frame)) continue;
+					const relative = clipRelativeFrame(clip, frame);
+					const fade = clipFadeFactor(clip, frame);
+					const transition = transitionOpacityAt(project, clip, frame);
+					const opacity =
+						clamp01(clipPropertyAt(clip, 'opacity', relative, finiteNumber(clip.opacity, 1))) * fade * transition;
+					if (opacity <= 0.001) continue;
 					const media = clip.mediaId ? findMedia(project, clip.mediaId) : null;
 					const elements = clip.mediaId ? mediaElements[clip.mediaId] : null;
-					const box = transformBox(clip.transform, width, height);
+					const box = transformBox(clipTransformAt(clip, relative), width, height);
+					const effectFilter = effectsFilterOf(clipEffects(clip)).filter;
 					context.save();
 					context.globalAlpha = opacity;
+					if (effectFilter !== 'none') {
+						try {
+							context.filter = effectFilter;
+						} catch (error) {
+							/* an older canvas ignores the filter */
+						}
+					}
 					context.translate(box.x + box.width / 2, box.y + box.height / 2);
 					if (box.rotation !== 0) context.rotate((box.rotation * Math.PI) / 180);
 					if (clip.type === 'text') {
 						drawTextClip(context, clip, box);
+					} else if (clip.type === 'caption') {
+						drawCaptionClip(context, clip, relative, box);
 					} else if (clip.type === 'video' && elements && elements.video) {
 						const video = elements.video;
 						if (video.readyState >= 2 && video.videoWidth > 0) {
@@ -432,6 +1003,11 @@ window.__ModuleLoader__.load({
 						if (image.complete && image.naturalWidth > 0) {
 							context.drawImage(image, -box.width / 2, -box.height / 2, box.width, box.height);
 						}
+					}
+					try {
+						context.filter = 'none';
+					} catch (error) {
+						/* ignore */
 					}
 					context.restore();
 				}
@@ -646,6 +1222,40 @@ window.__ModuleLoader__.load({
 .ots-media-cache{position:absolute;left:-10000px;top:0;width:320px;height:180px;overflow:hidden;opacity:0;pointer-events:none}
 @media (max-width:1180px){.ots-body{grid-template-columns:206px minmax(0,1fr) 244px}.ots-media-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:980px){.ots-body{grid-template-columns:190px minmax(0,1fr)}.ots-inspector{display:none}.ots-project-path{display:none}}
+.ots-marker{align-items:center;background:var(--dsw-alias-state-warn-primary);border-radius:2px;bottom:0;cursor:pointer;display:flex;justify-content:center;position:absolute;top:0;width:3px;z-index:6}
+.ots-marker:hover{background:var(--dsw-alias-state-error-primary)}
+.ots-marker-label{background:var(--dsw-alias-state-warn-primary);border-radius:3px;color:var(--dsw-alias-bg-base);font-size:9px;left:0;max-width:90px;overflow:hidden;padding:0 3px;position:absolute;text-overflow:ellipsis;top:-2px;white-space:nowrap}
+.ots-transition-flag{background:var(--dsw-alias-bg-overlay);border:.5px solid var(--dsw-alias-brand-primary);border-radius:3px;color:var(--dsw-alias-brand-primary);cursor:pointer;font-size:8.5px;height:14px;line-height:13px;min-width:14px;overflow:hidden;padding:0 2px;position:absolute;text-align:center;top:3px;z-index:3}
+.ots-transition-flag:hover{color:var(--dsw-alias-label-primary)}
+.ots-clip[data-kind="caption"]{background:color-mix(in srgb,var(--dsw-alias-label-secondary) 18%,var(--dsw-alias-bg-layer-2));border-color:color-mix(in srgb,var(--dsw-alias-label-secondary) 45%,var(--dsw-alias-border-l1))}
+.ots-subhead{align-items:center;display:flex;gap:6px;justify-content:space-between;margin:0}
+.ots-subhead .ots-section-title{flex:1 1 auto}
+.ots-inline-group{display:flex;flex-wrap:wrap;gap:4px}
+.ots-mini{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:4px;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:11px;height:22px;line-height:1;padding:0 6px}
+.ots-mini:hover:not(:disabled){background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary)}
+.ots-mini:disabled{opacity:.4;cursor:default}
+.ots-mini[data-danger="true"]:hover:not(:disabled){color:var(--dsw-alias-state-error-primary)}
+.ots-mini[data-active="true"]{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.ots-check{align-items:center;display:flex;gap:6px;font-size:11.5px;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.ots-check input{accent-color:var(--dsw-alias-brand-primary);margin:0}
+.ots-effect{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;display:flex;flex-direction:column;gap:5px;padding:6px 7px}
+.ots-effect-head{align-items:center;display:flex;gap:5px}
+.ots-effect-name{flex:1 1 auto;font-size:11.5px;color:var(--dsw-alias-label-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-effect-params{display:grid;gap:5px;grid-template-columns:1fr 1fr}
+.ots-effect-params .ots-field{grid-column:auto}
+.ots-effect-note{color:var(--dsw-alias-label-secondary);font-size:10px;margin:0}
+.ots-keyframe-row{align-items:center;display:grid;gap:4px;grid-template-columns:1fr 1fr 1fr 20px}
+.ots-keyframe-row .ots-input,.ots-keyframe-row .ots-select{height:22px;font-size:11px;padding:0 4px}
+.ots-caption-segment{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;display:flex;flex-direction:column;gap:4px;padding:6px}
+.ots-caption-segment .ots-textarea{min-height:36px}
+.ots-marker-row{align-items:center;display:grid;gap:4px;grid-template-columns:52px 1fr 26px 22px 22px}
+.ots-marker-row .ots-input{height:22px;font-size:11px;padding:0 4px}
+.ots-marker-row .ots-input[type="color"]{padding:1px;width:22px}
+.ots-transition-row{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;display:flex;flex-direction:column;gap:4px;padding:6px}
+.ots-transition-head{align-items:center;display:flex;gap:5px}
+.ots-transition-name{color:var(--dsw-alias-label-secondary);flex:1 1 auto;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-note{color:var(--dsw-alias-label-secondary);font-size:10.5px;line-height:1.45;margin:0}
+.ots-note[data-warn="true"]{color:var(--dsw-alias-state-warn-primary)}
 `;
 
 		// -------------------------------------------------------------------
@@ -838,6 +1448,115 @@ window.__ModuleLoader__.load({
 			'status.textAdded': 'Text clip added.',
 			'status.clipAdded': 'Clip added to the timeline.',
 			'status.loading': 'Loading…',
+			'inspector.kindCaption': 'Caption clip',
+			'inspector.speed': 'Speed',
+			'inspector.speedValue': '{value}×',
+			'inspector.speedHint': 'Changes the timeline length while keeping the same source range.',
+			'inspector.fades': 'Fades',
+			'inspector.fadeIn': 'Fade in (frames)',
+			'inspector.fadeOut': 'Fade out (frames)',
+			'inspector.fadesHint': '0 … clip length; visual is from/to black, audio is volume.',
+			'inspector.keyframes': 'Keyframes',
+			'inspector.keyframeProperty': 'Property',
+			'inspector.keyframeFrame': 'Frame',
+			'inspector.keyframeValue': 'Value',
+			'inspector.keyframeEasing': 'Easing',
+			'inspector.addKeyframe': 'Add keyframe at playhead',
+			'inspector.removeKeyframe': 'Remove keyframe',
+			'inspector.keyframesEmpty': 'No keyframes yet — add one at the playhead.',
+			'inspector.keyframesHint': 'Frames are relative to the clip start; values override the static property.',
+			'inspector.effects': 'Effects',
+			'inspector.effectsAdd': 'Add effect',
+			'inspector.effectsEmpty': 'No effects.',
+			'inspector.effectsEnable': 'Enabled',
+			'inspector.effectsRemove': 'Remove effect',
+			'inspector.effectsUp': 'Move effect up',
+			'inspector.effectsDown': 'Move effect down',
+			'inspector.effectsPreviewSkipped': 'Approximated/skipped in preview: {types}',
+			'inspector.transitions': 'Transitions',
+			'inspector.transitionsEmpty': 'Select a video clip next to another clip to add a transition.',
+			'inspector.transitionsBefore': 'Incoming boundary',
+			'inspector.transitionsAfter': 'Outgoing boundary',
+			'inspector.transitionsDuration': 'Duration (frames)',
+			'inspector.transitionsType': 'Type',
+			'inspector.transitionsAdd': 'Add transition',
+			'inspector.transitionsRemove': 'Remove transition',
+			'inspector.transitionsHint': 'Transitions need two adjacent clips on the same video track. Wipe/dissolve previews are approximate.',
+			'inspector.captions': 'Captions',
+			'inspector.captionsAdd': 'Add caption at playhead',
+			'inspector.captionsEmpty': 'No caption clip selected.',
+			'inspector.captionsSegments': 'Segments',
+			'inspector.captionsSegmentStart': 'Start',
+			'inspector.captionsSegmentDuration': 'Duration',
+			'inspector.captionsSegmentText': 'Text',
+			'inspector.captionsAddSegment': 'Add segment',
+			'inspector.captionsRemoveSegment': 'Remove segment',
+			'inspector.captionsStyle': 'Caption style',
+			'inspector.captionsFontSize': 'Font size',
+			'inspector.captionsColor': 'Color',
+			'inspector.captionsWeight': 'Weight',
+			'inspector.captionsAlign': 'Alignment',
+			'inspector.captionsBackground': 'Background',
+			'inspector.captionsImport': 'Import SRT/VTT',
+			'inspector.captionsExportSrt': 'Export SRT',
+			'inspector.captionsExportVtt': 'Export VTT',
+			'inspector.captionsHint': 'Segments use frames relative to the caption clip.',
+			'inspector.markers': 'Markers',
+			'inspector.markersAdd': 'Add marker at playhead',
+			'inspector.markersEmpty': 'No project markers.',
+			'inspector.markersFrame': 'Frame',
+			'inspector.markersLabel': 'Label',
+			'inspector.markersColor': 'Color',
+			'inspector.markersJump': 'Jump to marker',
+			'inspector.markersRemove': 'Remove marker',
+			'inspector.markersDefaultLabel': 'Marker',
+			'inspector.multiHint': '{count} clips selected; inspector edits the primary clip.',
+			'effect.typeBrightness': 'Brightness',
+			'effect.typeContrast': 'Contrast',
+			'effect.typeSaturation': 'Saturation',
+			'effect.typeTemperature': 'Temperature',
+			'effect.typeBlur': 'Blur',
+			'effect.typeSharpen': 'Sharpen',
+			'effect.typeChromaKey': 'Chroma key',
+			'effect.typeLut': 'LUT',
+			'effect.paramAmount': 'Amount',
+			'effect.paramRadius': 'Radius',
+			'effect.paramKeyColor': 'Key color',
+			'effect.paramSimilarity': 'Similarity',
+			'effect.paramBlend': 'Blend',
+			'effect.paramFile': 'LUT file (.cube)',
+			'effect.previewSkipChromaKey': 'Chroma key is export-only in this preview.',
+			'effect.previewSkipLut': 'LUT is export-only in this preview; the file path is relative to the project luts/ folder.',
+			'transition.dissolve': 'Dissolve',
+			'transition.fadeToBlack': 'Fade to black',
+			'transition.wipeLeft': 'Wipe left',
+			'transition.wipeRight': 'Wipe right',
+			'easing.linear': 'Linear',
+			'easing.easeIn': 'Ease in',
+			'easing.easeOut': 'Ease out',
+			'easing.easeInOut': 'Ease in-out',
+			'timeline.snap': 'Snap',
+			'timeline.addMarker': 'Add marker',
+			'timeline.rippleDelete': 'Ripple delete',
+			'timeline.copy': 'Copy',
+			'timeline.paste': 'Paste',
+			'timeline.selectAll': 'Select all',
+			'timeline.markerTitle': 'Marker: {label}',
+			'timeline.transitionTitle': 'Transition: {type} ({duration} frames)',
+			'status.copied': 'Copied {count} clip(s).',
+			'status.copyEmpty': 'Select a clip to copy.',
+			'status.pasteEmpty': 'Copy a clip first.',
+			'status.pasted': 'Pasted {count} clip(s).',
+			'status.rippleDeleted': 'Rippled {count} clip(s).',
+			'status.markerAdded': 'Marker added.',
+			'status.markerRemoved': 'Marker removed.',
+			'status.captionsImported': 'Captions imported.',
+			'status.captionsExported': 'Captions exported.',
+			'status.captionAdded': 'Caption clip added.',
+			'status.keyframesSaved': 'Keyframes updated.',
+			'status.effectAdded': 'Effect added.',
+			'status.transitionAdded': 'Transition added.',
+			'error.captions': 'Could not handle the caption file: {message}',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -1028,6 +1747,115 @@ window.__ModuleLoader__.load({
 			'status.textAdded': '已添加文本片段。',
 			'status.clipAdded': '已把片段添加到时间线。',
 			'status.loading': '加载中…',
+			'inspector.kindCaption': '字幕片段',
+			'inspector.speed': '速度',
+			'inspector.speedValue': '{value}×',
+			'inspector.speedHint': '在保持源区间不变的情况下改变时间线时长。',
+			'inspector.fades': '淡入淡出',
+			'inspector.fadeIn': '淡入（帧）',
+			'inspector.fadeOut': '淡出（帧）',
+			'inspector.fadesHint': '0 … 片段长度；画面为黑场淡入淡出，音频为音量淡入淡出。',
+			'inspector.keyframes': '关键帧',
+			'inspector.keyframeProperty': '属性',
+			'inspector.keyframeFrame': '帧',
+			'inspector.keyframeValue': '值',
+			'inspector.keyframeEasing': '缓动',
+			'inspector.addKeyframe': '在播放头添加关键帧',
+			'inspector.removeKeyframe': '删除关键帧',
+			'inspector.keyframesEmpty': '还没有关键帧——在播放头添加一个。',
+			'inspector.keyframesHint': '帧相对于片段起点；关键帧值会覆盖静态属性。',
+			'inspector.effects': '效果',
+			'inspector.effectsAdd': '添加效果',
+			'inspector.effectsEmpty': '没有效果。',
+			'inspector.effectsEnable': '启用',
+			'inspector.effectsRemove': '删除效果',
+			'inspector.effectsUp': '上移效果',
+			'inspector.effectsDown': '下移效果',
+			'inspector.effectsPreviewSkipped': '预览中近似/跳过：{types}',
+			'inspector.transitions': '转场',
+			'inspector.transitionsEmpty': '选择与另一片段相邻的视频片段以添加转场。',
+			'inspector.transitionsBefore': '前接边界',
+			'inspector.transitionsAfter': '后接边界',
+			'inspector.transitionsDuration': '时长（帧）',
+			'inspector.transitionsType': '类型',
+			'inspector.transitionsAdd': '添加转场',
+			'inspector.transitionsRemove': '删除转场',
+			'inspector.transitionsHint': '转场需要同一视频轨道上首尾相邻的两个片段。擦除/溶解预览为近似效果。',
+			'inspector.captions': '字幕',
+			'inspector.captionsAdd': '在播放头添加字幕',
+			'inspector.captionsEmpty': '未选择字幕片段。',
+			'inspector.captionsSegments': '分段',
+			'inspector.captionsSegmentStart': '开始',
+			'inspector.captionsSegmentDuration': '时长',
+			'inspector.captionsSegmentText': '文本',
+			'inspector.captionsAddSegment': '添加分段',
+			'inspector.captionsRemoveSegment': '删除分段',
+			'inspector.captionsStyle': '字幕样式',
+			'inspector.captionsFontSize': '字号',
+			'inspector.captionsColor': '颜色',
+			'inspector.captionsWeight': '字重',
+			'inspector.captionsAlign': '对齐',
+			'inspector.captionsBackground': '背景',
+			'inspector.captionsImport': '导入 SRT/VTT',
+			'inspector.captionsExportSrt': '导出 SRT',
+			'inspector.captionsExportVtt': '导出 VTT',
+			'inspector.captionsHint': '分段使用相对于字幕片段的帧。',
+			'inspector.markers': '标记',
+			'inspector.markersAdd': '在播放头添加标记',
+			'inspector.markersEmpty': '没有工程标记。',
+			'inspector.markersFrame': '帧',
+			'inspector.markersLabel': '标签',
+			'inspector.markersColor': '颜色',
+			'inspector.markersJump': '跳转到标记',
+			'inspector.markersRemove': '删除标记',
+			'inspector.markersDefaultLabel': '标记',
+			'inspector.multiHint': '已选择 {count} 个片段；检查器编辑主片段。',
+			'effect.typeBrightness': '亮度',
+			'effect.typeContrast': '对比度',
+			'effect.typeSaturation': '饱和度',
+			'effect.typeTemperature': '色温',
+			'effect.typeBlur': '模糊',
+			'effect.typeSharpen': '锐化',
+			'effect.typeChromaKey': '抠像',
+			'effect.typeLut': 'LUT',
+			'effect.paramAmount': '强度',
+			'effect.paramRadius': '半径',
+			'effect.paramKeyColor': '键控颜色',
+			'effect.paramSimilarity': '相似度',
+			'effect.paramBlend': '混合',
+			'effect.paramFile': 'LUT 文件（.cube）',
+			'effect.previewSkipChromaKey': '抠像在预览中仅作导出效果。',
+			'effect.previewSkipLut': 'LUT 在预览中仅作导出效果；文件路径相对于工程的 luts/ 目录。',
+			'transition.dissolve': '溶解',
+			'transition.fadeToBlack': '淡入黑场',
+			'transition.wipeLeft': '左擦除',
+			'transition.wipeRight': '右擦除',
+			'easing.linear': '线性',
+			'easing.easeIn': '缓入',
+			'easing.easeOut': '缓出',
+			'easing.easeInOut': '缓入缓出',
+			'timeline.snap': '吸附',
+			'timeline.addMarker': '添加标记',
+			'timeline.rippleDelete': '波纹删除',
+			'timeline.copy': '复制',
+			'timeline.paste': '粘贴',
+			'timeline.selectAll': '全选',
+			'timeline.markerTitle': '标记：{label}',
+			'timeline.transitionTitle': '转场：{type}（{duration} 帧）',
+			'status.copied': '已复制 {count} 个片段。',
+			'status.copyEmpty': '请先选择要复制的片段。',
+			'status.pasteEmpty': '请先复制片段。',
+			'status.pasted': '已粘贴 {count} 个片段。',
+			'status.rippleDeleted': '已波纹删除 {count} 个片段。',
+			'status.markerAdded': '已添加标记。',
+			'status.markerRemoved': '已删除标记。',
+			'status.captionsImported': '字幕已导入。',
+			'status.captionsExported': '字幕已导出。',
+			'status.captionAdded': '已添加字幕片段。',
+			'status.keyframesSaved': '关键帧已更新。',
+			'status.effectAdded': '已添加效果。',
+			'status.transitionAdded': '已添加转场。',
+			'error.captions': '处理字幕文件失败：{message}',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -1530,6 +2358,869 @@ window.__ModuleLoader__.load({
 		// Inspector
 		// -------------------------------------------------------------------
 
+		function effectLabelKey(type) {
+			return `effect.type${type.charAt(0).toUpperCase()}${type.slice(1)}`;
+		}
+
+		function effectParamDefs(type) {
+			switch (type) {
+				case 'brightness':
+				case 'contrast':
+				case 'saturation':
+					return [{ key: 'amount', label: 'effect.paramAmount', min: 0, max: 2, step: 0.01, kind: 'number' }];
+				case 'temperature':
+					return [{ key: 'amount', label: 'effect.paramAmount', min: -1, max: 1, step: 0.01, kind: 'number' }];
+				case 'blur':
+					return [{ key: 'radius', label: 'effect.paramRadius', min: 0, max: 30, step: 1, kind: 'number' }];
+				case 'sharpen':
+					return [{ key: 'amount', label: 'effect.paramAmount', min: 0, max: 2, step: 0.01, kind: 'number' }];
+				case 'chromaKey':
+					return [
+						{ key: 'keyColor', label: 'effect.paramKeyColor', kind: 'color' },
+						{ key: 'similarity', label: 'effect.paramSimilarity', min: 0.01, max: 0.5, step: 0.01, kind: 'number' },
+						{ key: 'blend', label: 'effect.paramBlend', min: 0, max: 0.5, step: 0.01, kind: 'number' },
+					];
+				case 'lut':
+					return [{ key: 'file', label: 'effect.paramFile', kind: 'text' }];
+				default:
+					return [];
+			}
+		}
+
+		function effectPreviewSkipKey(type) {
+			if (type === 'chromaKey') return 'effect.previewSkipChromaKey';
+			if (type === 'lut') return 'effect.previewSkipLut';
+			return null;
+		}
+
+		function staticPropertyValue(clip, property) {
+			const base = baseTransformForClip(clip);
+			if (property === 'volume') return clamp01(finiteNumber(clip.volume, 1));
+			if (property === 'opacity') return clamp01(finiteNumber(clip.opacity, 1));
+			if (property === 'x') return base.x;
+			if (property === 'y') return base.y;
+			if (property === 'width') return base.width;
+			if (property === 'height') return base.height;
+			if (property === 'rotation') return base.rotation;
+			return 0;
+		}
+
+		function normalizeKeyframeRows(rows, property, duration) {
+			const limit = Math.max(1, Math.round(duration));
+			const byFrame = new Map();
+			for (const row of rows) {
+				const frame = clamp(Math.round(finiteNumber(row.frame, 0)), 0, limit);
+				let value = finiteNumber(row.value, staticPropertyValueForProperty(property));
+				if (property === 'volume' || property === 'opacity' || property === 'x' || property === 'y' || property === 'width' || property === 'height') {
+					value = clamp01(value);
+				}
+				byFrame.set(frame, {
+					frame,
+					value,
+					easing: KEYFRAME_EASINGS.includes(row.easing) ? row.easing : 'linear',
+				});
+			}
+			return Array.from(byFrame.values()).sort((a, b) => a.frame - b.frame);
+		}
+
+		function staticPropertyValueForProperty(property) {
+			if (property === 'volume' || property === 'opacity') return 1;
+			if (property === 'rotation') return 0;
+			return 0;
+		}
+
+		function KeyframeEditor(props) {
+			const { t, clip, currentFrame, onSetKeyframes } = props;
+			const [property, setProperty] = React.useState(clip.type === 'audio' ? 'volume' : 'opacity');
+			const signature = JSON.stringify(keyframesOf(clip, property));
+			const [rows, setRows] = React.useState(() => keyframesOf(clip, property));
+			const syncKey = `${clip.id}:${property}:${signature}`;
+			React.useEffect(() => {
+				setRows(keyframesOf(clip, property));
+			}, [syncKey]);
+			const commit = (nextRows) => {
+				const normalized = normalizeKeyframeRows(nextRows, property, clip.durationFrames);
+				setRows(normalized);
+				onSetKeyframes(property, normalized);
+			};
+			const updateRow = (index, patch, commitNow) => {
+				const next = rows.map((row, rowIndex) => (rowIndex === index ? Object.assign({}, row, patch) : row));
+				setRows(next);
+				if (commitNow) {
+					const normalized = normalizeKeyframeRows(next, property, clip.durationFrames);
+					setRows(normalized);
+					onSetKeyframes(property, normalized);
+				}
+			};
+			const addAtPlayhead = () => {
+				const relative = clamp(Math.round(currentFrame - clip.startFrame), 0, Math.max(1, clip.durationFrames));
+				const value = evaluateKeyframes(
+					keyframesOf(clip, property),
+					relative,
+					staticPropertyValue(clip, property),
+				);
+				const existing = rows.findIndex((row) => Math.round(finiteNumber(row.frame, 0)) === relative);
+				const next =
+					existing >= 0
+						? rows.map((row, index) => (index === existing ? Object.assign({}, row, { value }) : row))
+						: rows.concat([{ frame: relative, value, easing: 'linear' }]);
+				commit(next);
+			};
+			const valueStep = property === 'rotation' ? 1 : 0.01;
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'keyframes' },
+				h('h3', { className: 'ots-section-title' }, t('inspector.keyframes')),
+				h(
+					'label',
+					{ className: 'ots-field' },
+					h('span', { className: 'ots-field-label' }, t('inspector.keyframeProperty')),
+					h(
+						'select',
+						{
+							className: 'ots-select',
+							value: property,
+							onChange: (event) => setProperty(event.target.value),
+						},
+						KEYFRAME_PROPERTIES.map((name) =>
+							h('option', { key: name, value: name }, t(`inspector.${name}`)),
+						),
+					),
+				),
+				h(
+					Btn,
+					{ variant: 'outline', onClick: addAtPlayhead },
+					t('inspector.addKeyframe'),
+				),
+				rows.length === 0
+					? h('p', { className: 'ots-hint' }, t('inspector.keyframesEmpty'))
+					: h(
+							'div',
+							{ className: 'ots-effect' },
+							rows.map((row, index) =>
+								h(
+									'div',
+									{ className: 'ots-keyframe-row', key: index },
+									h('input', {
+										className: 'ots-input',
+										type: 'number',
+										min: 0,
+										max: clip.durationFrames,
+										step: 1,
+										'aria-label': t('inspector.keyframeFrame'),
+										title: t('inspector.keyframeFrame'),
+										value: row.frame,
+										onChange: (event) => updateRow(index, { frame: event.target.value }, false),
+										onBlur: () => commit(rows),
+									}),
+									h('input', {
+										className: 'ots-input',
+										type: 'number',
+										step: valueStep,
+										'aria-label': t('inspector.keyframeValue'),
+										title: t('inspector.keyframeValue'),
+										value: row.value,
+										onChange: (event) => updateRow(index, { value: event.target.value }, false),
+										onBlur: () => commit(rows),
+									}),
+									h(
+										'select',
+										{
+											className: 'ots-select',
+											value: row.easing,
+											'aria-label': t('inspector.keyframeEasing'),
+											title: t('inspector.keyframeEasing'),
+											onChange: (event) => updateRow(index, { easing: event.target.value }, true),
+										},
+										KEYFRAME_EASINGS.map((easing) =>
+											h('option', { key: easing, value: easing }, t(`easing.${camelEasing(easing)}`)),
+										),
+									),
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'ots-mini',
+											'data-danger': 'true',
+											'aria-label': t('inspector.removeKeyframe'),
+											title: t('inspector.removeKeyframe'),
+											onClick: () => commit(rows.filter((unused, rowIndex) => rowIndex !== index)),
+										},
+										'×',
+									),
+								),
+							),
+						),
+				h('p', { className: 'ots-hint' }, t('inspector.keyframesHint')),
+			);
+		}
+
+		function camelEasing(easing) {
+			if (easing === 'ease-in') return 'easeIn';
+			if (easing === 'ease-out') return 'easeOut';
+			if (easing === 'ease-in-out') return 'easeInOut';
+			return 'linear';
+		}
+
+		function EffectsEditor(props) {
+			const { t, clip, onAddEffect, onUpdateEffect, onRemoveEffect, onReorderEffects } = props;
+			const [typeToAdd, setTypeToAdd] = React.useState('brightness');
+			const effects = clipEffects(clip);
+			const move = (index, offset) => {
+				const target = index + offset;
+				if (target < 0 || target >= effects.length) return;
+				const ids = effects.map((effect) => effect.id);
+				const swap = ids[index];
+				ids[index] = ids[target];
+				ids[target] = swap;
+				onReorderEffects(ids);
+			};
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'effects' },
+				h('h3', { className: 'ots-section-title' }, t('inspector.effects')),
+				h(
+					'div',
+					{ className: 'ots-field-row' },
+					h(
+						'select',
+						{
+							className: 'ots-select',
+							value: typeToAdd,
+							'aria-label': t('inspector.effectsAdd'),
+							onChange: (event) => setTypeToAdd(event.target.value),
+						},
+						EFFECT_TYPES.map((type) => h('option', { key: type, value: type }, t(effectLabelKey(type)))),
+					),
+					h(
+						Btn,
+						{ variant: 'outline', onClick: () => onAddEffect(typeToAdd) },
+						t('inspector.effectsAdd'),
+					),
+				),
+				effects.length === 0
+					? h('p', { className: 'ots-hint' }, t('inspector.effectsEmpty'))
+					: effects.map((effect, index) => {
+							if (!effect) return null;
+							const params = effect.params && typeof effect.params === 'object' ? effect.params : {};
+							const skipKey = effectPreviewSkipKey(effect.type);
+							return h(
+								'div',
+								{ className: 'ots-effect', key: effect.id || `${effect.type}-${index}` },
+								h(
+									'div',
+									{ className: 'ots-effect-head' },
+									h(
+										'label',
+										{ className: 'ots-check', title: t('inspector.effectsEnable') },
+										h('input', {
+											type: 'checkbox',
+											checked: effect.enabled !== false,
+											onChange: (event) => onUpdateEffect(effect.id, { enabled: event.target.checked }),
+										}),
+									),
+									h('span', { className: 'ots-effect-name' }, t(effectLabelKey(effect.type))),
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'ots-mini',
+											disabled: index === 0,
+											title: t('inspector.effectsUp'),
+											'aria-label': t('inspector.effectsUp'),
+											onClick: () => move(index, -1),
+										},
+										'↑',
+									),
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'ots-mini',
+											disabled: index === effects.length - 1,
+											title: t('inspector.effectsDown'),
+											'aria-label': t('inspector.effectsDown'),
+											onClick: () => move(index, 1),
+										},
+										'↓',
+									),
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'ots-mini',
+											'data-danger': 'true',
+											title: t('inspector.effectsRemove'),
+											'aria-label': t('inspector.effectsRemove'),
+											onClick: () => onRemoveEffect(effect.id),
+										},
+										'×',
+									),
+								),
+								h(
+									'div',
+									{ className: 'ots-effect-params' },
+									effectParamDefs(effect.type).map((definition) =>
+										definition.kind === 'color'
+											? h(
+													'label',
+													{ className: 'ots-field', key: definition.key },
+													h('span', { className: 'ots-field-label' }, t(definition.label)),
+													h('input', {
+														className: 'ots-input',
+														type: 'color',
+														value: typeof params[definition.key] === 'string' ? params[definition.key] : '#00ff00',
+														onChange: (event) =>
+															onUpdateEffect(effect.id, {
+																params: Object.assign({}, params, { [definition.key]: event.target.value }),
+															}),
+													}),
+												)
+											: definition.kind === 'text'
+												? h(
+														'label',
+														{ className: 'ots-field', key: definition.key },
+														h('span', { className: 'ots-field-label' }, t(definition.label)),
+														h('input', {
+															className: 'ots-input',
+															type: 'text',
+															defaultValue: typeof params[definition.key] === 'string' ? params[definition.key] : '',
+															spellCheck: false,
+															onBlur: (event) => {
+																const nextValue = event.target.value.trim();
+																if (nextValue.length === 0) return;
+																onUpdateEffect(effect.id, {
+																	params: Object.assign({}, params, { [definition.key]: nextValue }),
+																});
+															},
+														}),
+													)
+												: h(
+														'label',
+														{ className: 'ots-field', key: definition.key },
+														h('span', { className: 'ots-field-label' }, t(definition.label)),
+														h('input', {
+															className: 'ots-input',
+															type: 'number',
+															min: definition.min,
+															max: definition.max,
+															step: definition.step,
+															defaultValue: finiteNumber(params[definition.key], 0),
+															onBlur: (event) =>
+																onUpdateEffect(effect.id, {
+																	params: Object.assign({}, params, {
+																		[definition.key]: clamp(
+																			finiteNumber(event.target.value, finiteNumber(params[definition.key], 0)),
+																			definition.min,
+																			definition.max,
+																		),
+																	}),
+																}),
+														}),
+													),
+									),
+								),
+								skipKey ? h('p', { className: 'ots-effect-note' }, t(skipKey)) : null,
+							);
+						}),
+			);
+		}
+
+		function TransitionsEditor(props) {
+			const { t, project, track, clip, onAddTransition, onUpdateTransition, onRemoveTransition } = props;
+			if (!track || !clip) return null;
+			const clips = track.clips.slice().sort((a, b) => a.startFrame - b.startFrame);
+			const index = clips.findIndex((candidate) => candidate.id === clip.id);
+			if (index < 0) return null;
+			const previous = index > 0 ? clips[index - 1] : null;
+			const next = index < clips.length - 1 ? clips[index + 1] : null;
+			const eligible = (other) =>
+				other &&
+				clip.type !== 'text' &&
+				clip.type !== 'caption' &&
+				other.type !== 'text' &&
+				other.type !== 'caption';
+			const transitions = projectTransitions(project);
+			const boundaryTransition = (fromClip, toClip) =>
+				transitions.find(
+					(candidate) =>
+						candidate &&
+						candidate.trackId === track.id &&
+						candidate.fromClipId === fromClip.id &&
+						candidate.toClipId === toClip.id,
+				) || null;
+			const renderBoundary = (label, fromClip, toClip) => {
+				if (!eligible(fromClip) || !eligible(toClip)) return null;
+				const adjacent = fromClip.startFrame + fromClip.durationFrames === toClip.startFrame;
+				if (!adjacent) return null;
+				const existing = boundaryTransition(fromClip, toClip);
+				const defaultDuration = Math.max(
+					1,
+					Math.min(30, Math.floor(Math.min(fromClip.durationFrames, toClip.durationFrames) / 2)),
+				);
+				return h(
+					'div',
+					{ className: 'ots-transition-row' },
+					h(
+						'div',
+						{ className: 'ots-transition-head' },
+						h('span', { className: 'ots-transition-name' }, label),
+						existing
+							? h(
+									'button',
+									{
+										type: 'button',
+										className: 'ots-mini',
+										'data-danger': 'true',
+										title: t('inspector.transitionsRemove'),
+										'aria-label': t('inspector.transitionsRemove'),
+										onClick: () => onRemoveTransition(existing.id),
+									},
+									'×',
+								)
+							: h(
+									Btn,
+									{
+										variant: 'outline',
+										onClick: () =>
+											onAddTransition({
+												id: newId(),
+												trackId: track.id,
+												fromClipId: fromClip.id,
+												toClipId: toClip.id,
+												type: 'dissolve',
+												durationFrames: defaultDuration,
+											}),
+									},
+									t('inspector.transitionsAdd'),
+								),
+					),
+					existing
+						? h(
+								'div',
+								{ className: 'ots-field-grid' },
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('inspector.transitionsDuration')),
+									h('input', {
+										className: 'ots-input',
+										type: 'number',
+										min: 1,
+										max: Math.min(fromClip.durationFrames, toClip.durationFrames),
+										step: 1,
+										defaultValue: existing.durationFrames,
+										onBlur: (event) =>
+											onUpdateTransition(existing.id, {
+												durationFrames: clamp(
+													Math.round(finiteNumber(event.target.value, existing.durationFrames)),
+													1,
+													Math.min(fromClip.durationFrames, toClip.durationFrames),
+												),
+											}),
+									}),
+								),
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('inspector.transitionsType')),
+									h(
+										'select',
+										{
+											className: 'ots-select',
+											value: TRANSITION_TYPES.includes(existing.type) ? existing.type : 'dissolve',
+											onChange: (event) => onUpdateTransition(existing.id, { type: event.target.value }),
+										},
+										TRANSITION_TYPES.map((type) =>
+											h('option', { key: type, value: type }, t(`transition.${type}`)),
+										),
+									),
+								),
+							)
+						: null,
+				);
+			};
+			const before = previous ? renderBoundary(t('inspector.transitionsBefore'), previous, clip) : null;
+			const after = next ? renderBoundary(t('inspector.transitionsAfter'), clip, next) : null;
+			if (!before && !after) {
+				return h(
+					'div',
+					{ className: 'ots-section', key: 'transitions' },
+					h('h3', { className: 'ots-section-title' }, t('inspector.transitions')),
+					h('p', { className: 'ots-hint' }, t('inspector.transitionsEmpty')),
+				);
+			}
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'transitions' },
+				h('h3', { className: 'ots-section-title' }, t('inspector.transitions')),
+				before,
+				after,
+				h('p', { className: 'ots-hint' }, t('inspector.transitionsHint')),
+			);
+		}
+
+		function CaptionEditor(props) {
+			const { t, clip, onUpdateCaption, onAddCaption, onImportCaption, onExportCaption } = props;
+			const caption = captionOf(clip);
+			const segments = captionSegmentsOf(clip);
+			const style = captionStyleOf(clip);
+			const signature = JSON.stringify(segments);
+			const [rows, setRows] = React.useState(() => segments);
+			const fileRef = React.useRef(null);
+			React.useEffect(() => {
+				setRows(captionSegmentsOf(clip));
+			}, [clip.id, signature]);
+			const normalizeRows = (nextRows) => {
+				const duration = Math.max(1, Math.round(clip.durationFrames));
+				return nextRows
+					.map((row) => {
+						const startFrame = clamp(Math.round(finiteNumber(row.startFrame, 0)), 0, duration - 1);
+						const durationFrames = clamp(
+							Math.round(finiteNumber(row.durationFrames, 1)),
+							1,
+							Math.max(1, duration - startFrame),
+						);
+						return { startFrame, durationFrames, text: String(row.text === undefined ? '' : row.text) };
+					})
+					.sort((a, b) => a.startFrame - b.startFrame)
+					.map((row) => ({ startFrame: row.startFrame, durationFrames: row.durationFrames, text: row.text }));
+			};
+			const commitSegments = (nextRows) => onUpdateCaption({ segments: normalizeRows(nextRows) });
+			const updateSegment = (index, patch, commitNow) => {
+				setRows((previous) => {
+					const next = previous.map((row, rowIndex) => (rowIndex === index ? Object.assign({}, row, patch) : row));
+					if (commitNow) commitSegments(next);
+					return next;
+				});
+			};
+			const addSegment = () => {
+				const last = rows.length > 0 ? rows[rows.length - 1] : null;
+				const clipDuration = Math.max(1, Math.round(clip.durationFrames));
+				const start = last ? finiteNumber(last.startFrame, 0) + Math.max(1, finiteNumber(last.durationFrames, 30)) : 0;
+				const clampedStart = clamp(Math.round(start), 0, Math.max(0, clipDuration - 1));
+				const durationFrames = Math.max(1, Math.min(30, clipDuration - clampedStart));
+				const next = rows.concat([{ startFrame: clampedStart, durationFrames, text: '' }]);
+				setRows(next);
+				commitSegments(next);
+			};
+			const handleFile = (event) => {
+				const file = event.target.files && event.target.files[0];
+				event.target.value = '';
+				if (!file || typeof FileReader === 'undefined') return;
+				const reader = new FileReader();
+				reader.onload = () => {
+					const format = /\.vtt$/i.test(file.name) ? 'vtt' : 'srt';
+					onImportCaption(String(reader.result || ''), format);
+				};
+				reader.readAsText(file);
+			};
+			const updateStyle = (patch, commitNow) => {
+				if (commitNow) onUpdateCaption({ style: Object.assign({}, style, patch) });
+			};
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'captions' },
+				h(
+					'div',
+					{ className: 'ots-subhead' },
+					h('h3', { className: 'ots-section-title' }, t('inspector.captions')),
+					h(
+						'div',
+						{ className: 'ots-inline-group' },
+						h(
+							Btn,
+							{ variant: 'outline', onClick: onAddCaption },
+							t('inspector.captionsAdd'),
+						),
+						h(
+							Btn,
+							{ variant: 'ghost', onClick: () => fileRef.current && fileRef.current.click() },
+							t('inspector.captionsImport'),
+						),
+						h(
+							Btn,
+							{ variant: 'ghost', onClick: () => onExportCaption('srt') },
+							t('inspector.captionsExportSrt'),
+						),
+						h(
+							Btn,
+							{ variant: 'ghost', onClick: () => onExportCaption('vtt') },
+							t('inspector.captionsExportVtt'),
+						),
+						h('input', {
+							ref: fileRef,
+							type: 'file',
+							accept: '.srt,.vtt,text/plain',
+							style: { display: 'none' },
+							onChange: handleFile,
+						}),
+					),
+				),
+				h('h3', { className: 'ots-section-title' }, t('inspector.captionsSegments')),
+				rows.length === 0 ? h('p', { className: 'ots-hint' }, t('inspector.captionsEmpty')) : null,
+				rows.map((segment, index) =>
+					h(
+						'div',
+						{ className: 'ots-caption-segment', key: index },
+						h(
+							'div',
+							{ className: 'ots-field-grid' },
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('inspector.captionsSegmentStart')),
+								h('input', {
+									className: 'ots-input',
+									type: 'number',
+									min: 0,
+									step: 1,
+									value: segment.startFrame,
+									onChange: (event) => updateSegment(index, { startFrame: event.target.value }, false),
+									onBlur: () => commitSegments(rows),
+								}),
+							),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('inspector.captionsSegmentDuration')),
+								h('input', {
+									className: 'ots-input',
+									type: 'number',
+									min: 1,
+									step: 1,
+									value: segment.durationFrames,
+									onChange: (event) => updateSegment(index, { durationFrames: event.target.value }, false),
+									onBlur: () => commitSegments(rows),
+								}),
+							),
+						),
+						h('textarea', {
+							className: 'ots-textarea',
+							value: segment.text || '',
+							placeholder: t('inspector.captionsSegmentText'),
+							'aria-label': t('inspector.captionsSegmentText'),
+							onChange: (event) => updateSegment(index, { text: event.target.value }, false),
+							onBlur: () => commitSegments(rows),
+						}),
+						h(
+							'div',
+							{ className: 'ots-inline-group' },
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'ots-mini',
+									'data-danger': 'true',
+									onClick: () => {
+										const next = rows.filter((unused, rowIndex) => rowIndex !== index);
+										setRows(next);
+										commitSegments(next);
+									},
+									title: t('inspector.captionsRemoveSegment'),
+									'aria-label': t('inspector.captionsRemoveSegment'),
+								},
+								'×',
+							),
+						),
+					),
+				),
+				h(
+					Btn,
+					{ variant: 'outline', onClick: addSegment },
+					t('inspector.captionsAddSegment'),
+				),
+				h('h3', { className: 'ots-section-title' }, t('inspector.captionsStyle')),
+				h(
+					'div',
+					{ className: 'ots-field-grid' },
+					h(
+						'label',
+						{ className: 'ots-field' },
+						h('span', { className: 'ots-field-label' }, t('inspector.captionsFontSize')),
+						h('input', {
+							className: 'ots-input',
+							type: 'number',
+							min: 1,
+							step: 1,
+							defaultValue: style.fontSize,
+							onBlur: (event) => updateStyle({ fontSize: Math.max(1, finiteNumber(event.target.value, style.fontSize)) }, true),
+						}),
+					),
+					h(
+						'label',
+						{ className: 'ots-field' },
+						h('span', { className: 'ots-field-label' }, t('inspector.captionsColor')),
+						h('input', {
+							className: 'ots-input',
+							type: 'color',
+							value: style.color,
+							onChange: (event) => updateStyle({ color: event.target.value }, true),
+						}),
+					),
+					h(
+						'label',
+						{ className: 'ots-field' },
+						h('span', { className: 'ots-field-label' }, t('inspector.captionsWeight')),
+						h(
+							'select',
+							{
+								className: 'ots-select',
+								value: style.fontWeight,
+								onChange: (event) => updateStyle({ fontWeight: event.target.value }, true),
+							},
+							['400', '600', '700'].map((weight) =>
+								h('option', { key: weight, value: weight }, t(`inspector.weight${weight === '400' ? 'Regular' : weight === '700' ? 'Bold' : 'Semibold'}`)),
+							),
+						),
+					),
+					h(
+						'label',
+						{ className: 'ots-field' },
+						h('span', { className: 'ots-field-label' }, t('inspector.captionsAlign')),
+						h(
+							'select',
+							{
+								className: 'ots-select',
+								value: style.align,
+								onChange: (event) => updateStyle({ align: event.target.value }, true),
+							},
+							['left', 'center', 'right'].map((align) =>
+								h('option', { key: align, value: align }, t(`inspector.align${align.charAt(0).toUpperCase()}${align.slice(1)}`)),
+							),
+						),
+					),
+				),
+				h(
+					'label',
+					{ className: 'ots-field' },
+					h('span', { className: 'ots-field-label' }, t('inspector.captionsBackground')),
+					h('input', {
+						className: 'ots-input',
+						type: 'text',
+						defaultValue: typeof style.background === 'string' ? style.background : '',
+						spellCheck: false,
+						onBlur: (event) =>
+							updateStyle({ background: event.target.value.trim().length > 0 ? event.target.value.trim() : 'transparent' }, true),
+					}),
+				),
+				h('p', { className: 'ots-hint' }, t('inspector.captionsHint')),
+			);
+		}
+
+		function MarkersEditor(props) {
+			const { t, project, currentFrame, onAddMarker, onUpdateMarker, onRemoveMarker, onSeek } = props;
+			const markers = projectMarkers(project).slice().sort((a, b) => a.frame - b.frame);
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'markers' },
+				h(
+					'div',
+					{ className: 'ots-subhead' },
+					h('h3', { className: 'ots-section-title' }, t('inspector.markers')),
+					h(
+						Btn,
+						{ variant: 'outline', onClick: onAddMarker },
+						t('inspector.markersAdd'),
+					),
+				),
+				markers.length === 0 ? h('p', { className: 'ots-hint' }, t('inspector.markersEmpty')) : null,
+				markers.map((marker) =>
+					h(
+						'div',
+						{ className: 'ots-marker-row', key: marker.id },
+						h('input', {
+							className: 'ots-input',
+							type: 'number',
+							min: 0,
+							step: 1,
+							defaultValue: marker.frame,
+							title: t('inspector.markersFrame'),
+							'aria-label': t('inspector.markersFrame'),
+							onBlur: (event) =>
+								onUpdateMarker(marker.id, {
+									frame: Math.max(0, Math.round(finiteNumber(event.target.value, marker.frame))),
+								}),
+						}),
+						h('input', {
+							className: 'ots-input',
+							type: 'text',
+							defaultValue: marker.label || '',
+							placeholder: t('inspector.markersLabel'),
+							title: t('inspector.markersLabel'),
+							'aria-label': t('inspector.markersLabel'),
+							onBlur: (event) => onUpdateMarker(marker.id, { label: event.target.value }),
+						}),
+						h('input', {
+							className: 'ots-input',
+							type: 'color',
+							defaultValue: marker.color || '#f5b301',
+							title: t('inspector.markersColor'),
+							'aria-label': t('inspector.markersColor'),
+							onChange: (event) => onUpdateMarker(marker.id, { color: event.target.value }),
+						}),
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'ots-mini',
+								title: t('inspector.markersJump'),
+								'aria-label': t('inspector.markersJump'),
+								onClick: () => onSeek(marker.frame),
+							},
+							'↦',
+						),
+						h(
+							'button',
+							{
+								type: 'button',
+								className: 'ots-mini',
+								'data-danger': 'true',
+								title: t('inspector.markersRemove'),
+								'aria-label': t('inspector.markersRemove'),
+								onClick: () => onRemoveMarker(marker.id),
+							},
+							'×',
+						),
+					),
+				),
+			);
+		}
+
+		function SpeedField(props) {
+			const { t, clip, onChange } = props;
+			const [value, setValue] = React.useState(() => clipSpeedOf(clip));
+			const signature = String(clipSpeedOf(clip));
+			React.useEffect(() => {
+				setValue(clipSpeedOf(clip));
+			}, [clip.id, signature]);
+			const commit = () => onChange(clamp(finiteNumber(value, 1), 0.25, 4));
+			return h(
+				'div',
+				{ className: 'ots-field' },
+				h(
+					'div',
+					{ className: 'ots-field-row' },
+					h('span', { className: 'ots-field-label' }, t('inspector.speed')),
+					h('span', { className: 'ots-value' }, t('inspector.speedValue', { value: finiteNumber(value, 1).toFixed(2) })),
+				),
+				h('input', {
+					className: 'ots-range',
+					type: 'range',
+					min: 0.25,
+					max: 4,
+					step: 0.05,
+					value,
+					'aria-label': t('inspector.speed'),
+					onChange: (event) => setValue(Number(event.target.value)),
+					onPointerUp: commit,
+					onKeyUp: commit,
+					onBlur: commit,
+				}),
+				h('p', { className: 'ots-field-hint' }, t('inspector.speedHint')),
+			);
+		}
+
 		function Inspector(props) {
 			const {
 				t,
@@ -1538,11 +3229,30 @@ window.__ModuleLoader__.load({
 				snapshot,
 				selected,
 				draft,
+				currentFrame,
+				selectedCount,
 				onPropertyChange,
 				onPropertyCommit,
 				onTextChange,
 				onTextCommit,
 				onAddText,
+				onSpeedChange,
+				onFadeChange,
+				onSetKeyframes,
+				onAddEffect,
+				onUpdateEffect,
+				onRemoveEffect,
+				onReorderEffects,
+				onAddTransition,
+				onUpdateTransition,
+				onRemoveTransition,
+				onAddCaption,
+				onUpdateCaption,
+				onImportCaption,
+				onExportCaption,
+				onAddMarker,
+				onUpdateMarker,
+				onRemoveMarker,
 			} = props;
 			const title = selected ? t(`inspector.kind${selected.clip.type.charAt(0).toUpperCase()}${selected.clip.type.slice(1)}`) : t('inspector.project');
 			const body = [];
@@ -1585,6 +3295,23 @@ window.__ModuleLoader__.load({
 				body.push(
 					h(
 						'div',
+						{ className: 'ots-section', key: 'captions-project' },
+						h(
+							'div',
+							{ className: 'ots-subhead' },
+							h('h3', { className: 'ots-section-title' }, t('inspector.captions')),
+							h(
+								Btn,
+								{ variant: 'outline', onClick: onAddCaption, disabled: !project },
+								t('inspector.captionsAdd'),
+							),
+						),
+						h('p', { className: 'ots-hint' }, t('inspector.captionsHint')),
+					),
+				);
+				body.push(
+					h(
+						'div',
 						{ className: 'ots-section', key: 'shortcuts' },
 						h('h3', { className: 'ots-section-title' }, t('inspector.shortcuts')),
 						h(Shortcut, { t, shortcutKey: 'Space', label: t('inspector.shortcutPlay') }),
@@ -1596,6 +3323,7 @@ window.__ModuleLoader__.load({
 				);
 			} else {
 				const clip = selected.clip;
+				const track = selected.track;
 				const media = findMedia(project, clip.mediaId);
 				const fps = project.fps;
 				const isText = clip.type === 'text';
@@ -1626,9 +3354,98 @@ window.__ModuleLoader__.load({
 								),
 							),
 						),
+						selectedCount > 1 ? h('p', { className: 'ots-note' }, t('inspector.multiHint', { count: selectedCount })) : null,
 						h('p', { className: 'ots-hint' }, t('inspector.readonly')),
 					),
 				);
+				if (clip.type === 'video' || clip.type === 'audio') {
+					body.push(
+						h(
+							'div',
+							{ className: 'ots-section', key: 'speed' },
+							h('h3', { className: 'ots-section-title' }, t('inspector.speed')),
+							h(SpeedField, { t, clip, onChange: onSpeedChange }),
+						),
+					);
+				}
+				if (clip.type !== 'caption') {
+					body.push(
+						h(
+							'div',
+							{ className: 'ots-section', key: 'fades' },
+							h('h3', { className: 'ots-section-title' }, t('inspector.fades')),
+							h(
+								'div',
+								{ className: 'ots-field-grid' },
+								h('label', { className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('inspector.fadeIn')),
+									h('input', {
+										key: `${clip.id}-fadein`,
+										className: 'ots-input',
+										type: 'number',
+										min: 0,
+										max: clip.durationFrames,
+										step: 1,
+										defaultValue: clipFadeInFrames(clip),
+										onBlur: (event) =>
+											onFadeChange({ fadeInFrames: clamp(Math.round(finiteNumber(event.target.value, 0)), 0, clip.durationFrames) }),
+									}),
+								),
+								h('label', { className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('inspector.fadeOut')),
+									h('input', {
+										key: `${clip.id}-fadeout`,
+										className: 'ots-input',
+										type: 'number',
+										min: 0,
+										max: clip.durationFrames,
+										step: 1,
+										defaultValue: clipFadeOutFrames(clip),
+										onBlur: (event) =>
+											onFadeChange({ fadeOutFrames: clamp(Math.round(finiteNumber(event.target.value, 0)), 0, clip.durationFrames) }),
+									}),
+								),
+							),
+							h('p', { className: 'ots-field-hint' }, t('inspector.fadesHint')),
+						),
+					);
+				}
+				body.push(h(KeyframeEditor, { t, clip, currentFrame, onSetKeyframes }));
+				body.push(
+					h(EffectsEditor, {
+						t,
+						clip,
+						onAddEffect,
+						onUpdateEffect,
+						onRemoveEffect,
+						onReorderEffects,
+					}),
+				);
+				if (track && track.type === 'video' && clip.type !== 'caption') {
+					body.push(
+						h(TransitionsEditor, {
+							t,
+							project,
+							track,
+							clip,
+							onAddTransition,
+							onUpdateTransition,
+							onRemoveTransition,
+						}),
+					);
+				}
+				if (clip.type === 'caption') {
+					body.push(
+						h(CaptionEditor, {
+							t,
+							clip,
+							onUpdateCaption,
+							onAddCaption,
+							onImportCaption,
+							onExportCaption,
+						}),
+					);
+				}
 				if (!isText) {
 					body.push(
 						h(
@@ -1819,6 +3636,17 @@ window.__ModuleLoader__.load({
 					);
 				}
 			}
+			body.push(
+				h(MarkersEditor, {
+					t,
+					project,
+					currentFrame,
+					onAddMarker,
+					onUpdateMarker,
+					onRemoveMarker,
+					onSeek: props.onSeek,
+				}),
+			);
 			return h(
 				'aside',
 				{ className: 'ots-panel ots-inspector', 'aria-label': t('inspector.title') },
@@ -1847,7 +3675,7 @@ window.__ModuleLoader__.load({
 				zoom,
 				currentFrame,
 				playing,
-				selectedClipId,
+				selectedClipIds,
 				onSelectClip,
 				onSeek,
 				onMoveClip,
@@ -1856,8 +3684,16 @@ window.__ModuleLoader__.load({
 				onSetZoom,
 				onSplit,
 				onDelete,
+				onDeleteRipple,
+				onCopy,
+				onPaste,
 				canSplit,
 				canDelete,
+				canCopy,
+				canPaste,
+				snapping,
+				onToggleSnapping,
+				onAddMarker,
 				onAddTrack,
 				onAddText,
 			} = props;
@@ -1929,11 +3765,60 @@ window.__ModuleLoader__.load({
 				return start;
 			};
 
+			const snapThresholdFrames = () => Math.max(1, Math.round(6 / Math.max(0.0001, zoom)));
+			const snapTargets = (excludeClipId) => {
+				const targets = [0, Math.round(currentFrame)];
+				for (const marker of projectMarkers(project)) {
+					if (marker) targets.push(Math.round(finiteNumber(marker.frame, 0)));
+				}
+				for (const track of tracks) {
+					for (const clip of track.clips) {
+						if (clip.id === excludeClipId) continue;
+						targets.push(clip.startFrame);
+						targets.push(clip.startFrame + clip.durationFrames);
+					}
+				}
+				return targets;
+			};
+			const snapEdge = (value, excludeClipId) => {
+				if (!snapping) return value;
+				const threshold = snapThresholdFrames();
+				let best = value;
+				let bestDistance = threshold + 1;
+				for (const target of snapTargets(excludeClipId)) {
+					const distance = Math.abs(value - target);
+					if (distance <= threshold && distance < bestDistance) {
+						best = target;
+						bestDistance = distance;
+					}
+				}
+				return best;
+			};
+			const snapMoveStart = (start, duration, excludeClipId) => {
+				if (!snapping) return start;
+				const threshold = snapThresholdFrames();
+				let best = start;
+				let bestDistance = threshold + 1;
+				for (const target of snapTargets(excludeClipId)) {
+					const startDistance = Math.abs(start - target);
+					if (startDistance <= threshold && startDistance < bestDistance) {
+						best = target;
+						bestDistance = startDistance;
+					}
+					const endDistance = Math.abs(start + duration - target);
+					if (endDistance <= threshold && endDistance < bestDistance) {
+						best = target - duration;
+						bestDistance = endDistance;
+					}
+				}
+				return Math.max(0, best);
+			};
+
 			const beginClipDrag = (event, track, clip) => {
 				if (event.button !== 0) return;
 				event.preventDefault();
 				event.stopPropagation();
-				onSelectClip(clip.id);
+				onSelectClip(clip.id, event);
 				const siblings = track.clips.filter((item) => item.id !== clip.id);
 				dragRef.current = {
 					kind: 'move',
@@ -1957,7 +3842,11 @@ window.__ModuleLoader__.load({
 					const delta = Math.round((moveEvent.clientX - current.startX) / Math.max(0.0001, current.zoom));
 					const targetTrack = trackForClientY(moveEvent.clientY, current.clip);
 					current.preview = Object.assign({}, current.preview, {
-						startFrame: Math.max(0, current.clip.startFrame + delta),
+						startFrame: snapMoveStart(
+							Math.max(0, current.clip.startFrame + delta),
+							current.clip.durationFrames,
+							current.clip.id,
+						),
 						trackId: targetTrack ? targetTrack.id : current.track.id,
 					});
 					setDragState(Object.assign({}, current));
@@ -1984,7 +3873,7 @@ window.__ModuleLoader__.load({
 				if (event.button !== 0) return;
 				event.preventDefault();
 				event.stopPropagation();
-				onSelectClip(clip.id);
+				onSelectClip(clip.id, event);
 				const siblings = track.clips.filter((item) => item.id !== clip.id);
 				dragRef.current = {
 					kind: 'trim',
@@ -2016,8 +3905,10 @@ window.__ModuleLoader__.load({
 								? media.durationFrames - clipValue.trimStartFrame
 								: Infinity;
 						const maxDuration = Math.max(1, Math.min(limitByNext, limitByMedia));
+						const proposedDuration = clamp(clipValue.durationFrames + delta, 1, maxDuration);
+						const snappedEnd = snapEdge(clipValue.startFrame + proposedDuration, clipValue.id);
 						current.preview = Object.assign({}, current.preview, {
-							durationFrames: clamp(clipValue.durationFrames + delta, 1, maxDuration),
+							durationFrames: clamp(snappedEnd - clipValue.startFrame, 1, maxDuration),
 						});
 					} else {
 						const media = findMedia(project, clipValue.mediaId);
@@ -2025,10 +3916,12 @@ window.__ModuleLoader__.load({
 						const minDelta = Math.max(-trimLimit, previousEnd(clipValue, current.siblings) - clipValue.startFrame, -clipValue.startFrame);
 						const maxDelta = clipValue.durationFrames - 1;
 						const applied = clamp(delta, minDelta, maxDelta);
+						const snappedStart = snapEdge(clipValue.startFrame + applied, clipValue.id);
+						const finalDelta = clamp(snappedStart - clipValue.startFrame, minDelta, maxDelta);
 						current.preview = Object.assign({}, current.preview, {
-							startFrame: clipValue.startFrame + applied,
-							durationFrames: clipValue.durationFrames - applied,
-							trimStartFrame: clipValue.type === 'video' || clipValue.type === 'audio' ? clipValue.trimStartFrame + applied : clipValue.trimStartFrame,
+							startFrame: clipValue.startFrame + finalDelta,
+							durationFrames: clipValue.durationFrames - finalDelta,
+							trimStartFrame: clipValue.type === 'video' || clipValue.type === 'audio' ? clipValue.trimStartFrame + finalDelta : clipValue.trimStartFrame,
 						});
 					}
 					setDragState(Object.assign({}, current));
@@ -2095,7 +3988,13 @@ window.__ModuleLoader__.load({
 				if (!mediaId) return;
 				event.preventDefault();
 				event.stopPropagation();
-				onDropMedia(mediaId, track ? track.id : null, frameFromClientX(event.clientX));
+				let trackId = track ? track.id : null;
+				const media = project ? project.media.find((item) => item.id === mediaId) : null;
+				if (track && media) {
+					const wanted = media.kind === 'audio' ? 'audio' : 'video';
+					if (track.type !== wanted) trackId = null;
+				}
+				onDropMedia(mediaId, trackId, frameFromClientX(event.clientX));
 			};
 
 			const renderClip = (track, clip, preview) => {
@@ -2103,7 +4002,7 @@ window.__ModuleLoader__.load({
 				const durationFrames = preview ? preview.durationFrames : clip.durationFrames;
 				const width = Math.max(2, Math.round(durationFrames * zoom));
 				const label = clipDisplayLabel(project, clip, t('inspector.clip'));
-				const selected = clip.id === selectedClipId;
+				const selected = Array.isArray(selectedClipIds) && selectedClipIds.includes(clip.id);
 				return h(
 					'div',
 					{
@@ -2120,7 +4019,7 @@ window.__ModuleLoader__.load({
 						onKeyDown: (event) => {
 							if (event.key === 'Enter' || event.key === ' ') {
 								event.preventDefault();
-								onSelectClip(clip.id);
+								onSelectClip(clip.id, event);
 							}
 						},
 					},
@@ -2135,6 +4034,27 @@ window.__ModuleLoader__.load({
 					}),
 				);
 			};
+
+			const renderTransitionFlags = (track) =>
+				projectTransitions(project)
+					.filter((transition) => transition && transition.trackId === track.id)
+					.map((transition) => {
+						const fromClip = track.clips.find((clip) => clip.id === transition.fromClipId);
+						if (!fromClip) return null;
+						const boundary = fromClip.startFrame + fromClip.durationFrames;
+						const type = TRANSITION_TYPES.includes(transition.type) ? transition.type : 'dissolve';
+						return h('div', {
+							key: `transition-${transition.id}`,
+							className: 'ots-transition-flag',
+							style: { left: Math.round(boundary * zoom) - 7 },
+							title: t('timeline.transitionTitle', { type: t(`transition.${type}`), duration: transition.durationFrames }),
+							onPointerDown: (event) => {
+								event.stopPropagation();
+								event.preventDefault();
+								onSeek(boundary);
+							},
+						}, '⧉');
+					});
 
 			const renderedTracks = tracks.map((track) => {
 				const otherClip = dragState && dragState.preview.trackId !== track.id ? dragState.clip.id : null;
@@ -2172,6 +4092,7 @@ window.__ModuleLoader__.load({
 						},
 						clips.map((clip) => renderClip(track, clip, null)),
 						dragHere ? renderClip(track, dragState.clip, dragState.preview) : null,
+						renderTransitionFlags(track),
 					),
 				);
 			});
@@ -2193,6 +4114,20 @@ window.__ModuleLoader__.load({
 						t('timeline.delete'),
 					),
 					h(Btn, { variant: 'outline', onClick: onAddText, disabled: !project }, t('timeline.addText')),
+					h(Btn, { variant: 'outline', onClick: onAddMarker, disabled: !project, title: t('timeline.addMarker') }, t('timeline.addMarker')),
+					h(Btn, { variant: 'outline', onClick: onDeleteRipple, disabled: !canDelete, title: t('timeline.rippleDelete') }, t('timeline.rippleDelete')),
+					h(Btn, { onClick: onCopy, disabled: !canCopy, title: t('timeline.copy') }, t('timeline.copy')),
+					h(Btn, { onClick: onPaste, disabled: !canPaste, title: t('timeline.paste') }, t('timeline.paste')),
+					h(
+						Btn,
+						{
+							active: Boolean(snapping),
+							onClick: onToggleSnapping,
+							title: t('timeline.snap'),
+							'aria-pressed': snapping ? 'true' : 'false',
+						},
+						t('timeline.snap'),
+					),
 					h('span', { className: 'ots-timeline-spacer' }),
 					h(Btn, { onClick: () => onAddTrack('video'), disabled: !project, title: t('timeline.addVideoTrack') }, t('timeline.addVideoTrack')),
 					h(Btn, { onClick: () => onAddTrack('audio'), disabled: !project, title: t('timeline.addAudioTrack') }, t('timeline.addAudioTrack')),
@@ -2216,7 +4151,12 @@ window.__ModuleLoader__.load({
 				),
 				h(
 					'div',
-					{ className: 'ots-timeline-scroll', ref: scrollRef },
+					{
+						className: 'ots-timeline-scroll',
+						ref: scrollRef,
+						onDragOver: (event) => event.preventDefault(),
+						onDrop: (event) => handleDrop(event, null),
+					},
 					h(
 						'div',
 						{ className: 'ots-timeline-content' },
@@ -2239,6 +4179,26 @@ window.__ModuleLoader__.load({
 											style: { left },
 										},
 										h('span', { className: 'ots-ruler-label' }, formatClock(frame / fps)),
+									);
+								}),
+								projectMarkers(project).map((marker) => {
+									if (!marker) return null;
+									const frame = Math.max(0, Math.round(finiteNumber(marker.frame, 0)));
+									const label = typeof marker.label === 'string' && marker.label.length > 0 ? marker.label : t('inspector.markersDefaultLabel');
+									return h(
+										'div',
+										{
+											key: `marker-${marker.id}`,
+											className: 'ots-marker',
+											style: { left: Math.round(frame * zoom), ...(typeof marker.color === 'string' && marker.color.length > 0 ? { background: marker.color } : {}) },
+											title: t('timeline.markerTitle', { label }),
+											onPointerDown: (event) => {
+												event.stopPropagation();
+												event.preventDefault();
+												onSeek(frame);
+											},
+										},
+										h('span', { className: 'ots-marker-label' }, label),
 									);
 								}),
 							),
@@ -2425,7 +4385,8 @@ window.__ModuleLoader__.load({
 			const [pollError, setPollError] = React.useState(null);
 			const [actionError, setActionError] = React.useState(null);
 			const [notice, setNotice] = React.useState(null);
-			const [selectedClipId, setSelectedClipId] = React.useState(null);
+			const [selectedClipIds, setSelectedClipIds] = React.useState([]);
+			const [snapping, setSnapping] = React.useState(true);
 			const [currentFrame, setCurrentFrame] = React.useState(0);
 			const [playing, setPlaying] = React.useState(false);
 			const [loop, setLoop] = React.useState(false);
@@ -2437,10 +4398,14 @@ window.__ModuleLoader__.load({
 			const [uploading, setUploading] = React.useState(null);
 			const [inspectorDraft, setInspectorDraft] = React.useState(null);
 			const [dismissed, setDismissed] = React.useState(null);
+			const [hasClipboard, setHasClipboard] = React.useState(false);
 
 			const snapshotRef = React.useRef(null);
 			const projectRef = React.useRef(null);
-			const selectedClipIdRef = React.useRef(null);
+			const selectedClipIdsRef = React.useRef([]);
+			const primaryClipIdRef = React.useRef(null);
+			const clipboardRef = React.useRef(null);
+			const keyboardRef = React.useRef(null);
 			const currentFrameRef = React.useRef(0);
 			const playingRef = React.useRef(false);
 			const loopRef = React.useRef(false);
@@ -2461,8 +4426,10 @@ window.__ModuleLoader__.load({
 			const exportStateRef = React.useRef(null);
 			const stageSize = useElementSize(stageRef);
 
+			const primaryClipId = selectedClipIds.length > 0 ? selectedClipIds[selectedClipIds.length - 1] : null;
 			snapshotRef.current = snapshot;
-			selectedClipIdRef.current = selectedClipId;
+			selectedClipIdsRef.current = selectedClipIds;
+			primaryClipIdRef.current = primaryClipId;
 			currentFrameRef.current = currentFrame;
 			playingRef.current = playing;
 			loopRef.current = loop;
@@ -2564,7 +4531,9 @@ window.__ModuleLoader__.load({
 
 			const projectRoot = snapshot ? snapshot.projectRoot : null;
 			React.useEffect(() => {
-				setSelectedClipId(null);
+				setSelectedClipIds([]);
+				clipboardRef.current = null;
+				setHasClipboard(false);
 				setCurrentFrame(0);
 				setPlaying(false);
 				setInspectorDraft(null);
@@ -2574,15 +4543,17 @@ window.__ModuleLoader__.load({
 				pendingRef.current = null;
 			}, [projectRoot]);
 
-			const selectedEntry = project ? findClipEntry(project, selectedClipId) : null;
+			const selectedEntry = project ? findClipEntry(project, primaryClipId) : null;
 			const selected = selectedEntry ? selectedEntry.clip : null;
 
 			React.useEffect(() => {
-				if (selectedClipId && project && !findClipEntry(project, selectedClipId)) {
-					setSelectedClipId(null);
-					setInspectorDraft(null);
+				if (!project || selectedClipIds.length === 0) return;
+				const existing = selectedClipIds.filter((clipId) => findClipEntry(project, clipId) !== null);
+				if (existing.length !== selectedClipIds.length) {
+					setSelectedClipIds(existing);
+					if (existing.length === 0) setInspectorDraft(null);
 				}
-			}, [project, selectedClipId]);
+			}, [project, selectedClipIds]);
 
 			React.useEffect(() => {
 				if (!selected) {
@@ -2695,9 +4666,19 @@ window.__ModuleLoader__.load({
 					if (elements.audio) {
 						const audio = elements.audio;
 						if (audioClip) {
-							const desired = (audioClip.trimStartFrame + (frame - audioClip.startFrame)) / rate;
-							const volume = clamp01(finiteNumber(audioClip.volume, 1) * monitorVolumeRef.current);
-							audio.volume = volume;
+							const desired = clipSourceSeconds(audioClip, frame, rate);
+							const audioSpeed = clipSpeedOf(audioClip);
+							const audioVolume = clamp01(
+								clipPropertyAt(audioClip, 'volume', clipRelativeFrame(audioClip, frame), finiteNumber(audioClip.volume, 1)) *
+									clipFadeFactor(audioClip, frame) *
+									monitorVolumeRef.current,
+							);
+							audio.volume = audioVolume;
+							try {
+								audio.playbackRate = audioSpeed;
+							} catch (error) {
+								/* unsupported rate on this browser */
+							}
 							if (isPlaying) {
 								if (audio.paused) {
 									const promise = audio.play();
@@ -2715,7 +4696,13 @@ window.__ModuleLoader__.load({
 					if (elements.video) {
 						const videoClip = videoByMedia.get(media.id);
 						if (videoClip) {
-							const desired = (videoClip.trimStartFrame + (frame - videoClip.startFrame)) / rate;
+							const desired = clipSourceSeconds(videoClip, frame, rate);
+							const videoSpeed = clipSpeedOf(videoClip);
+							try {
+								elements.video.playbackRate = videoSpeed;
+							} catch (error) {
+								/* unsupported rate on this browser */
+							}
 							if (isPlaying) {
 								const video = elements.video;
 								if (video.paused) {
@@ -2839,7 +4826,7 @@ window.__ModuleLoader__.load({
 						payload.project,
 						settings.selectNew === true ? null : settings.selectNew,
 					);
-					if (created) setSelectedClipId(created);
+					if (created) setSelectedClipIds([created]);
 				}
 				return payload;
 			};
@@ -2947,13 +4934,14 @@ window.__ModuleLoader__.load({
 			const handleAddText = async () => {
 				if (!projectRef.current) return;
 				const startFrame = Math.round(currentFrameRef.current);
+				const rate = Math.max(1, Math.round(projectRef.current.fps || 30));
 				const payload = await runEdit(
 					[
 						{
 							type: 'add-text',
 							content: t('inspector.defaultText'),
 							startFrame,
-							durationFrames: Math.max(1, Math.round(fps * 3)),
+							durationFrames: Math.max(1, Math.round(rate * 3)),
 						},
 					],
 					{ selectNew: (clip) => clip.type === 'text' },
@@ -2961,7 +4949,7 @@ window.__ModuleLoader__.load({
 				if (payload) showNotice(t('status.textAdded'));
 			};
 			const handleSplit = async () => {
-				const entry = findClipEntry(projectRef.current, selectedClipIdRef.current);
+				const entry = findClipEntry(projectRef.current, primaryClipIdRef.current);
 				if (!entry) return;
 				const frame = Math.round(currentFrameRef.current);
 				const clip = entry.clip;
@@ -2970,16 +4958,209 @@ window.__ModuleLoader__.load({
 				if (payload) showNotice(t('status.split'));
 			};
 			const handleDelete = async () => {
-				const clipId = selectedClipIdRef.current;
-				if (!clipId) return;
-				setSelectedClipId(null);
+				const clipIds = selectedClipIdsRef.current.slice();
+				if (clipIds.length === 0) return;
+				setSelectedClipIds([]);
 				setInspectorDraft(null);
-				const payload = await runEdit([{ type: 'remove-clips', clipIds: [clipId] }]);
+				const payload = await runEdit([{ type: 'remove-clips', clipIds }]);
 				if (payload) showNotice(t('status.deleted'));
+			};
+			const handleDeleteRipple = async () => {
+				const projectValue = projectRef.current;
+				const clipIds = selectedClipIdsRef.current.slice();
+				if (!projectValue || clipIds.length === 0) return;
+				const entries = clipIds
+					.map((clipId) => findClipEntry(projectValue, clipId))
+					.filter((entry) => entry !== null);
+				if (entries.length === 0) return;
+				const built = buildRippleOperations(projectValue, entries);
+				setSelectedClipIds([]);
+				setInspectorDraft(null);
+				const payload = await runEdit(built.operations);
+				if (payload) showNotice(t('status.rippleDeleted', { count: entries.length }));
+			};
+			const handleSelectClip = (clipId, event) => {
+				const additive = Boolean(event && (event.shiftKey || event.metaKey || event.ctrlKey));
+				setSelectedClipIds((previous) => {
+					if (!additive) return [clipId];
+					if (previous.includes(clipId)) return previous.filter((id) => id !== clipId);
+					return previous.concat([clipId]);
+				});
+			};
+			const handleSelectAll = () => {
+				if (!projectRef.current) return;
+				setSelectedClipIds(allClips(projectRef.current).map(({ clip }) => clip.id));
+			};
+			const handleCopy = () => {
+				const projectValue = projectRef.current;
+				const clipIds = selectedClipIdsRef.current.slice();
+				if (!projectValue || clipIds.length === 0) {
+					showNotice(t('status.copyEmpty'));
+					return;
+				}
+				const entries = [];
+				for (const clipId of clipIds) {
+					const entry = findClipEntry(projectValue, clipId);
+					if (entry) entries.push({ trackId: entry.track.id, clip: deepCopy(entry.clip) });
+				}
+				clipboardRef.current = { entries };
+				setHasClipboard(entries.length > 0);
+				showNotice(t('status.copied', { count: entries.length }));
+			};
+			const handlePaste = async () => {
+				const clipboard = clipboardRef.current;
+				if (!clipboard || clipboard.entries.length === 0) {
+					showNotice(t('status.pasteEmpty'));
+					return;
+				}
+				const built = buildPasteOperations(clipboard.entries, Math.round(currentFrameRef.current));
+				if (built.operations.length === 0) return;
+				const payload = await runEdit(built.operations);
+				if (payload) {
+					setSelectedClipIds(built.createdIds.filter((clipId) => findClipEntry(payload.project, clipId) !== null));
+					showNotice(t('status.pasted', { count: built.createdIds.length }));
+				}
+			};
+			const handleSetSpeed = (speed) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'set-speed', clipId, speed }]);
+			};
+			const handleSetFades = (patch) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'set-fades', clipId, ...patch }]);
+			};
+			const handleSetKeyframes = (property, keyframes) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'set-keyframes', clipId, property, keyframes }]);
+			};
+			const handleAddEffect = async (type) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				const payload = await runEdit([
+					{
+						type: 'add-effect',
+						clipId,
+						effect: { id: newId(), type, enabled: true, params: effectDefaultParams(type) },
+					},
+				]);
+				if (payload) showNotice(t('status.effectAdded'));
+			};
+			const handleUpdateEffect = (effectId, patch) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'update-effect', clipId, effectId, patch }]);
+			};
+			const handleRemoveEffect = (effectId) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'remove-effect', clipId, effectId }]);
+			};
+			const handleReorderEffects = (effectIds) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'reorder-effects', clipId, effectIds }]);
+			};
+			const handleAddTransition = async (transition) => {
+				const payload = await runEdit([{ type: 'add-transition', transition }]);
+				if (payload) showNotice(t('status.transitionAdded'));
+			};
+			const handleUpdateTransition = (transitionId, patch) => {
+				const operation = { type: 'update-transition', transitionId };
+				if (patch.type !== undefined) operation.transitionType = patch.type;
+				if (patch.durationFrames !== undefined) operation.durationFrames = patch.durationFrames;
+				void runEdit([operation]);
+			};
+			const handleRemoveTransition = (transitionId) => {
+				void runEdit([{ type: 'remove-transition', transitionId }]);
+			};
+			const handleAddCaption = async () => {
+				if (!projectRef.current) return;
+				const rate = Math.max(1, Math.round(projectRef.current.fps || 30));
+				const durationFrames = Math.max(1, Math.round(rate * 3));
+				const clipId = newId();
+				const payload = await runEdit(
+					[
+						{
+							type: 'add-caption',
+							clipId,
+							startFrame: Math.round(currentFrameRef.current),
+							durationFrames,
+							segments: [{ startFrame: 0, durationFrames, text: '' }],
+							style: deepCopy(DEFAULT_CAPTION_STYLE),
+						},
+					],
+					{ selectNew: (clip) => clip.type === 'caption' },
+				);
+				if (payload) showNotice(t('status.captionAdded'));
+			};
+			const handleUpdateCaption = (patch) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'update-caption', clipId, ...patch }]);
+			};
+			const handleImportCaptions = async (content) => {
+				const previous = projectRef.current;
+				const payload = await perform(() =>
+					hostRequest('captions/import', { method: 'POST', body: { text: content } }),
+				);
+				if (payload) {
+					const created = nextClipIdAfter(previous, payload.project, (clip) => clip.type === 'caption');
+					if (created) setSelectedClipIds([created]);
+					showNotice(t('status.captionsImported'));
+				}
+			};
+			const handleExportCaptions = async (format) => {
+				try {
+					const response = await fetch(`${ROUTE}/captions/export.${format}`, { method: 'GET' });
+					if (!response.ok) {
+						let detail = null;
+						try {
+							detail = await response.json();
+						} catch (error) {
+							detail = null;
+						}
+						throw new HostRequestError(
+							detail && detail.error && detail.error.message ? detail.error.message : `HTTP ${response.status}`,
+							'captions-export',
+							response.status,
+						);
+					}
+					const text = await response.text();
+					const projectValue = projectRef.current;
+					const base = projectValue ? slugify(projectValue.name) : 'opentake-studio';
+					downloadTextFile(`${base}.${format}`, text);
+					showNotice(t('status.captionsExported'));
+				} catch (error) {
+					setActionError(t('error.captions', { message: error && error.message ? error.message : String(error) }));
+				}
+			};
+			const handleAddMarker = async () => {
+				const payload = await runEdit([
+					{
+						type: 'add-marker',
+						marker: {
+							id: newId(),
+							frame: Math.round(currentFrameRef.current),
+							label: t('inspector.markersDefaultLabel'),
+							color: '#f5b301',
+						},
+					},
+				]);
+				if (payload) showNotice(t('status.markerAdded'));
+			};
+			const handleUpdateMarker = (markerId, patch) => {
+				void runEdit([{ type: 'update-marker', markerId, ...patch }]);
+			};
+			const handleRemoveMarker = async (markerId) => {
+				const payload = await runEdit([{ type: 'remove-marker', markerId }]);
+				if (payload) showNotice(t('status.markerRemoved'));
 			};
 
 			const queuePropertyChange = (patch) => {
-				const clip = findClipEntry(projectRef.current, selectedClipIdRef.current);
+				const clip = findClipEntry(projectRef.current, primaryClipIdRef.current);
 				if (!clip) return;
 				setInspectorDraft((previous) => mergeDraft(previous, patch));
 				const pending = pendingRef.current || { clipId: clip.clip.id, properties: {}, text: {} };
@@ -2997,7 +5178,7 @@ window.__ModuleLoader__.load({
 			};
 
 			const queueTextChange = (patch) => {
-				const entry = findClipEntry(projectRef.current, selectedClipIdRef.current);
+				const entry = findClipEntry(projectRef.current, primaryClipIdRef.current);
 				if (!entry || entry.clip.type !== 'text') return;
 				setInspectorDraft((previous) => mergeDraft(previous, patch));
 				const pending = pendingRef.current || { clipId: entry.clip.id, properties: {}, text: {} };
@@ -3049,7 +5230,7 @@ window.__ModuleLoader__.load({
 				}
 				if (operations.length === 0) return null;
 				return runEdit(operations).then((payload) => {
-					if (payload && selectedClipIdRef.current === pending.clipId && pendingRef.current === null) {
+					if (payload && primaryClipIdRef.current === pending.clipId && pendingRef.current === null) {
 						const entry = findClipEntry(payload.project, pending.clipId);
 						if (entry) setInspectorDraft(draftFromClip(entry.clip));
 					}
@@ -3155,10 +5336,9 @@ window.__ModuleLoader__.load({
 					} else {
 						await flushInspector();
 						const exportProject = projectRef.current;
-						const textClips = collectTextClips(exportProject);
-						if (textClips.length > 0) {
+						if (countExportRenders(exportProject) > 0) {
 							setDialog(Object.assign({}, workingDialog, { status: t('status.preparingText') }));
-							await prepareTextRenders(exportProject, textClips);
+							await prepareExportRenders(exportProject);
 							setDialog(Object.assign({}, workingDialog, { status: t('dialog.preparingText') }));
 						}
 						payload = await hostPost('export', pathValue.length > 0 ? { path: pathValue } : {});
@@ -3177,33 +5357,62 @@ window.__ModuleLoader__.load({
 				}
 			};
 
+			keyboardRef.current = {
+				undo: handleUndo,
+				redo: handleRedo,
+				split: handleSplit,
+				copy: handleCopy,
+				paste: handlePaste,
+				selectAll: handleSelectAll,
+				play: togglePlay,
+				remove: handleDelete,
+				ripple: handleDeleteRipple,
+			};
 			React.useEffect(() => {
 				const onKeyDown = (event) => {
 					const target = event.target;
 					if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) {
 						return;
 					}
+					const handlers = keyboardRef.current;
+					if (!handlers) return;
 					const meta = event.metaKey || event.ctrlKey;
 					if (meta && (event.key === 'z' || event.key === 'Z')) {
 						event.preventDefault();
-						if (event.shiftKey) void handleRedo();
-						else void handleUndo();
+						if (event.shiftKey) void handlers.redo();
+						else void handlers.undo();
 						return;
 					}
 					if (meta && (event.key === 'k' || event.key === 'K')) {
 						event.preventDefault();
-						void handleSplit();
+						void handlers.split();
+						return;
+					}
+					if (meta && (event.key === 'c' || event.key === 'C')) {
+						event.preventDefault();
+						handlers.copy();
+						return;
+					}
+					if (meta && (event.key === 'v' || event.key === 'V')) {
+						event.preventDefault();
+						void handlers.paste();
+						return;
+					}
+					if (meta && (event.key === 'a' || event.key === 'A')) {
+						event.preventDefault();
+						handlers.selectAll();
 						return;
 					}
 					if (event.key === ' ') {
 						event.preventDefault();
-						togglePlay();
+						handlers.play();
 						return;
 					}
 					if (event.key === 'Delete' || event.key === 'Backspace') {
-						if (selectedClipIdRef.current) {
+						if (selectedClipIdsRef.current.length > 0) {
 							event.preventDefault();
-							void handleDelete();
+							if (event.shiftKey) void handlers.ripple();
+							else void handlers.remove();
 						}
 					}
 				};
@@ -3326,11 +5535,31 @@ window.__ModuleLoader__.load({
 										snapshot,
 										selected: selectedEntry,
 										draft: inspectorDraft,
+										currentFrame,
+										selectedCount: selectedClipIds.length,
 										onPropertyChange: handlePropertyChange,
 										onPropertyCommit: handlePropertyCommit,
 										onTextChange: handleTextChange,
 										onTextCommit: handleTextCommit,
 										onAddText: handleAddText,
+										onSpeedChange: handleSetSpeed,
+										onFadeChange: handleSetFades,
+										onSetKeyframes: handleSetKeyframes,
+										onAddEffect: handleAddEffect,
+										onUpdateEffect: handleUpdateEffect,
+										onRemoveEffect: handleRemoveEffect,
+										onReorderEffects: handleReorderEffects,
+										onAddTransition: handleAddTransition,
+										onUpdateTransition: handleUpdateTransition,
+										onRemoveTransition: handleRemoveTransition,
+										onAddCaption: handleAddCaption,
+										onUpdateCaption: handleUpdateCaption,
+										onImportCaption: handleImportCaptions,
+										onExportCaption: handleExportCaptions,
+										onAddMarker: handleAddMarker,
+										onUpdateMarker: handleUpdateMarker,
+										onRemoveMarker: handleRemoveMarker,
+										onSeek: seekToFrame,
 									}),
 								),
 								h(
@@ -3384,8 +5613,8 @@ window.__ModuleLoader__.load({
 									zoom,
 									currentFrame,
 									playing,
-									selectedClipId,
-									onSelectClip: (id) => setSelectedClipId(id),
+									selectedClipIds,
+									onSelectClip: handleSelectClip,
 									onSeek: seekToFrame,
 									onMoveClip: handleMoveClip,
 									onTrimClip: handleTrimClip,
@@ -3393,8 +5622,16 @@ window.__ModuleLoader__.load({
 									onSetZoom: (value) => setZoom(clamp(value, MIN_ZOOM, MAX_ZOOM)),
 									onSplit: handleSplit,
 									onDelete: handleDelete,
+									onDeleteRipple: handleDeleteRipple,
+									onCopy: handleCopy,
+									onPaste: handlePaste,
 									canSplit,
-									canDelete: Boolean(selected),
+									canDelete: selectedClipIds.length > 0,
+									canCopy: selectedClipIds.length > 0,
+									canPaste: hasClipboard,
+									snapping,
+									onToggleSnapping: () => setSnapping((value) => !value),
+									onAddMarker: handleAddMarker,
 									onAddTrack: handleAddTrack,
 									onAddText: handleAddText,
 								}),

@@ -152,14 +152,32 @@ Importing only fills the media library; it does not add clips to the timeline.
 - **Add text**: use **Add text**; a 3-second text clip is created at the playhead
   on a dedicated text track. Text clips are overlays on a separate video track so
   they do not overwrite footage.
+- **Speed**: the inspector sets clip speed 0.25–4×. Timeline duration and source
+  in-point are kept consistent; export applies `setpts`/`atempo`.
+- **Fades**: the inspector sets fade-in/fade-out frames; export uses `fade`/`afade`.
+- **Keyframes**: add clip-relative keyframes at the playhead for volume, opacity,
+  x/y, width/height and rotation, with linear/ease-in/ease-out/ease-in-out.
+- **Effects**: brightness, contrast, saturation, temperature, blur, sharpen,
+  chroma key and .cube LUT, ordered per clip.
+- **Transitions**: add a transition at an adjacent clip boundary (dissolve,
+  fade-to-black, wipe left/right). `fadeToBlack` is exact; dissolve/wipe are
+  approximated by fades in this phase.
+- **Captions**: add a caption clip, edit timed segments and style, import SRT/VTT
+  text, and export SRT/VTT.
+- **Markers**: add markers at the playhead, label/color them, click the ruler tick
+  to jump, remove them.
+- **Multi-select / clipboard**: Shift/Cmd/Ctrl-click selects several clips;
+  copy/paste duplicates them; Shift+Delete (or **Ripple delete**) removes and
+  closes the gap.
+- **Snapping**: the toolbar toggle snaps moves/trims to clip edges, markers and
+  the playhead.
 - **Tracks**: use **Add video track** / **Add audio track**. In this MVP the UI
   does not expose track deletion, renaming, mute or hide; those exist in the data
   model and are honored by export when present.
 - **Zoom**: `−` / `+` buttons, **Fit**, or `Cmd/Ctrl` + mouse wheel. A plain mouse
   wheel scrolls the timeline horizontally.
 
-Timeline frames are project frames. There is no clip speed control in this MVP;
-`speed` is fixed at `1`.
+Timeline frames are project frames.
 
 ### Preview
 
@@ -176,8 +194,13 @@ Timeline frames are project frames. There is no clip speed control in this MVP;
 ### Inspector
 
 - With a clip selected, the inspector edits volume, opacity and transform
-  (`x`, `y`, `width`, `height`, `rotation`). Transform values are normalized
-  `0..1`; `x`/`y` are the top-left corner and rotation is in degrees.
+  (`x`, `y`, `width`, `height`, `rotation`), speed, fades, keyframes and the
+  effect stack. Transform values are normalized `0..1`; `x`/`y` are the
+  top-left corner and rotation is in degrees.
+- Text/caption clips expose content/segments, font size, color, weight, align
+  and background.
+- Project-level panels add text, captions and markers; transitions appear when
+  an adjacent clip boundary is selected.
 - Text clips additionally expose content, font size, color, weight and alignment.
 - Timing (start, duration, source offset, end) is read-only in the inspector;
   edit timing by dragging clips and clip edges on the timeline.
@@ -237,6 +260,9 @@ MCP endpoint, client or credential is involved.
 |---|---|---|
 | `opentake_studio_get_state` | — | Returns a project summary: name, fps, resolution, total duration frames, media and tracks/clips. Call before editing. |
 | `opentake_studio_list_media` | — | Returns the imported media list (id, name, kind, dimensions, duration frames). |
+| `opentake_studio_edit` | `operations` | Advanced batch edit: speed, keyframes, effects, fades, markers, transitions, captions and all timeline ops from DESIGN §11.2. |
+| `opentake_studio_import_captions` | `text`, `style?`, `trackId?` | Parses SRT/VTT and adds a caption clip on a Captions track. |
+| `opentake_studio_export_captions` | `format?` (`srt`/`vtt`) | Returns all caption cues as SRT or WebVTT text. |
 | `opentake_studio_new_project` | `path`, `name?`, `fps?`, `width?`, `height?` | Creates a project at an absolute folder path. |
 | `opentake_studio_open_project` | `path` | Opens the folder containing `opentake-studio.json`. |
 | `opentake_studio_import_media` | `path` | Imports every supported media file in an absolute folder; returns imported and skipped paths. |
@@ -327,9 +353,19 @@ inside it:
 This is a deliberately small, verifiable editing loop, not a full NLE. Known
 gaps:
 
-- **No advanced editing features:** no transitions, keyframes, effects, speed
-  changes, color grading, multicam, Lottie/Motion, AI generation, transcription,
-  semantic search or media library folders.
+- **Transitions are phase-1 approximations:** `fadeToBlack` is a dip; dissolve
+  and wipe are implemented as fades, not true crossfades/wipes. Text and caption
+  clips are excluded from transitions.
+- **Keyframes are phase-1:** volume/opacity/x/y keyframes affect export; width,
+  height and rotation keyframes preview but degrade to static transform in
+  export. Opacity keyframes are approximated by fades.
+- **Effects are per-clip only:** no effect stacks/masks/motion tracking, and
+  drawtext-fallback text ignores effects/fades (browser-rendered PNGs support
+  them).
+- **Still missing from the Rust/Tauri app:** multicam, Lottie/Motion documents,
+  AI generation/upscaling, Whisper transcription, SigLIP2 visual/semantic
+  search, media library folders/favorites, HDR/proxy management, account/updater
+  surfaces, and full 1:1 UI parity.
 - **Preview is approximate.** The canvas composite is for interaction, not a
   frame-accurate reference. Export is authoritative. Browser codec support can
   differ from ffmpeg.
@@ -389,7 +425,7 @@ From the repository root:
 
 ```bash
 cd plugins/opentake-studio
-node --test test/                     # 163 tests: model, project, media, export, host routes/tools
+node --test test/                     # 241 tests: model, project, media, export, captions, host routes/tools
 node --check index.js
 node --check client.js
 node --check lib/model.js
@@ -415,7 +451,7 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **163/163 tests pass**, 18 suites, 0 failures (141 model/project/media/export + 22 host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **241/241 tests pass**, 27 suites, 0 failures (model, project, media, export, captions, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |
