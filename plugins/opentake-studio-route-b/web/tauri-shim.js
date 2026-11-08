@@ -87,7 +87,7 @@
       if (set) set.delete(args.eventId);
       return;
     }
-    if (cmd === 'edit_apply' || cmd === 'undo' || cmd === 'redo') {
+    if (cmd === 'edit_apply' || cmd === 'undo' || cmd === 'redo' || cmd === 'generate_captions') {
       const version = body && typeof body.timelineVersion === 'number' ? body.timelineVersion : null;
       emitToListeners('timeline_changed', version === null ? {} : { version });
     }

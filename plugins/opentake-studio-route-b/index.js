@@ -11,8 +11,11 @@
  */
 
 import { createRequire } from 'node:module';
-import { existsSync, statSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +24,8 @@ const require = createRequire(import.meta.url);
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PREFIX = '/opentake-studio-route-b';
 const VERSION = '0.1.0';
+const execFileAsync = promisify(execFile);
+const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
@@ -97,6 +102,11 @@ export function apply(ctx) {
     loadError: null,
     thumbnails: new Map(),
     exportJob: null,
+    asr: {
+      url: process.env.OPENTAKE_ASR_URL ?? (process.env.OPENAI_API_KEY ? 'https://api.openai.com/v1/audio/transcriptions' : null),
+      key: process.env.OPENAI_API_KEY ?? null,
+      model: process.env.OPENTAKE_ASR_MODEL ?? 'whisper-1',
+    },
   };
 
   try {
@@ -255,6 +265,24 @@ export function apply(ctx) {
         const written = state.engine.exportTimeline(String(args.path ?? ''), formats[cmd]);
         return written;
       }
+      case 'transcribe_model_status':
+        return {
+          installed: state.asr.url !== null,
+          model: state.asr.url !== null ? `provider:${state.asr.model}` : '',
+          bytes: 0,
+        };
+      case 'download_transcribe_model':
+        return {
+          installed: state.asr.url !== null,
+          model: state.asr.url !== null ? `provider:${state.asr.model}` : '',
+          bytes: 0,
+        };
+      case 'transcript_get': {
+        const mediaId = typeof args.mediaId === 'string' ? args.mediaId : '';
+        const file = path.join(CACHE_ROOT, 'transcripts', `${mediaId}.json`);
+        if (!existsSync(file)) return null;
+        return JSON.parse(readFileSync(file, 'utf8'));
+      }
       case 'export_subtitles':
         return JSON.parse(state.engine.exportSubtitles(
           String(args.path ?? ''),
@@ -394,6 +422,112 @@ export function apply(ctx) {
     }
   }
 
+  async function asrTranscript(mediaId, language) {
+    if (state.asr.url === null) throw new Error('ASR provider is not configured');
+    const catalog = JSON.parse(state.engine.mediaList());
+    const item = catalog.items.find((entry) => entry.id === mediaId);
+    if (!item || typeof item.path !== 'string') throw new Error(`media not found: ${mediaId}`);
+    const cacheFile = path.join(CACHE_ROOT, 'transcripts', `${mediaId}.json`);
+    if (existsSync(cacheFile)) return JSON.parse(readFileSync(cacheFile, 'utf8'));
+    const audioFile = path.join(CACHE_ROOT, 'asr', `${mediaId}.wav`);
+    await mkdir(path.dirname(audioFile), { recursive: true });
+    await execFileAsync('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', item.path,
+      '-vn', '-ac', '1', '-ar', '16000', '-f', 'wav', audioFile,
+    ], { timeout: 120000, maxBuffer: 1024 * 1024 });
+    const buffer = await readFile(audioFile);
+    const form = new FormData();
+    form.append('file', new Blob([buffer], { type: 'audio/wav' }), path.basename(audioFile));
+    form.append('model', state.asr.model);
+    form.append('response_format', 'verbose_json');
+    if (typeof language === 'string' && language.length > 0) form.append('language', language);
+    const headers = state.asr.key ? { authorization: `Bearer ${state.asr.key}` } : {};
+    const response = await fetch(state.asr.url, { method: 'POST', headers, body: form });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error?.message ?? `ASR request failed (${response.status})`);
+    const segments = Array.isArray(body.segments)
+      ? body.segments.map((segment) => ({ text: String(segment.text ?? ''), start: Number(segment.start ?? 0), end: Number(segment.end ?? 0) }))
+      : [];
+    const words = Array.isArray(body.words)
+      ? body.words.map((word) => ({ text: String(word.word ?? word.text ?? ''), start: Number(word.start ?? 0), end: Number(word.end ?? 0) }))
+      : [];
+    const transcript = {
+      mediaId,
+      text: typeof body.text === 'string' ? body.text : segments.map((segment) => segment.text).join(' '),
+      ...(typeof body.language === 'string' ? { language: body.language } : {}),
+      segments,
+      words,
+    };
+    await mkdir(path.dirname(cacheFile), { recursive: true });
+    await writeFile(cacheFile, JSON.stringify(transcript), 'utf8');
+    return transcript;
+  }
+
+  async function handleTranscribeInvoke(args, res) {
+    try {
+      const transcript = await asrTranscript(typeof args.mediaId === 'string' ? args.mediaId : '', args.language);
+      sendJson(res, 200, transcript);
+    } catch (error) {
+      sendJson(res, 500, { error: { code: 'transcribe-failed', message: error instanceof Error ? error.message : String(error) } });
+    }
+  }
+
+  async function handleGenerateCaptionsInvoke(args, res) {
+    try {
+      const request = args.request !== null && typeof args.request === 'object' ? args.request : {};
+      const catalog = JSON.parse(state.engine.mediaList());
+      const media = catalog.items.find((item) => item.hasAudio === true);
+      if (!media) throw new Error('no audio-bearing media to transcribe');
+      const transcript = await asrTranscript(media.id, request.language);
+      const timeline = JSON.parse(state.engine.getTimeline()).timeline;
+      const fps = timeline.fps || 30;
+      const style = request.style ?? {
+        fontName: 'Helvetica-Bold',
+        fontSize: 48,
+        fontScale: 1,
+        color: { r: 1, g: 1, b: 1, a: 1 },
+        alignment: 'center',
+        shadow: { enabled: false, color: { r: 0, g: 0, b: 0, a: 0 }, offsetX: 0, offsetY: 0, blur: 0 },
+        background: { enabled: false, color: { r: 0, g: 0, b: 0, a: 0 } },
+        border: { enabled: false, color: { r: 0, g: 0, b: 0, a: 1 } },
+      };
+      const transform = {
+        centerX: Number.isFinite(request.centerX) ? request.centerX : 0.5,
+        centerY: Number.isFinite(request.centerY) ? request.centerY : 0.85,
+        width: 0.9,
+        height: 0.2,
+        rotation: 0,
+        flipHorizontal: false,
+        flipVertical: false,
+      };
+      const group = `captions-${randomUUID()}`;
+      const segments = Array.isArray(transcript.segments) && transcript.segments.length > 0
+        ? transcript.segments
+        : [{ start: 0, end: Math.max(1, timeline.totalFrames ?? 60) / fps, text: transcript.text }];
+      const entries = segments
+        .filter((segment) => typeof segment.text === 'string' && segment.text.trim().length > 0)
+        .map((segment) => {
+          let content = segment.text.trim();
+          if (request.textCase === 'upper') content = content.toUpperCase();
+          if (request.textCase === 'lower') content = content.toLowerCase();
+          return {
+            startFrame: Math.max(0, Math.round(Number(segment.start) * fps)),
+            durationFrames: Math.max(1, Math.round((Number(segment.end) - Number(segment.start)) * fps)),
+            content,
+            textStyle: style,
+            transform,
+            captionGroupId: group,
+          };
+        });
+      if (entries.length === 0) throw new Error('transcript has no caption text');
+      const applied = JSON.parse(state.engine.apply(JSON.stringify({ type: 'addCaptions', entries })));
+      sendJson(res, 200, { edit: applied.result, captionCount: entries.length });
+    } catch (error) {
+      sendJson(res, 500, { error: { code: 'generate-captions-failed', message: error instanceof Error ? error.message : String(error) } });
+    }
+  }
+
   async function handleExportInvoke(args, res) {
     if (state.exportJob !== null) {
       sendJson(res, 409, { error: { code: 'export-busy', message: 'another export is running' } });
@@ -461,6 +595,14 @@ export function apply(ctx) {
         try {
           const cmd = typeof body.cmd === 'string' ? body.cmd : '';
           const args = body.args !== null && typeof body.args === 'object' ? body.args : {};
+          if (cmd === 'transcribe_media') {
+            await handleTranscribeInvoke(args, res);
+            return;
+          }
+          if (cmd === 'generate_captions') {
+            await handleGenerateCaptionsInvoke(args, res);
+            return;
+          }
           if (cmd === 'export_video') {
             await handleExportInvoke(args, res);
             return;
@@ -500,6 +642,14 @@ export function apply(ctx) {
       }
       if (sub === '/engine/timeline' && req.method === 'GET') {
         sendJson(res, 200, JSON.parse(ensureEngine().getTimeline()));
+        return;
+      }
+      if (sub === '/engine/asr/config' && req.method === 'POST') {
+        const body = await readJson(req);
+        state.asr.url = typeof body.url === 'string' && body.url.length > 0 ? body.url : null;
+        state.asr.key = typeof body.key === 'string' && body.key.length > 0 ? body.key : null;
+        state.asr.model = typeof body.model === 'string' && body.model.length > 0 ? body.model : 'whisper-1';
+        sendJson(res, 200, { ok: true, configured: state.asr.url !== null, model: state.asr.model });
         return;
       }
       if (sub === '/engine/media' && req.method === 'GET') {

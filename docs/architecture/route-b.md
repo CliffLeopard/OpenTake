@@ -30,6 +30,12 @@ by the DSH Host through N-API.
   composite.
 - Timeline interchange export writes XMEML (`.xml`), CMX3600 EDL, OpenTimelineIO
   JSON and native FCPXML via `opentake-project`; all four verified.
+- Provider-backed ASR is bridged in the Host: ffmpeg extracts mono 16 kHz WAV,
+  posts to an OpenAI-compatible verbose-JSON endpoint, caches the transcript and
+  can generate styled caption clips. Verified end-to-end against a local mock
+  (text/captions/SRT); a real provider was not called. Config is
+  `OPENTAKE_ASR_URL`/`OPENAI_API_KEY` or the prototype
+  `POST /engine/asr/config`.
 - Caption clips added through `EditRequest::AddCaptions` export to SRT/VTT via
   `opentake-domain`'s pure serializer; verified two cues at 30 fps.
 - Nested/compound sequences are supported through the extracted `EditRequest`
