@@ -67,7 +67,10 @@ by the DSH Host through N-API.
 - Motion Studio document CRUD is bridged to project-local `motion-documents/`
   (list/create/read/hash/patch) and `motion_preview` renders a frame through
   local Chrome headless with `--virtual-time-budget`. Verified create + frame-15
-  PNG preview at 320x180. Motion clip publishing (`motion_add`) is not bridged.
+  PNG preview at 320x180. `motion_add` renders all frames via Chrome, encodes
+  H.264 mp4 or transparent ProRes 4444, imports the video and adds a clip.
+  Verified 5-frame H.264 and 3-frame ProRes 4444 alpha output; per-frame Chrome
+  rendering is slow and progress events are not emitted.
 - Search is text-only: `search_query` matches media names and cached
   transcripts (Spoken/Files); visual embeddings/Moments are explicitly
   unavailable. `search_model_status` reports `route-b-text-search`, not SigLIP.

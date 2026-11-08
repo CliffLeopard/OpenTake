@@ -557,6 +557,88 @@ export function apply(ctx) {
     };
   }
 
+  async function motionAdd(request) {
+    const root = motionRoot();
+    const document = readMotionDocument(root, String(request.documentId));
+    if (request.revisionHash !== document.summary.revisionHash) throw new Error('motion document changed; reload before publishing');
+    const width = Math.max(2, Math.round(Number(request.width) || 1280));
+    const height = Math.max(2, Math.round(Number(request.height) || 720));
+    const fps = Math.max(1, Math.round(Number(request.fps) || 30));
+    const duration = Math.max(1, Math.round(Number(request.durationFrames) || 30));
+    const startFrame = Math.max(0, Math.round(Number(request.startFrame) || 0));
+    const directory = path.join(CACHE_ROOT, 'motion-publish', `${request.documentId}-${Date.now()}`);
+    await mkdir(directory, { recursive: true });
+    for (let frame = 0; frame < duration; frame += 1) {
+      const preview = await motionPreview({
+        documentId: request.documentId,
+        revisionHash: request.revisionHash,
+        frame,
+        width,
+        height,
+        fps,
+        durationFrames: duration,
+      });
+      const bytes = Buffer.from(preview.pngDataUrl.split(',')[1], 'base64');
+      await writeFile(path.join(directory, `${String(frame).padStart(5, '0')}.png`), bytes);
+    }
+    const transparent = request.transparent === true;
+    const output = path.join(directory, transparent ? 'motion.mov' : 'motion.mp4');
+    const codec = transparent
+      ? ['-c:v', 'prores_ks', '-profile:v', '4444', '-pix_fmt', 'yuva444p10le']
+      : ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '20'];
+    await execFileAsync('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-framerate', String(fps), '-i', path.join(directory, '%05d.png'),
+      ...codec, output,
+    ], { timeout: 300000, maxBuffer: 8 * 1024 * 1024 });
+    const catalog = importMedia([output]);
+    const asset = catalog.items.find((item) => item.path === output);
+    if (!asset) throw new Error('motion output could not be imported');
+    let timeline = JSON.parse(state.engine.getTimeline()).timeline;
+    let trackIndex = Number.isInteger(request.trackIndex) ? request.trackIndex : -1;
+    if (trackIndex < 0 || trackIndex >= timeline.tracks.length || timeline.tracks[trackIndex]?.type !== 'video') {
+      trackIndex = timeline.tracks.findIndex((track) => track.type === 'video');
+    }
+    if (trackIndex < 0) {
+      const inserted = JSON.parse(state.engine.apply(JSON.stringify({ type: 'insertTrack', kind: 'video' })));
+      timeline = inserted.timeline.timeline;
+      trackIndex = timeline.tracks.length - 1;
+    }
+    const applied = JSON.parse(state.engine.apply(JSON.stringify({
+      type: 'addClips',
+      entries: [{
+        mediaRef: asset.id,
+        mediaType: 'video',
+        sourceClipType: 'video',
+        trackIndex,
+        startFrame,
+        durationFrames: duration,
+        hasAudio: false,
+        addLinkedAudio: false,
+      }],
+    })));
+    const clipId = applied.result.affectedClipIds[0];
+    const contentHash = createHash('sha256').update(await readFile(output)).digest('hex');
+    return {
+      clipId,
+      assetId: asset.id,
+      contentHash,
+      actionName: 'Add Motion Graphic',
+      sourceDocument: { documentId: request.documentId, revisionHash: request.revisionHash },
+      output: {
+        renderer: 'route-b-chrome-headless',
+        rendererVersion: '1',
+        outputFile: output,
+        fps,
+        width,
+        height,
+        durationFrames: duration,
+        durationSeconds: duration / fps,
+        contentHash,
+      },
+    };
+  }
+
   function invokeCore(cmd, args) {
     if (state.engine === null) throw new Error(state.loadError ?? 'OpenTake Rust engine is unavailable');
     switch (cmd) {
@@ -738,6 +820,7 @@ export function apply(ctx) {
         return next;
       }
       case 'motion_preview_cancel':
+      case 'motion_cancel':
         return false;
       case 'search_model_status':
         return { installed: true, model: 'route-b-text-search', bytes: 0 };
@@ -1091,6 +1174,14 @@ export function apply(ctx) {
         try {
           const cmd = typeof body.cmd === 'string' ? body.cmd : '';
           const args = body.args !== null && typeof body.args === 'object' ? body.args : {};
+          if (cmd === 'motion_add') {
+            try {
+              sendJson(res, 200, await motionAdd(args.request ?? {}));
+            } catch (error) {
+              sendJson(res, 400, { error: { code: 'motion-add-failed', message: error instanceof Error ? error.message : String(error) } });
+            }
+            return;
+          }
           if (cmd === 'motion_preview') {
             try {
               sendJson(res, 200, await motionPreview(args.request ?? {}));
