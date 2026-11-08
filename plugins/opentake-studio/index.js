@@ -26,6 +26,7 @@ import { createProjectAt, openProjectAt, saveProjectAt } from './lib/project.js'
 import {
   ensureProxy,
   ensureThumbnail,
+  ensureWaveform,
   importToProject,
   isMediaFile,
   mediaFilePath,
@@ -33,6 +34,7 @@ import {
   probeMedia,
   proxyFilePath,
   readLottieAnimation,
+  waveformFilePath,
   resolveTools,
 } from './lib/media.js';
 import { defaultExtensionForCodec, runExport } from './lib/export.js';
@@ -825,6 +827,17 @@ export function apply(ctx) {
     stream.pipe(res);
   }
 
+  async function serveWaveform(res, mediaId) {
+    const project = ensureProject();
+    const media = findMedia(project, mediaId);
+    if (media === null) throw new RouteError('Media not found', 'media-not-found', 404);
+    const waveform = await ensureWaveform({ projectRoot: state.paths.root, media });
+    res.statusCode = 200;
+    res.setHeader('content-type', 'image/png');
+    res.setHeader('cache-control', 'no-store');
+    res.end(await readFile(waveform));
+  }
+
   async function serveThumbnail(res, mediaId) {
     const project = ensureProject();
     const media = findMedia(project, mediaId);
@@ -886,6 +899,7 @@ export function apply(ctx) {
         durationFrames: media.durationFrames,
         width: media.width,
         height: media.height,
+        hasAudio: media.hasAudio === true,
         ...(media.kind === 'video' ? { hasProxy: existsSync(proxyFilePath(state.paths.root, media)) } : {}),
         missing: !existsSync(mediaFilePath(state.paths.root, media)),
       })),
@@ -1519,6 +1533,10 @@ export function apply(ctx) {
       }
       if (sub.startsWith('/media/file/') && (req.method === 'GET' || req.method === 'HEAD')) {
         await serveMediaFile(req, res, safeDecode(sub.slice('/media/file/'.length), 'media id'));
+        return;
+      }
+      if (sub.startsWith('/media/waveform/') && req.method === 'GET') {
+        await serveWaveform(res, safeDecode(sub.slice('/media/waveform/'.length), 'media id'));
         return;
       }
       if (sub.startsWith('/media/thumb/') && req.method === 'GET') {

@@ -2,10 +2,10 @@
  * Media probing, import, thumbnails and ffmpeg/ffprobe process wrappers for
  * OpenTake Studio. Pure Node builtins: no third-party packages and no shell.
  *
- * The module owns the <projectRoot>/media and <projectRoot>/thumbnails layout
- * described in docs/DESIGN.md §4. Every path that leaves the project media
- * directory is resolved and validated here; every ffmpeg/ffprobe invocation
- * receives an argv array (never a shell string).
+ * The module owns the <projectRoot>/media, /thumbnails and /waveforms layouts.
+ * Every path that leaves the project media directory is resolved and validated
+ * here; every ffmpeg/ffprobe invocation receives an argv array (never a shell
+ * string).
  */
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -1186,6 +1186,125 @@ export async function ensureProxy({ projectRoot, media, height = DEFAULT_PROXY_H
   if (generated === null || !generated.isFile() || generated.size === 0) {
     await rm(destination, { force: true }).catch(() => {});
     throw new MediaError(`Proxy generation produced no file for media ${media.id}`, 'ffmpeg-failed');
+  }
+  return destination;
+}
+
+// ---------------------------------------------------------------------------
+// Audio waveforms
+// ---------------------------------------------------------------------------
+
+const WAVEFORM_DIRECTORY = 'waveforms';
+const WAVEFORM_COLOR = '0x9fb3c8';
+const WAVEFORM_MAX_DIMENSION = 4096;
+
+/**
+ * Safe resolver for `<projectRoot>/waveforms/<mediaId>.png`.
+ *
+ * The media id is sanitized into a single file-name segment, so a crafted id
+ * can never escape the waveforms directory.
+ *
+ * @returns {string} absolute waveform path
+ */
+export function waveformFilePath(projectRoot, media) {
+  if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
+    throw new MediaError('waveformFilePath requires a projectRoot path', 'invalid-input');
+  }
+  if (media === null || typeof media !== 'object') {
+    throw new MediaError('waveformFilePath requires a media object', 'invalid-input');
+  }
+  const directory = path.resolve(projectRoot, WAVEFORM_DIRECTORY);
+  const fileName = `${sanitizeId(media.id)}.png`;
+  const candidate = path.join(directory, fileName);
+  const relative = path.relative(directory, candidate);
+  if (relative.length === 0 || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new MediaError('Waveform path escapes the waveforms directory', 'invalid-path');
+  }
+  return candidate;
+}
+
+function normalizeWaveformDimension(value, fallback, name) {
+  if (value === undefined || value === null) return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 1) {
+    throw new MediaError(`Waveform ${name} must be a positive number`, 'invalid-input');
+  }
+  return Math.min(WAVEFORM_MAX_DIMENSION, Math.max(1, Math.round(number)));
+}
+
+/**
+ * Generate (or reuse) a cached waveform PNG for audio/video media.
+ *
+ * Uses ffmpeg's `showwavespic` filter and writes
+ * `<projectRoot>/waveforms/<mediaId>.png` with a transparent background where
+ * the ffmpeg build supports it (the filter emits RGBA). The cached file is
+ * reused regardless of requested dimensions. Media without audio (image,
+ * lottie, motion, or a silent source) is rejected with `media-error`.
+ *
+ * @returns {Promise<string>} absolute waveform PNG path
+ */
+export async function ensureWaveform({ projectRoot, media, width = 800, height = 96 } = {}) {
+  if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
+    throw new MediaError('ensureWaveform requires a projectRoot path', 'invalid-input');
+  }
+  if (media === null || typeof media !== 'object') {
+    throw new MediaError('ensureWaveform requires a media object', 'invalid-input');
+  }
+
+  const canHaveAudio = media.hasAudio === true || media.kind === 'audio' || media.kind === 'video';
+  if (!canHaveAudio) {
+    throw new MediaError(
+      `Waveforms require audio or video media (${String(media.kind ?? 'unknown')} has no audio)`,
+      'media-error',
+    );
+  }
+
+  const waveformWidth = normalizeWaveformDimension(width, 800, 'width');
+  const waveformHeight = normalizeWaveformDimension(height, 96, 'height');
+  const root = path.resolve(projectRoot);
+  const destination = waveformFilePath(root, media);
+
+  try {
+    const cached = await stat(destination);
+    if (cached.isFile() && cached.size > 0) return destination;
+  } catch {
+    // Not cached yet.
+  }
+
+  const tools = resolveTools();
+  if (tools.ffmpeg === null) {
+    throw new MediaError('ffmpeg is not available (set OPENTAKE_STUDIO_FFMPEG or install ffmpeg)', 'ffmpeg-unavailable');
+  }
+
+  const source = mediaFilePath(root, media);
+  await mkdir(path.dirname(destination), { recursive: true });
+
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-i', source,
+    '-filter_complex', `[0:a]showwavespic=s=${waveformWidth}x${waveformHeight}:colors=${WAVEFORM_COLOR}[wave]`,
+    '-map', '[wave]',
+    '-frames:v', '1',
+    destination,
+  ];
+
+  try {
+    await runFfmpeg(args, { signal: AbortSignal.timeout(30_000) });
+  } catch (error) {
+    await rm(destination, { force: true });
+    if (error instanceof MediaError && error.code === 'ffmpeg-unavailable') throw error;
+    throw new MediaError(`Could not generate waveform for media ${String(media.id)}`, 'media-error', { cause: error });
+  }
+
+  let generated;
+  try {
+    generated = await stat(destination);
+  } catch (error) {
+    throw new MediaError(`Waveform generation produced no file for media ${String(media.id)}`, 'media-error', { cause: error });
+  }
+  if (!generated.isFile() || generated.size === 0) {
+    await rm(destination, { force: true });
+    throw new MediaError(`Waveform generation produced an empty file for media ${String(media.id)}`, 'media-error');
   }
   return destination;
 }

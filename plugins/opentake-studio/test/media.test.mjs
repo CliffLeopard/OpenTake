@@ -9,6 +9,7 @@ import {
   MediaError,
   ensureProxy,
   ensureThumbnail,
+  ensureWaveform,
   importToProject,
   isMediaFile,
   mediaExtensions,
@@ -22,6 +23,7 @@ import {
   runFfmpeg,
   runFfprobe,
   scanMediaFolder,
+  waveformFilePath,
 } from '../lib/media.js';
 
 const initialTools = resolveTools();
@@ -44,6 +46,14 @@ let lottieZipPath = null;
 
 function relativeName(root, absolute) {
   return path.relative(root, absolute).split(path.sep).join('/');
+}
+
+async function expectPng(filePath) {
+  const bytes = await readFile(filePath);
+  assert.ok(bytes.length > 24, `PNG should have content: ${filePath}`);
+  assert.equal(bytes.readUInt32BE(0), 0x89504e47, 'PNG signature');
+  assert.equal(bytes.readUInt32BE(12), 0x49484452, 'PNG IHDR');
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
 async function expectJpeg(filePath) {
@@ -230,6 +240,14 @@ it('reports missing tools instead of pretending to work', async () => {
     assert.equal(lottie.kind, 'lottie');
     assert.equal(lottie.width, 320);
     assert.equal(lottie.height, 180);
+
+    await assert.rejects(
+      ensureWaveform({
+        projectRoot: path.join(tempRoot, 'waveform-missing-tools'),
+        media: { id: 'waveform-audio', kind: 'audio', fileName: 'sound.m4a', hasAudio: true },
+      }),
+      (error) => error instanceof MediaError && error.code === 'ffmpeg-unavailable',
+    );
   } finally {
     if (saved.path === undefined) delete process.env.PATH;
     else process.env.PATH = saved.path;
@@ -694,4 +712,101 @@ it('generates a cached placeholder thumbnail for Lottie media', { skip: toolSkip
   const cached = await ensureThumbnail({ projectRoot, media });
   assert.equal(cached, thumbnail);
   assert.equal((await stat(thumbnail)).mtimeMs, firstInfo.mtimeMs);
+});
+
+// ---------------------------------------------------------------------------
+// Audio waveforms (Phase 20)
+// ---------------------------------------------------------------------------
+
+it('resolves safe waveform paths inside the waveforms directory', () => {
+  const projectRoot = path.join(tempRoot, 'waveform-paths');
+  const waveformsDir = path.join(projectRoot, 'waveforms');
+
+  const direct = waveformFilePath(projectRoot, { id: 'media-123' });
+  assert.equal(direct, path.join(waveformsDir, 'media-123.png'));
+  assert.ok(path.isAbsolute(direct));
+
+  const crafted = waveformFilePath(projectRoot, { id: '../escape' });
+  const relative = path.relative(waveformsDir, crafted);
+  assert.ok(!relative.startsWith('..') && !path.isAbsolute(relative), crafted);
+  assert.equal(path.dirname(crafted), waveformsDir);
+  assert.ok(crafted.endsWith('.png'));
+
+  assert.throws(
+    () => waveformFilePath(projectRoot, { id: '' }),
+    (error) => error instanceof MediaError && error.code === 'invalid-input',
+  );
+  assert.throws(
+    () => waveformFilePath(projectRoot, { id: '..' }),
+    (error) => error instanceof MediaError && error.code === 'invalid-input',
+  );
+  assert.throws(
+    () => waveformFilePath(projectRoot, null),
+    (error) => error instanceof MediaError && error.code === 'invalid-input',
+  );
+  assert.throws(
+    () => waveformFilePath('', { id: 'media-123' }),
+    (error) => error instanceof MediaError && error.code === 'invalid-input',
+  );
+});
+
+it('generates cached waveform PNGs for audio and video-with-audio', { skip: toolSkip }, async () => {
+  const projectRoot = path.join(tempRoot, 'project-waveforms');
+  const imported = await importToProject({
+    projectRoot,
+    folderPath: sourceDir,
+    project: { fps: FIXTURE_FPS, media: [] },
+  });
+  const byName = new Map(imported.media.map((entry) => [entry.name, entry]));
+
+  for (const name of ['sound.m4a', 'clip.mp4']) {
+    const media = byName.get(name);
+    const waveform = await ensureWaveform({ projectRoot, media });
+    assert.ok(path.isAbsolute(waveform));
+    assert.equal(waveform, path.join(projectRoot, 'waveforms', `${media.id}.png`));
+    const info = await stat(waveform);
+    assert.ok(info.size > 0);
+    const size = await expectPng(waveform);
+    assert.deepEqual(size, { width: 800, height: 96 });
+
+    // Cached: same path and mtime on the second call.
+    const cached = await ensureWaveform({ projectRoot, media });
+    assert.equal(cached, waveform);
+    assert.equal((await stat(waveform)).mtimeMs, info.mtimeMs);
+  }
+
+  // Custom dimensions are honored on first generation, then the cache wins.
+  const audio = byName.get('sound.m4a');
+  const alternate = { ...audio, id: randomUUID() };
+  const custom = await ensureWaveform({ projectRoot, media: alternate, width: 320, height: 48 });
+  assert.deepEqual(await expectPng(custom), { width: 320, height: 48 });
+  const customCached = await ensureWaveform({ projectRoot, media: alternate, width: 100, height: 20 });
+  assert.equal(customCached, custom);
+  assert.deepEqual(await expectPng(customCached), { width: 320, height: 48 });
+});
+
+it('rejects waveform requests for media without audio', async () => {
+  const projectRoot = path.join(tempRoot, 'waveform-no-audio');
+  for (const media of [
+    { id: 'waveform-image', kind: 'image', fileName: 'card.png', hasAudio: false },
+    { id: 'waveform-lottie', kind: 'lottie', fileName: 'anim.json', hasAudio: false },
+    { id: 'waveform-motion', kind: 'motion', fileName: 'motion.mp4', hasAudio: false },
+  ]) {
+    await assert.rejects(
+      ensureWaveform({ projectRoot, media }),
+      (error) => error instanceof MediaError && error.code === 'media-error',
+    );
+  }
+});
+
+it('validates waveform dimensions', async () => {
+  const projectRoot = path.join(tempRoot, 'waveform-dims');
+  const audio = { id: 'waveform-dims-audio', kind: 'audio', fileName: 'sound.m4a', hasAudio: true };
+  for (const options of [{ width: 0 }, { height: -1 }, { width: 'abc' }, { height: Number.NaN }]) {
+    await assert.rejects(
+      ensureWaveform({ projectRoot, media: audio, ...options }),
+      (error) => error instanceof MediaError && error.code === 'invalid-input',
+      `expected invalid-input for ${JSON.stringify(options)}`,
+    );
+  }
 });

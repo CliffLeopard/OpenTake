@@ -374,6 +374,10 @@ window.__ModuleLoader__.load({
 			return `${ROUTE}/media/thumb/${encodeURIComponent(mediaId)}`;
 		}
 
+		function mediaWaveformUrl(mediaId) {
+			return `${ROUTE}/media/waveform/${encodeURIComponent(mediaId)}`;
+		}
+
 		function libraryThumbUrl(itemId) {
 			return `${ROUTE}/library/thumb/${encodeURIComponent(itemId)}`;
 		}
@@ -2163,6 +2167,10 @@ window.__ModuleLoader__.load({
 .ots-media-offline{background:var(--dsw-alias-state-error-primary);border-radius:3px;color:var(--dsw-alias-bg-base);font-size:8px;left:4px;letter-spacing:.3px;padding:1px 4px;position:absolute;text-transform:uppercase;top:4px;z-index:3}
 .ots-clip[data-offline="true"]{border-color:var(--dsw-alias-state-error-primary);box-shadow:inset 0 0 0 1px var(--dsw-alias-state-error-primary)}
 .ots-clip-offline-badge
+.ots-clip-waveform{height:100%;inset:0;object-fit:cover;opacity:0;pointer-events:none;position:absolute;transition:opacity .12s ease;width:100%;z-index:0}
+.ots-clip-waveform[data-loaded="true"]{opacity:.30}
+.ots-media-waveform{bottom:0;height:24px;left:0;object-fit:cover;opacity:0;pointer-events:none;position:absolute;right:0;transition:opacity .12s ease;width:100%;z-index:1}
+.ots-media-waveform[data-loaded="true"]{opacity:.40}
 .ots-clip-group-badge{border-radius:2px;color:var(--dsw-alias-label-primary);flex:0 0 auto;font-size:7.5px;font-weight:700;line-height:11px;margin:0 2px 0 4px;padding:0 3px;pointer-events:none}
 .ots-clip[data-grouped="true"]{border-width:1.5px}
 .ots-group-actions{display:flex;gap:4px;margin-top:2px}
@@ -3939,6 +3947,23 @@ window.__ModuleLoader__.load({
 				return h('img', { className: 'ots-lottie-thumb', src: dataUrl, alt: '', draggable: false });
 			}
 			return h('span', { className: 'ots-lottie-fallback', title: t('lottie.loading') }, t('lottie.loading'));
+		}
+
+		function WaveformStrip(props) {
+			const { mediaId, className } = props;
+			const [failed, setFailed] = React.useState(false);
+			const [loaded, setLoaded] = React.useState(false);
+			if (!mediaId || failed) return null;
+			return h('img', {
+				className,
+				src: mediaWaveformUrl(mediaId),
+				alt: '',
+				'aria-hidden': 'true',
+				draggable: false,
+				'data-loaded': loaded ? 'true' : 'false',
+				onLoad: () => setLoaded(true),
+				onError: () => setFailed(true),
+			});
 		}
 
 		function MediaThumb(props) {
@@ -5830,6 +5855,9 @@ window.__ModuleLoader__.load({
 										'div',
 										{ className: 'ots-media-thumb' },
 										h(MediaThumb, { media: item, t }),
+										item.kind === 'audio' || (item.kind === 'video' && item.hasAudio === true)
+											? h(WaveformStrip, { mediaId: item.id, className: 'ots-media-waveform' })
+											: null,
 										item.hasProxy === true || proxyKnownIds.has(item.id)
 											? h('span', { className: 'ots-proxy-chip', title: t('proxy.badgeTitle') }, t('proxy.badge'))
 											: null,
@@ -8658,6 +8686,10 @@ window.__ModuleLoader__.load({
 				);
 				const clipGroup = groupOfClip(project, clip.id);
 				const groupColor = clipGroup ? groupColorOf(clipGroup) : null;
+				const waveformMediaId =
+					clipMedia && (clip.type === 'audio' || (clip.type === 'video' && clipMedia.hasAudio === true))
+						? clipMedia.id
+						: null;
 				return h(
 					'div',
 					{
@@ -8684,6 +8716,9 @@ window.__ModuleLoader__.load({
 							}
 						},
 					},
+					waveformMediaId
+						? h(WaveformStrip, { mediaId: waveformMediaId, className: 'ots-clip-waveform' })
+						: null,
 					clipGroup
 						? h(
 								'span',
