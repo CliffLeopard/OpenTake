@@ -41,10 +41,12 @@ each platform.
 
 ## Current limits
 
-- Media import/probe/list, direct video preview, thumbnails and a basic
-  video/image/text/Lottie GPU composite work. Streaming playback,
-  proxies/sprites, export, transcription/search/generation, motion documents
-  and account/update surfaces still need their Rust command bridges.
+- Media import/probe/list, direct video preview, thumbnails, video/image/text/
+  Lottie GPU composite, and H.264/H.265/ProRes export with a linear audio
+  mixdown work. Streaming playback,
+  proxies/sprites, export progress/cancel, transcription/search/generation,
+  motion documents and account/update surfaces still need their Rust command
+  bridges.
 - The Tauri file dialogs are stubbed to `/tmp/opentake-route-b/demo.opentake`;
   native DSH dialogs are a later milestone.
 - The iframe is a stepping stone; a native DSH React mount is the target.

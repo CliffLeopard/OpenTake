@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v9.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v11.node');
 }
 
 function loadAddon() {
@@ -260,6 +260,20 @@ export function apply(ctx) {
         const maxSize = typeof args.maxSize === 'number' ? args.maxSize : undefined;
         return JSON.parse(state.engine.compositeFrame(frame, maxSize));
       }
+      case 'export_video': {
+        const req = args.req !== null && typeof args.req === 'object' ? args.req : {};
+        const outPath = typeof req.outPath === 'string' ? req.outPath : '';
+        if (outPath.length === 0) throw new Error('export_video requires req.outPath');
+        return JSON.parse(
+          state.engine.exportVideo(
+            outPath,
+            typeof req.codec === 'string' ? req.codec : 'h264',
+            typeof req.quality === 'string' ? req.quality : '1080p',
+          ),
+        );
+      }
+      case 'cancel_export':
+        return null;
       case 'get_waveform':
         return state.engine.waveform(typeof args.mediaRef === 'string' ? args.mediaRef : '');
       case 'preload_media':
@@ -464,6 +478,27 @@ export function apply(ctx) {
     async (args) => {
       const samples = ensureEngine().waveform(args.mediaRef);
       return { text: JSON.stringify(samples), data: { samples } };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_export_video',
+    'Render every timeline frame and encode it to an H.264/H.265/ProRes file (video only for now).',
+    {
+      type: 'object',
+      properties: {
+        outPath: { type: 'string' },
+        codec: { type: 'string', enum: ['h264', 'h265', 'prores', 'prores4444'] },
+        quality: { type: 'string', enum: ['720p', '1080p', '4k'] },
+      },
+      required: ['outPath'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(
+        ensureEngine().exportVideo(args.outPath, args.codec ?? 'h264', args.quality ?? '1080p'),
+      );
+      return { text: JSON.stringify(value), data: value };
     },
   );
 

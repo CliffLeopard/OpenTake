@@ -23,6 +23,8 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use opentake_domain::{ClipType, MediaManifestEntry, MediaSource};
+use opentake_media::encode::{mix_clips, ClipAudio, MIX_SAMPLE_RATE};
+use opentake_media::decode::pcm::{PcmBuffer, PcmFormat, PcmSpec};
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|error| Error::from_reason(error.to_string()))
@@ -300,7 +302,11 @@ impl TextureResolver for BasicResolver<'_> {
     }
 }
 
-fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Option<u32>) -> std::result::Result<serde_json::Value, String> {
+fn composite_frame_decoded(
+    core: &opentake_core::AppCore,
+    frame: i32,
+    render_size: RenderSize,
+) -> std::result::Result<DecodedFrame, String> {
     let snapshot = core.get_timeline();
     let timeline = &snapshot.timeline;
     let manifest = core.media();
@@ -321,14 +327,6 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
             media.insert(entry.id.clone(), (path, entry.kind == ClipType::Image));
         }
     }
-    let longest = max_size.unwrap_or(960).max(2);
-    let scale = (longest as f64 / timeline.width.max(1) as f64)
-        .min(longest as f64 / timeline.height.max(1) as f64)
-        .min(1.0);
-    let render_size = RenderSize::new(
-        ((timeline.width as f64 * scale).round() as u32).max(2),
-        ((timeline.height as f64 * scale).round() as u32).max(2),
-    );
     let mut text = HashMap::new();
     for track in &timeline.tracks {
         for clip in &track.clips {
@@ -370,9 +368,22 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
         timeline_fps: timeline.fps,
         cache: HashMap::new(),
     };
-    let rendered = compositor
+    compositor
         .render_to_rgba(&device.device, &device.queue, render_size, &frame_plan, &mut resolver)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())
+}
+
+fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Option<u32>) -> std::result::Result<serde_json::Value, String> {
+    let timeline = core.get_timeline().timeline;
+    let longest = max_size.unwrap_or(960).max(2);
+    let scale = (longest as f64 / timeline.width.max(1) as f64)
+        .min(longest as f64 / timeline.height.max(1) as f64)
+        .min(1.0);
+    let render_size = RenderSize::new(
+        ((timeline.width as f64 * scale).round() as u32).max(2),
+        ((timeline.height as f64 * scale).round() as u32).max(2),
+    );
+    let rendered = composite_frame_decoded(core, frame, render_size)?;
     let image = image::RgbaImage::from_raw(rendered.width, rendered.height, rendered.rgba)
         .ok_or_else(|| "composite produced an invalid RGBA buffer".to_string())?;
     let mut png = std::io::Cursor::new(Vec::new());
@@ -444,6 +455,92 @@ impl Engine {
         let value = composite_frame_json(&self.core, frame, max_size)
             .map_err(|message| Error::from_reason(message))?;
         json(&value)
+    }
+
+    /// Render every timeline frame and encode it to `out_path` (H.264/H.265/
+    /// ProRes), returning the UI's ExportSummary JSON. Audio is not mixed yet.
+    #[napi]
+    pub fn export_video(&self, out_path: String, codec: String, quality: String) -> Result<String> {
+        let timeline = self.core.get_timeline().timeline;
+        let resolution = match quality.as_str() {
+            "720p" => opentake_render::ExportResolution::R720p,
+            "4k" => opentake_render::ExportResolution::R4k,
+            _ => opentake_render::ExportResolution::R1080p,
+        };
+        let render_size = opentake_render::export_render_size((timeline.width, timeline.height), resolution);
+        let video_codec = match codec.as_str() {
+            "h265" => opentake_media::VideoCodec::H265,
+            "prores" => opentake_media::VideoCodec::ProRes422,
+            "prores4444" => opentake_media::VideoCodec::ProRes4444,
+            _ => opentake_media::VideoCodec::H264,
+        };
+        let preset = opentake_media::ExportPreset::new(video_codec, opentake_media::ExportResolution::P1080);
+        let out = std::path::PathBuf::from(&out_path);
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
+        }
+        let mut encoder = opentake_media::VideoEncoder::new(&out, render_size.width, render_size.height, timeline.fps, &preset)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let frame_count = timeline.total_frames();
+        for frame in 0..frame_count {
+            let decoded = composite_frame_decoded(&self.core, frame, render_size)
+                .map_err(|message| Error::from_reason(message))?;
+            let rgba = opentake_media::RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
+            encoder.push_frame(&rgba).map_err(|error| Error::from_reason(error.to_string()))?;
+        }
+        // Linear audio mixdown: decode each audible timeline clip into the shared
+        // mono mix rate and place it at its frame offset. Fades/ducking envelopes
+        // are not applied yet (documented limitation).
+        let mut clips: Vec<ClipAudio> = Vec::new();
+        let media_entries = self.core.media().entries;
+        let project_dir = self.core.project_dir();
+        for track in &timeline.tracks {
+            if track.muted {
+                continue;
+            }
+            for clip in &track.clips {
+                if clip.media_type != ClipType::Audio {
+                    continue;
+                }
+                let Some(entry) = media_entries.iter().find(|entry| entry.id == clip.media_ref) else {
+                    continue;
+                };
+                let Some(path) = resolve_media_path(entry, project_dir.as_deref()) else {
+                    continue;
+                };
+                let start_secs = clip.trim_start_frame.max(0) as f64 / f64::from(timeline.fps.max(1));
+                let end_secs = start_secs + clip.duration_frames.max(1) as f64 / f64::from(timeline.fps.max(1));
+                let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
+                let Ok(pcm) = opentake_media::extract_pcm(&path, &spec, Some((start_secs, end_secs))) else {
+                    continue;
+                };
+                if pcm.samples_f32.is_empty() {
+                    continue;
+                }
+                let start_sample = ((clip.start_frame.max(0) as f64 / f64::from(timeline.fps.max(1))) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+                clips.push(ClipAudio::with_static_gain(start_sample, pcm.samples_f32, clip.volume as f32));
+            }
+        }
+        let mixed = mix_clips(&clips).map_err(|error| Error::from_reason(error))?;
+        let has_audio = !mixed.is_empty();
+        if has_audio {
+            encoder
+                .push_audio(PcmBuffer {
+                    spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 },
+                    samples_f32: mixed,
+                })
+                .map_err(|error| Error::from_reason(error.to_string()))?;
+        }
+        encoder.finish().map_err(|error| Error::from_reason(error.to_string()))?;
+        let summary = serde_json::json!({
+            "outPath": out_path,
+            "width": render_size.width,
+            "height": render_size.height,
+            "fps": timeline.fps,
+            "frameCount": frame_count,
+            "hasAudio": has_audio,
+        });
+        json(&summary)
     }
 
     /// Current media catalog in the React UI's `MediaList` JSON shape.

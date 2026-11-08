@@ -30,10 +30,14 @@ by the DSH Host through N-API.
   video+linked-audio clips, inspector loads, and the direct video preview plays.
 - Poster thumbnails generated through `opentake-media` decode; the media card
   displays the real frame. Waveform buckets are bridged via `get_waveform`.
-- Basic `composite_frame` using `opentake-render` wgpu compositor: builds the
-  render plan, decodes video/image layers and rasterizes text through a Route B
+- `composite_frame` using `opentake-render` wgpu compositor: builds the render
+  plan, decodes video/image layers, rasterizes text and Lottie through a Route B
   resolver, returns a PNG data URL. Verified with a text overlay over video and
-  a simple shape Lottie animation. Streaming playback remains.
+  a simple shape Lottie animation.
+- `export_video`: renders every timeline frame, encodes H.264/H.265/ProRes via
+  `opentake-media` VideoEncoder, and muxes a linear mono audio mixdown. Verified
+  320x180 2 s source → 1280x720 H.264 + AAC, 2.0 s. Progress/cancel, fades and
+  ducking envelopes remain.
 - Node smoke test: `node crates/opentake-node/test/smoke.mjs`.
 
 ## Known gaps
@@ -50,9 +54,9 @@ by the DSH Host through N-API.
 
 1. Engine addon + project/timeline + UI shell (done).
 2. Media import/probe/list + timeline insert + direct preview (done).
-3. Poster thumbnails, waveform buckets and basic video/image GPU composite
-   (done); text/Lottie layers, streaming playback, proxies and sprite
-   filmstrips remain.
+3. Poster thumbnails, waveform buckets, GPU composite (video/image/text/Lottie)
+   and basic export with linear audio (done); streaming playback, export
+   progress/cancel, proxies and sprite filmstrips remain.
 4. Export pipeline.
 5. AI/transcription/search/generation and Motion.
 6. Packaging, signing, Windows/Linux, full parity verification.
