@@ -16,6 +16,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { templateToDocument, validateTemplateParams } from './lib/motion-templates.js';
+import { ProviderError, createProviderClient } from './lib/providers.js';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
@@ -323,90 +324,68 @@ export function apply(ctx) {
     return storageUsage();
   }
 
-  async function generateVideo(prompt) {
-    if (state.video.url === null) throw new Error('video generation provider is not configured');
-    const response = await fetch(state.video.url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(state.video.key ? { authorization: `Key ${state.video.key}` } : {}),
-      },
-      body: JSON.stringify({ prompt, model: state.video.model }),
-    });
-    const body = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(body?.error?.message ?? body?.detail ?? `video generation failed (${response.status})`);
-    let bytes;
-    if (typeof body?.video_url === 'string' || typeof body?.url === 'string') {
-      const videoUrl = body.video_url ?? body.url;
-      const videoResponse = await fetch(videoUrl);
-      if (!videoResponse.ok) throw new Error(`generated video download failed (${videoResponse.status})`);
-      bytes = Buffer.from(await videoResponse.arrayBuffer());
-    } else if (typeof body?.video_b64 === 'string' || typeof body?.b64_json === 'string') {
-      bytes = Buffer.from(body.video_b64 ?? body.b64_json, 'base64');
-    } else {
-      throw new Error('video generation returned no video_url/video_b64');
+  function providerClient(kind, config) {
+    if (typeof config.url !== 'string' || config.url.length === 0) {
+      throw new Error(`${kind} provider is not configured`);
     }
-    if (bytes.length === 0) throw new Error('video generation returned empty bytes');
+    return createProviderClient({
+      kind,
+      config: {
+        ...config,
+        kind,
+        configured: true,
+      },
+    });
+  }
+
+  async function providerBytes(client, result, extension) {
+    let bytes = result.bytes === null || result.bytes === undefined ? null : Buffer.from(result.bytes);
+    if (bytes === null && typeof result.url === 'string') {
+      const downloaded = await client.download(result.url);
+      bytes = Buffer.from(downloaded.bytes);
+    }
+    if (bytes === null || bytes.length === 0) throw new Error('provider returned empty media');
     const directory = path.join(CACHE_ROOT, 'generated');
     await mkdir(directory, { recursive: true });
-    const file = path.join(directory, `${Date.now()}-${randomUUID()}.mp4`);
+    const file = path.join(directory, `${Date.now()}-${randomUUID()}.${extension}`);
     await writeFile(file, bytes);
-    return { path: file, media: importMedia([file]) };
+    return { file, bytes };
+  }
+
+  async function generateVideo(prompt) {
+    try {
+      const client = providerClient('video', state.video);
+      const result = await client.generateVideo({ prompt });
+      const { file } = await providerBytes(client, result, 'mp4');
+      return { path: file, media: importMedia([file]) };
+    } catch (error) {
+      if (error instanceof ProviderError) throw new Error(error.message);
+      throw error;
+    }
   }
 
   async function generateSpeech(text, voice) {
-    if (state.speech.url === null) throw new Error('speech provider is not configured');
-    const response = await fetch(state.speech.url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(state.speech.key ? { authorization: `Bearer ${state.speech.key}` } : {}),
-      },
-      body: JSON.stringify({ model: state.speech.model, input: text, voice: voice ?? 'alloy', response_format: 'mp3' }),
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => null);
-      throw new Error(body?.error?.message ?? `speech generation failed (${response.status})`);
+    try {
+      const client = providerClient('speech', state.speech);
+      const result = await client.generateSpeech({ text, voice: voice ?? 'alloy', format: 'mp3' });
+      const { file } = await providerBytes(client, result, 'mp3');
+      return { path: file, media: importMedia([file]) };
+    } catch (error) {
+      if (error instanceof ProviderError) throw new Error(error.message);
+      throw error;
     }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length === 0) throw new Error('speech generation returned empty audio');
-    const directory = path.join(CACHE_ROOT, 'generated');
-    await mkdir(directory, { recursive: true });
-    const file = path.join(directory, `${Date.now()}-${randomUUID()}.mp3`);
-    await writeFile(file, bytes);
-    return { path: file, media: importMedia([file]) };
   }
 
   async function generateImage(prompt, size) {
-    if (state.generation.url === null) throw new Error('image generation provider is not configured');
-    const response = await fetch(state.generation.url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(state.generation.key ? { authorization: `Bearer ${state.generation.key}` } : {}),
-      },
-      body: JSON.stringify({ model: state.generation.model, prompt, size: size ?? '1024x1024', n: 1, response_format: 'b64_json' }),
-    });
-    const body = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(body?.error?.message ?? `image generation failed (${response.status})`);
-    const item = Array.isArray(body?.data) ? body.data[0] : null;
-    if (!item) throw new Error('image generation returned no data');
-    let bytes;
-    if (typeof item.b64_json === 'string') {
-      bytes = Buffer.from(item.b64_json, 'base64');
-    } else if (typeof item.url === 'string') {
-      const imageResponse = await fetch(item.url);
-      if (!imageResponse.ok) throw new Error(`generated image download failed (${imageResponse.status})`);
-      bytes = Buffer.from(await imageResponse.arrayBuffer());
-    } else {
-      throw new Error('image generation returned no b64_json/url');
+    try {
+      const client = providerClient('image', state.generation);
+      const result = await client.generateImage({ prompt, size: size ?? '1024x1024', responseFormat: 'b64_json' });
+      const { file } = await providerBytes(client, result, 'png');
+      return { path: file, media: importMedia([file]) };
+    } catch (error) {
+      if (error instanceof ProviderError) throw new Error(error.message);
+      throw error;
     }
-    const directory = path.join(CACHE_ROOT, 'generated');
-    await mkdir(directory, { recursive: true });
-    const file = path.join(directory, `${Date.now()}-${randomUUID()}.png`);
-    await writeFile(file, bytes);
-    const catalog = importMedia([file]);
-    return { path: file, media: catalog };
   }
 
   function textSearch(query) {
