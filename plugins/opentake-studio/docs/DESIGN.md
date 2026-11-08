@@ -299,3 +299,98 @@ type StateResponse = {
 2. Client 编辑器 UI（editor-ui）。
 3. 导出（media-dev）+ 集成测试。
 4. 安装、E2E、截图、文档。
+
+## 11. Phase 1 扩展契约（完整复刻路线 A）
+
+路线 A（纯 TS/JS）下，下一阶段扩展以下数据与行为。实现顺序：model → export → UI → Host 路由/工具 → 测试。
+
+### 11.1 Project/Clip 新字段
+
+```js
+Project.markers = [{ id, frame, label, color }]        // 时间线标记，默认 []
+Project.transitions = [Transition]                      // 相邻片段转场，默认 []
+
+Clip.speed = 1                 // 0.25..4；video/audio 有效，image/text 必须 1
+Clip.fadeInFrames = 0          // 视觉 fade from black / 音频 fade in，0..durationFrames
+Clip.fadeOutFrames = 0
+Clip.keyframes = {             // 每个属性独立，默认 {}；frame 为 clip 内相对帧，升序不重复
+  volume: Keyframe[], opacity: Keyframe[],
+  x: Keyframe[], y: Keyframe[], width: Keyframe[], height: Keyframe[], rotation: Keyframe[],
+}
+Clip.effects = Effect[]        // 有序，默认 []
+
+Keyframe = { frame: number, value: number, easing: 'linear'|'ease-in'|'ease-out'|'ease-in-out' }
+Effect = {
+  id: string,
+  type: 'brightness'|'contrast'|'saturation'|'temperature'|'blur'|'sharpen'|'chromaKey'|'lut',
+  enabled: boolean,
+  params: object,              // 按 type 校验：
+  // brightness/contrast/saturation: { amount: 0..2, 默认 1 }
+  // temperature: { amount: -1..1, 默认 0 }
+  // blur: { radius: 0..30, 默认 0 }
+  // sharpen: { amount: 0..2, 默认 0 }
+  // chromaKey: { keyColor:'#rrggbb', similarity:0.01..0.5, blend:0..0.5 }
+  // lut: { file: string }      // 相对 <projectRoot>/luts/ 的 .cube 文件
+}
+
+Transition = {
+  id: string,
+  trackId: string,
+  fromClipId: string,
+  toClipId: string,
+  type: 'dissolve'|'fadeToBlack'|'wipeLeft'|'wipeRight',
+  durationFrames: number,      // >=1，且 <= 两侧片段时长
+}
+```
+
+- 速度语义：`durationFrames` 始终是**时间线时长**；源消耗 = `durationFrames * speed`。
+  设置 speed 时用 `durationFrames = round(durationFrames * oldSpeed / newSpeed)` 保持源区间不变；
+  校验 `trimStartFrame + durationFrames*speed <= media.durationFrames`。
+- 预览/导出时间映射：源时间 = `(trimStartFrame + (frame-startFrame)*speed) / fps`。
+- keyframe 相对 clip 起点；`evaluateKeyframes(list, frame, fallback)` 在 [0,durationFrames] 内插值，无 keyframe 时用属性静态值。
+- 同属性 keyframe 覆盖静态值；`set-clip-properties` 只改静态值，不改 keyframe。
+- 转场只允许同一 video track 上首尾相邻（`a.start+a.duration == b.start`）的两个非 text clip；
+  `durationFrames` 从 `fromClip` 末尾与 `toClip` 开头各取一半（四舍五入），总时长不超过两者较短者。
+- 标记不参与导出。
+
+### 11.2 新 model 操作
+
+- `set-speed { clipId, speed }`
+- `set-keyframes { clipId, property, keyframes }`（替换；空数组清除）
+- `add-effect { clipId, effect }`
+- `update-effect { clipId, effectId, patch }`
+- `remove-effect { clipId, effectId }`
+- `reorder-effects { clipId, effectIds }`
+- `set-fades { clipId, fadeInFrames?, fadeOutFrames? }`
+- `add-marker { marker }` / `update-marker { markerId, frame?, label?, color? }` / `remove-marker { markerId }`
+- `add-transition { transition }` / `update-transition { transitionId, type?, durationFrames? }` / `remove-transition { transitionId }`
+- `add-caption { clipId, trackId?, startFrame, durationFrames, segments, style? }`
+  - Caption 以 `type:'caption'` 的 clip 存储；`caption = { segments: [{ startFrame, durationFrames, text }], style: {fontSize,color,fontWeight,align,background?} }`
+  - segments 的帧相对 caption clip；覆盖整个 clip 时长，允许空档。
+- `update-caption { clipId, segments?, style? }`
+
+### 11.3 导出扩展（media-dev）
+
+- speed：视频 `setpts=(PTS-STARTPTS)/speed`；音频用 `atempo` 链（每级 0.5..2）。
+- fades：视频 `fade=t=in/out:st=...:d=...`；音频 `afade`。
+- keyframes：volume 用 `volume=eval=frame:'expr'`；opacity 用 `fade` 近似或 `colorchannelmixer` 表达式受限；x/y 用 overlay 的 `x/y` 表达式；width/height/rotation 的 keyframe 导出标记为不支持（文档化）。
+- effects：按 clip.effects 顺序生成 filter 链（eq、colorbalance、gblur、unsharp、chromakey、lut3d）；LUT 从 `<projectRoot>/luts/<file>` 读取。
+- 转场：`dissolve` 用两侧片段 alpha/fade 近似或 xfade（若实现）；`fadeToBlack` 用 fade。先实现 `fadeToBlack`，`dissolve` 待定。
+- 字幕：caption clip 按 segments 生成文本/PNG 叠加；SRT/VTT 导入导出走 Host 路由 `POST /captions/import`、`GET /captions/export.srt|.vtt`。
+
+### 11.4 UI 扩展（editor-ui）
+
+- 检查器：速度滑块（0.25–4）；fade in/out；keyframe 编辑（在播放头为 volume/opacity/x/y/width/height/rotation 添加/删除 keyframe，列表显示）；
+- 效果面板：添加/删除/启用/排序 brightness/contrast/saturation/temperature/blur/sharpen/chromaKey/lut；
+- 转场：在相邻片段边界添加/删除 dissolve/fadeToBlack/wipe，时长编辑；
+- 字幕面板：创建/编辑 caption segments、导入 SRT/VTT、导出 SRT/VTT；
+- 时间线：标记添加/删除/跳转；多选、复制/粘贴、ripple delete；吸附；
+- Agent 工具同步暴露上述操作（Host）。
+
+### 11.5 验收
+
+- model 单测覆盖新字段/操作/不变量；
+- export 测试覆盖 speed/fades/effects/（可实现的）keyframe/transition；
+- Host 测试覆盖新路由/工具；
+- UI 截图 + 交互验证；
+- 文档更新。
