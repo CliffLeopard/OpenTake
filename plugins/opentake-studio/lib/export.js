@@ -26,15 +26,34 @@
  *     clip) or the Host's per-segment render `<clipId>-seg-<n>.png` is used
  *     when present, otherwise each `caption.segments[]` entry becomes a timed
  *     drawtext overlay.
- *   - transitions: `fadeToBlack` is a true dip-to-black via fades; `dissolve`
- *     and `wipeLeft`/`wipeRight` are approximated with the same outgoing fade
- *     out / incoming fade in because clips do not overlap on the timeline.
- *     True crossfades/wipes are not implemented.
+ *   - transitions: `fadeToBlack` is a true dip-to-black via fades. `dissolve`,
+ *     `wipeLeft` and `wipeRight` use a true overlapping `xfade` when both clips
+ *     are opaque, full-frame, static and same-track butt-joined: the outgoing
+ *     clip is extended past its end, the incoming clip is extended before its
+ *     start, and both overlap by the transition window. When one side has no
+ *     source headroom the window is redistributed to the other side (a true
+ *     one-sided crossfade). If either clip is transformed/rotated/keyed or has
+ *     visual keyframes, the pair degrades to the Phase 1 fade approximation.
+ *     `xfade` works on opaque yuv frames, so transparency is a fallback
+ *     condition. Chained transitions (a clip with transitions on both sides)
+ *     also fall back to fades. Audio is crossfaded with `afade` ramps over the
+ *     same window, so `amix` produces a proper audio crossfade.
+ *   - rotation: static `transform.rotation` is applied with `rotate` on an
+ *     expanded transparent canvas and then fitted back inside the transform
+ *     box (letterboxed, centered). Rotation keyframes are NOT supported in
+ *     export; the static rotation is used. drawtext-only text/caption clips
+ *     cannot be rotated (PNG-rendered overlays can).
+ *   - export options: `buildExportArgs`/`runExport` accept
+ *     `{ codec?: 'h264'|'h265', width?, height?, fps?, crf?, bitrate? }`.
+ *     Output resolution is scaled from the normalized transforms; fps is an
+ *     output `-r` override while timeline timing stays on project fps. Codec
+ *     defaults to H.264 (libx264); libx265/videotoolbox are used when present.
  *
  * Text rendering still depends on a system font (`drawtext` needs an ffmpeg
  * build with libfreetype).
  */
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { rm, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -58,6 +77,12 @@ const DEFAULT_TEXT_TRANSFORM = Object.freeze({ x: 0.1, y: 0.1, width: 0.8, heigh
 const DEFAULT_CAPTION_TRANSFORM = Object.freeze({ x: 0.05, y: 0.8, width: 0.9, height: 0.15, rotation: 0 });
 
 const TRANSITION_TYPES = new Set(['fadeToBlack', 'dissolve', 'wipeLeft', 'wipeRight']);
+const TRUE_TRANSITION_TYPES = new Set(['dissolve', 'wipeLeft', 'wipeRight']);
+const XFADE_NAMES = Object.freeze({
+  dissolve: 'dissolve',
+  wipeLeft: 'wipeleft',
+  wipeRight: 'wiperight',
+});
 
 const REGULAR_FONTS = [
   '/System/Library/Fonts/Helvetica.ttc',
@@ -141,9 +166,6 @@ function formatScalar(value) {
   return fixed.length === 0 || fixed === '-0' ? '0' : fixed;
 }
 
-function formatNumber(value) {
-  return formatScalar(value);
-}
 
 function clamp01(value) {
   const number = Number(value);
@@ -205,20 +227,6 @@ function findMedia(project, mediaId) {
   if (typeof mediaId !== 'string') return null;
   const media = Array.isArray(project?.media) ? project.media : [];
   return media.find((entry) => entry !== null && typeof entry === 'object' && entry.id === mediaId) ?? null;
-}
-
-function findClipEntry(project, clipId) {
-  if (typeof clipId !== 'string' || clipId.length === 0) return null;
-  const tracks = Array.isArray(project?.tracks) ? project.tracks : [];
-  for (const track of tracks) {
-    const clips = Array.isArray(track?.clips) ? track.clips : [];
-    for (const clip of clips) {
-      if (clip !== null && typeof clip === 'object' && clip.id === clipId) {
-        return { clip, track };
-      }
-    }
-  }
-  return null;
 }
 
 function normalizeTransform(transform) {
@@ -287,38 +295,211 @@ function atempoChain(speed) {
 }
 
 /**
- * Extra fade frames contributed by project.transitions. All four transition
- * types are approximated with an outgoing fade-out and incoming fade-in; the
- * `fadeToBlack` dip is exact, dissolve/wipe are documented approximations.
+ * Add a fade contribution for a clip (used by `fadeToBlack` and by any
+ * transition that cannot be rendered as a true overlap).
  */
-function collectTransitionFades(project) {
-  const additions = new Map();
+function addTransitionFade(additions, clipId, key, frames) {
+  const entry = additions.get(clipId) ?? { inFrames: 0, outFrames: 0 };
+  entry[key] = Math.max(entry[key], frames);
+  additions.set(clipId, entry);
+}
+
+function transformIsFullFrame(transform) {
+  const normalized = normalizeTransform(transform);
+  return (
+    Math.abs(normalized.x) < 1e-6 &&
+    Math.abs(normalized.y) < 1e-6 &&
+    Math.abs(normalized.width - 1) < 1e-6 &&
+    Math.abs(normalized.height - 1) < 1e-6
+  );
+}
+
+function clipHasVisualKeyframes(clip) {
+  const keyframes = clip?.keyframes;
+  if (keyframes === null || typeof keyframes !== 'object') return false;
+  // Volume keyframes do not change the rendered layer, so they do not block a
+  // true visual transition.
+  return ['opacity', 'x', 'y', 'width', 'height', 'rotation']
+    .some((property) => Array.isArray(keyframes[property]) && keyframes[property].length > 0);
+}
+
+function clipEffectsProduceAlpha(clip) {
+  const effects = Array.isArray(clip?.effects) ? clip.effects : [];
+  return effects.some(
+    (effect) => effect !== null && typeof effect === 'object' &&
+      effect.enabled !== false && effect.type === 'chromaKey',
+  );
+}
+
+/**
+ * True overlap transitions need two opaque, full-frame, static layers so that
+ * `xfade` (which works on yuv frames without alpha) cannot lose transparency or
+ * have to reconcile different transform boxes.
+ */
+function canUseTrueTransition(fromEntry, toEntry) {
+  for (const entry of [fromEntry, toEntry]) {
+    const clip = entry.clip;
+    if (!['video', 'image'].includes(clip.type)) return false;
+    const rotation = Number(clip.transform?.rotation) || 0;
+    if (Math.abs(rotation) > 1e-6) return false;
+    if (!transformIsFullFrame(clip.transform)) return false;
+    if (clamp01(clip.opacity ?? 1) < 1) return false;
+    if (clipHasVisualKeyframes(clip)) return false;
+    if (clipEffectsProduceAlpha(clip)) return false;
+  }
+  return true;
+}
+
+/**
+ * Decide how every project transition is rendered.
+ *
+ * Returns:
+ *   truePlans: Map fromClipId -> { from, to, sideA, sideB, xfade, transition }
+ *   fadeAdditions: Map clipId -> { inFrames, outFrames } (fallback/fadeToBlack)
+ */
+function planTransitions(project, fps) {
+  const truePlans = new Map();
+  const fadeAdditions = new Map();
   const transitions = Array.isArray(project?.transitions) ? project.transitions : [];
+
+  const entries = new Map();
+  for (const track of Array.isArray(project?.tracks) ? project.tracks : []) {
+    for (const clip of Array.isArray(track?.clips) ? track.clips : []) {
+      if (clip !== null && typeof clip === 'object' && typeof clip.id === 'string') {
+        entries.set(clip.id, { clip, track });
+      }
+    }
+  }
+
+  // First pass: validate transitions and count how many touch each clip.
+  const validTransitions = [];
+  const touchCounts = new Map();
   for (const transition of transitions) {
     if (transition === null || typeof transition !== 'object') continue;
     if (!TRANSITION_TYPES.has(transition.type)) continue;
     const duration = Number(transition.durationFrames);
     if (!Number.isFinite(duration) || duration < 1) continue;
-    const from = findClipEntry(project, transition.fromClipId);
-    const to = findClipEntry(project, transition.toClipId);
-    if (from === null || to === null) continue;
-    // Transitions only connect non-text visual clips (DESIGN §11.1).
+    const from = entries.get(transition.fromClipId);
+    const to = entries.get(transition.toClipId);
+    if (from === undefined || to === undefined) continue;
     if (!['video', 'image'].includes(from.clip.type)) continue;
     if (!['video', 'image'].includes(to.clip.type)) continue;
-    const half = Math.max(1, Math.round(duration / 2));
-    const fromFrames = Math.min(half, clipDurationFrames(from.clip));
-    const toFrames = Math.min(half, clipDurationFrames(to.clip));
-    const fromEntry = additions.get(from.clip.id) ?? { inFrames: 0, outFrames: 0 };
-    fromEntry.outFrames = Math.max(fromEntry.outFrames, fromFrames);
-    additions.set(from.clip.id, fromEntry);
-    const toEntry = additions.get(to.clip.id) ?? { inFrames: 0, outFrames: 0 };
-    toEntry.inFrames = Math.max(toEntry.inFrames, toFrames);
-    additions.set(to.clip.id, toEntry);
+    if (from.track.id !== to.track.id || from.track.type !== 'video') continue;
+    if (from.clip.startFrame + from.clip.durationFrames !== to.clip.startFrame) continue;
+    validTransitions.push({ transition, from, to, duration });
+    touchCounts.set(from.clip.id, (touchCounts.get(from.clip.id) ?? 0) + 1);
+    touchCounts.set(to.clip.id, (touchCounts.get(to.clip.id) ?? 0) + 1);
   }
-  return additions;
+
+  for (const item of validTransitions) {
+    const { transition, from, to, duration } = item;
+    const fallbackHalf = Math.max(1, Math.round(duration / 2));
+
+    if (TRUE_TRANSITION_TYPES.has(transition.type)) {
+      const plan = buildTrueTransitionPlan(project, item, touchCounts, fps);
+      if (plan !== null) {
+        truePlans.set(from.clip.id, plan);
+        continue;
+      }
+    }
+
+    addTransitionFade(fadeAdditions, from.clip.id, 'outFrames', Math.min(fallbackHalf, clipDurationFrames(from.clip)));
+    addTransitionFade(fadeAdditions, to.clip.id, 'inFrames', Math.min(fallbackHalf, clipDurationFrames(to.clip)));
+  }
+
+  return { truePlans, fadeAdditions };
 }
 
-/** Effective fade frames for a clip (own fades + transition contribution). */
+/**
+ * Compute the overlap window for a true transition, clamping the source
+ * extension to the headroom actually present in each media file. Returns null
+ * when the pair must fall back to fades.
+ */
+function buildTrueTransitionPlan(project, item, touchCounts, fps) {
+  const { transition, from, to, duration } = item;
+
+  // A clip in two transitions would need a chained xfade graph; fall back.
+  if ((touchCounts.get(from.clip.id) ?? 0) !== 1) return null;
+  if ((touchCounts.get(to.clip.id) ?? 0) !== 1) return null;
+  if (from.track.hidden === true) return null;
+  if (!canUseTrueTransition(from, to)) return null;
+  if (duration < 2) return null;
+
+  const mediaA = findMedia(project, from.clip.mediaId);
+  const mediaB = findMedia(project, to.clip.mediaId);
+  if (mediaA === null || mediaB === null) return null;
+
+  const speedA = speedForClip(from.clip);
+  const speedB = speedForClip(to.clip);
+  const durationA = clipDurationFrames(from.clip);
+  const durationB = clipDurationFrames(to.clip);
+  const trimA = Math.max(0, Math.round(Number(from.clip.trimStartFrame) || 0));
+  const trimB = Math.max(0, Math.round(Number(to.clip.trimStartFrame) || 0));
+  const startB = Math.max(0, Math.round(Number(to.clip.startFrame) || 0));
+
+  // Source headroom beyond the outgoing clip's source window and before the
+  // incoming clip's source start (both in source frames).
+  const sourceFramesA = Number(mediaA.durationFrames);
+  const sourceFramesB = Number(mediaB.durationFrames);
+  const availableA = Number.isFinite(sourceFramesA)
+    ? Math.floor(Math.max(0, sourceFramesA - (trimA + Math.round(durationA * speedA))) / speedA)
+    : 0;
+  const availableB = Number.isFinite(sourceFramesB)
+    ? Math.floor(Math.max(0, trimB) / speedB)
+    : 0;
+
+  const requestedA = Math.max(1, Math.floor(duration / 2));
+  const requestedB = Math.max(1, duration - requestedA);
+  // Keep the overlap inside both clips and inside the timeline. A side may be
+  // clamped to 0 when the source has no headroom (e.g. trimStart 0 or the
+  // media ends exactly at the cut).
+  let sideA = Math.max(0, Math.min(requestedA, availableA, durationB));
+  let sideB = Math.max(0, Math.min(requestedB, availableB, durationA, startB));
+
+  // If one side lost frames to clamping, grow the other side so the rendered
+  // transition still uses as much of the requested duration as possible.
+  let deficit = duration - (sideA + sideB);
+  if (deficit > 0) {
+    const growA = Math.min(
+      deficit,
+      Math.max(0, availableA - sideA),
+      Math.max(0, durationB - sideA),
+    );
+    sideA += growA;
+    deficit -= growA;
+  }
+  if (deficit > 0) {
+    const growB = Math.min(
+      deficit,
+      Math.max(0, availableB - sideB),
+      Math.max(0, durationA - sideB),
+      Math.max(0, startB - sideB),
+    );
+    sideB += growB;
+    deficit -= growB;
+  }
+  if (deficit > 0) {
+    const growA = Math.min(
+      deficit,
+      Math.max(0, availableA - sideA),
+      Math.max(0, durationB - sideA),
+    );
+    sideA += growA;
+  }
+
+  if (sideA + sideB < 1) return null;
+
+  return {
+    transition,
+    from,
+    to,
+    sideA,
+    sideB,
+    xfade: XFADE_NAMES[transition.type],
+  };
+}
+
+/** Effective fade frames for a clip (own fades + transition fallback). */
 function fadesForClip(clip, transitionFades) {
   const duration = clipDurationFrames(clip);
   let inFrames = Math.max(0, Math.round(Number(clip?.fadeInFrames) || 0));
@@ -544,6 +725,176 @@ function buildEffectFilters(effects, projectRoot) {
 }
 
 // ---------------------------------------------------------------------------
+// Export presets/options, encoder detection and rotation geometry
+// ---------------------------------------------------------------------------
+
+let encoderCache = null;
+
+/**
+ * Detect available video encoders once per ffmpeg binary. Kept out of the pure
+ * core where possible: results are cached and only re-read when the resolved
+ * ffmpeg path changes (tests manipulate PATH/OPENTAKE_STUDIO_FFMPEG).
+ */
+function detectEncoders() {
+  const tools = resolveTools();
+  if (encoderCache !== null && encoderCache.ffmpeg === tools.ffmpeg) return encoderCache;
+
+  const names = new Set();
+  if (tools.ffmpeg !== null) {
+    try {
+      const stdout = execFileSync(tools.ffmpeg, ['-hide_banner', '-encoders'], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      for (const line of String(stdout).split('\n')) {
+        const match = /^\s*V[A-Za-z.]*\s+(\S+)/.exec(line);
+        if (match !== null) names.add(match[1]);
+      }
+    } catch {
+      // Encoder probing is best-effort; unavailable tools are reported later.
+    }
+  }
+
+  encoderCache = {
+    ffmpeg: tools.ffmpeg,
+    h264: names.has('libx264') ? 'libx264' : names.has('h264_videotoolbox') ? 'h264_videotoolbox' : null,
+    h265: names.has('libx265') ? 'libx265' : names.has('hevc_videotoolbox') ? 'hevc_videotoolbox' : null,
+  };
+  return encoderCache;
+}
+
+function evenDimension(value, name) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 2) {
+    throw new ExportError(`Export ${name} must be a number >= 2`, 'invalid-input');
+  }
+  const rounded = Math.round(number);
+  return Math.max(2, rounded % 2 === 0 ? rounded : rounded + 1);
+}
+
+function validateExportFps(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 1 || number > 240) {
+    throw new ExportError('Export fps must be a number between 1 and 240', 'invalid-input');
+  }
+  return number;
+}
+
+function validateExportCrf(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 51) {
+    throw new ExportError('Export crf must be a number between 0 and 51', 'invalid-input');
+  }
+  return number;
+}
+
+function normalizeExportBitrate(value) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new ExportError('Export bitrate must be a positive number (kbps) or string like 5M', 'invalid-input');
+    }
+    return `${Math.round(value)}k`;
+  }
+  const text = String(value ?? '').trim();
+  if (!/^\d+(?:\.\d+)?[kKmM]?$/.test(text)) {
+    throw new ExportError('Export bitrate must look like 800k, 5M or a kbps number', 'invalid-input');
+  }
+  return text;
+}
+
+/**
+ * Normalize export settings; `null`/undefined fields fall back to project
+ * defaults so existing exports are byte-for-byte unchanged.
+ */
+function normalizeExportOptions(project, rawOptions) {
+  const options = rawOptions !== null && typeof rawOptions === 'object' ? rawOptions : {};
+  const projectFps = normalizeFps(project);
+  const projectWidth = normalizeDimension(project.width, DEFAULT_WIDTH);
+  const projectHeight = normalizeDimension(project.height, DEFAULT_HEIGHT);
+
+  const rawCodec = options.codec === undefined ? 'h264' : String(options.codec).toLowerCase();
+  let codec;
+  if (rawCodec === 'h264' || rawCodec === 'avc') codec = 'h264';
+  else if (rawCodec === 'h265' || rawCodec === 'hevc') codec = 'h265';
+  else {
+    throw new ExportError(
+      `Unsupported export codec: ${String(options.codec)} (expected h264 or h265)`,
+      'invalid-input',
+    );
+  }
+
+  return {
+    codec,
+    width: options.width === undefined ? projectWidth : evenDimension(options.width, 'width'),
+    height: options.height === undefined ? projectHeight : evenDimension(options.height, 'height'),
+    fps: options.fps === undefined ? projectFps : validateExportFps(options.fps),
+    fpsProvided: options.fps !== undefined,
+    crf: options.crf === undefined ? (codec === 'h265' ? 23 : 20) : validateExportCrf(options.crf),
+    bitrate: options.bitrate === undefined ? null : normalizeExportBitrate(options.bitrate),
+  };
+}
+
+/** Video encoder argv for the normalized settings. */
+function videoEncodeArgs(settings) {
+  const encoders = detectEncoders();
+  let encoder = encoders[settings.codec];
+  if (encoder === null) {
+    if (resolveTools().ffmpeg === null) {
+      // Keep the argv buildable; runExport reports ffmpeg-unavailable.
+      encoder = settings.codec === 'h264' ? 'libx264' : 'libx265';
+    } else {
+      throw new ExportError(
+        `No ${settings.codec === 'h264' ? 'H.264' : 'H.265'} encoder available in the installed ffmpeg`,
+        'encoder-unavailable',
+      );
+    }
+  }
+
+  const args = ['-c:v', encoder];
+  if (encoder === 'libx265') args.push('-tag:v', 'hvc1');
+  args.push('-pix_fmt', 'yuv420p');
+
+  if (encoder === 'libx264' || encoder === 'libx265') {
+    args.push('-preset', 'veryfast');
+    if (settings.bitrate !== null) args.push('-b:v', settings.bitrate);
+    else args.push('-crf', formatScalar(settings.crf));
+  } else {
+    // VideoToolbox encoders do not accept -crf/-preset.
+    args.push('-b:v', settings.bitrate ?? '8M');
+  }
+  return args;
+}
+
+/**
+ * Rotation geometry for one visual clip. Rotates on an expanded transparent
+ * canvas (so nothing is clipped) and then fits the result inside the transform
+ * box, centered. Returns null for an unrotated clip.
+ */
+function rotationPlan(box, rotationDegrees) {
+  const rotation = Number(rotationDegrees);
+  if (!Number.isFinite(rotation) || Math.abs(rotation) < 1e-6) return null;
+  const radians = (rotation * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(radians));
+  const sin = Math.abs(Math.sin(radians));
+  const rotatedWidth = Math.max(1, Math.ceil(box.width * cos + box.height * sin - 1e-6));
+  const rotatedHeight = Math.max(1, Math.ceil(box.width * sin + box.height * cos - 1e-6));
+  const fit = Math.min(box.width / rotatedWidth, box.height / rotatedHeight);
+  const width = Math.max(1, Math.round(rotatedWidth * fit));
+  const height = Math.max(1, Math.round(rotatedHeight * fit));
+  return {
+    radians,
+    rotatedWidth,
+    rotatedHeight,
+    width,
+    height,
+    offsetX: Math.round((box.width - width) / 2),
+    offsetY: Math.round((box.height - height) / 2),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // drawtext
 // ---------------------------------------------------------------------------
 
@@ -586,7 +937,7 @@ function drawtextOptions({ content, style, box, startSeconds, endSeconds }) {
  * @param {{ project: object, projectRoot: string, outputPath: string }} input
  * @returns {{ args: string[], durationFrames: number }}
  */
-export function buildExportArgs({ project, projectRoot, outputPath } = {}) {
+export function buildExportArgs({ project, projectRoot, outputPath, options, ...inlineOptions } = {}) {
   if (project === null || typeof project !== 'object') {
     throw new ExportError('buildExportArgs requires a project object', 'invalid-input');
   }
@@ -599,11 +950,16 @@ export function buildExportArgs({ project, projectRoot, outputPath } = {}) {
 
   const root = path.resolve(projectRoot);
   const fps = normalizeFps(project);
-  const width = normalizeDimension(project.width, DEFAULT_WIDTH);
-  const height = normalizeDimension(project.height, DEFAULT_HEIGHT);
+  const settings = normalizeExportOptions(project, options ?? inlineOptions);
+  // All normalized geometry is expressed against the *output* resolution.
+  const width = settings.width;
+  const height = settings.height;
   const durationFrames = timelineDurationFrames(project);
   const durationSeconds = framesToSeconds(durationFrames, fps);
-  const transitionFades = collectTransitionFades(project);
+  const transitionPlan = planTransitions(project, fps);
+  const transitionFades = transitionPlan.fadeAdditions;
+  const trueTransitions = transitionPlan.truePlans;
+  const coveredClipIds = new Set();
 
   const inputs = [
     '-f', 'lavfi',
@@ -684,10 +1040,27 @@ export function buildExportArgs({ project, projectRoot, outputPath } = {}) {
     const box = geometryFor(clip.transform, width, height);
     const opacity = clamp01(clip.opacity ?? 1);
     const effects = buildEffectFilters(clip.effects, root);
+    const rotation = rotationPlan(box, clip.transform?.rotation);
 
     const parts = [`scale=${box.width}:${box.height}`, 'setsar=1', `fps=${formatScalar(fps)}`];
     parts.push(...effects.parts);
     let hasAlpha = effects.hasAlpha;
+
+    if (rotation !== null) {
+      if (!hasAlpha) {
+        parts.push('format=rgba');
+        hasAlpha = true;
+      }
+      parts.push(
+        `rotate=${formatScalar(rotation.radians)}` +
+        `:ow=${rotation.rotatedWidth}:oh=${rotation.rotatedHeight}:fillcolor=none`,
+      );
+      // Fit the rotated bounding box back inside the transform box (no crop).
+      if (rotation.width !== box.width || rotation.height !== box.height) {
+        parts.push(`scale=${rotation.width}:${rotation.height}`);
+      }
+    }
+
     if (opacity < 1) {
       if (!hasAlpha) {
         parts.push('format=rgba');
@@ -732,8 +1105,14 @@ export function buildExportArgs({ project, projectRoot, outputPath } = {}) {
       offsetSeconds: startSeconds,
       scale: height,
     });
-    const overlayX = xExpression === null ? String(box.x) : quoteFilterExpression(xExpression);
-    const overlayY = yExpression === null ? String(box.y) : quoteFilterExpression(yExpression);
+    const offsetX = rotation === null ? 0 : rotation.offsetX;
+    const offsetY = rotation === null ? 0 : rotation.offsetY;
+    const overlayX = xExpression === null
+      ? String(box.x + offsetX)
+      : quoteFilterExpression(offsetX === 0 ? xExpression : `(${xExpression})+${offsetX}`);
+    const overlayY = yExpression === null
+      ? String(box.y + offsetY)
+      : quoteFilterExpression(offsetY === 0 ? yExpression : `(${yExpression})+${offsetY}`);
 
     const outputLabel = `b${counter}`;
     counter += 1;
@@ -745,6 +1124,159 @@ export function buildExportArgs({ project, projectRoot, outputPath } = {}) {
     );
     baseLabel = outputLabel;
     hasVisual = true;
+  };
+
+  /**
+   * True overlapping transition: both clips are opaque full-frame layers, so
+   * they can be fused with `xfade` (dissolve/wipe). The outgoing clip's source
+   * is extended past its end and the incoming clip's source is extended before
+   * its start; the pair then replaces both clips as one overlay layer.
+   */
+  const addTrueTransition = (plan) => {
+    const { from, to, sideA, sideB, xfade } = plan;
+    const clipA = from.clip;
+    const clipB = to.clip;
+    const mediaA = findMedia(project, clipA.mediaId);
+    const mediaB = findMedia(project, clipB.mediaId);
+    if (mediaA === null || mediaB === null) return false;
+
+    const speedA = speedForClip(clipA);
+    const speedB = speedForClip(clipB);
+    const framesA = clipDurationFrames(clipA);
+    const framesB = clipDurationFrames(clipB);
+    const layerFramesA = framesA + sideA;
+    const layerFramesB = framesB + sideB;
+    const trimA = Math.max(0, Math.round(Number(clipA.trimStartFrame) || 0));
+    const trimB = Math.max(0, Math.round(Number(clipB.trimStartFrame) || 0) - Math.round(sideB * speedB));
+    const transitionSeconds = framesToSeconds(sideA + sideB, fps);
+    const offsetSeconds = framesToSeconds(framesA - sideB, fps);
+
+    const inputPrefix = (clip, layerFrames, speed, trimFrames) => (
+      clip.type === 'image'
+        ? ['-loop', '1', '-t', formatSeconds(framesToSeconds(layerFrames, fps))]
+        : ['-ss', formatSeconds(framesToSeconds(trimFrames, fps)), '-t', formatSeconds(framesToSeconds(layerFrames * speed, fps))]
+    );
+    const indexA = addInput(inputPrefix(clipA, layerFramesA, speedA, trimA), mediaFilePath(root, mediaA));
+    const indexB = addInput(inputPrefix(clipB, layerFramesB, speedB, trimB), mediaFilePath(root, mediaB));
+
+    const addTransitionLayer = (clip, index, layerFrames, leadFrames, speed) => {
+      const box = geometryFor(clip.transform, width, height);
+      const effects = buildEffectFilters(clip.effects, root);
+      const parts = [
+        `scale=${box.width}:${box.height}`,
+        'setsar=1',
+        `fps=${formatScalar(fps)}`,
+        ...effects.parts,
+        'format=yuv420p',
+        speed === 1 ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${formatScalar(speed)}`,
+      ];
+      // True layers are opaque by construction (eligibility check), so only
+      // the clip's own fades are applied.
+      const ownFades = fadesForClip(clip, new Map());
+      if (ownFades.inFrames > 0) {
+        parts.push(`fade=t=in:st=${formatSeconds(framesToSeconds(leadFrames, fps))}` +
+          `:d=${formatSeconds(framesToSeconds(ownFades.inFrames, fps))}`);
+      }
+      if (ownFades.outFrames > 0) {
+        parts.push(
+          `fade=t=out:st=${formatSeconds(framesToSeconds(leadFrames + clipDurationFrames(clip) - ownFades.outFrames, fps))}` +
+          `:d=${formatSeconds(framesToSeconds(ownFades.outFrames, fps))}`,
+        );
+      }
+      const label = `v${counter}`;
+      counter += 1;
+      chains.push(`[${index}:v]${parts.join(',')}[${label}]`);
+      return label;
+    };
+
+    const layerALabel = addTransitionLayer(clipA, indexA, layerFramesA, 0, speedA);
+    const layerBLabel = addTransitionLayer(clipB, indexB, layerFramesB, sideB, speedB);
+
+    const fused = `t${counter}`;
+    counter += 1;
+    chains.push(
+      `[${layerALabel}][${layerBLabel}]xfade=transition=${xfade}` +
+      `:duration=${formatSeconds(transitionSeconds)}:offset=${formatSeconds(offsetSeconds)}[${fused}]`,
+    );
+
+    const shifted = `t${counter}`;
+    counter += 1;
+    const startSeconds = framesToSeconds(clipA.startFrame ?? 0, fps);
+    const endSeconds = framesToSeconds((Number(clipB.startFrame) || 0) + framesB, fps);
+    chains.push(
+      `[${fused}]setpts=PTS-STARTPTS+${formatSeconds(startSeconds)}/TB[${shifted}]`,
+    );
+    const outputLabel = `b${counter}`;
+    counter += 1;
+    chains.push(
+      `[${baseLabel}][${shifted}]overlay=x=0:y=0:` +
+      `enable=${quoteFilterExpression(`between(t,${formatSeconds(startSeconds)},${formatSeconds(endSeconds)})`)}` +
+      `[${outputLabel}]`,
+    );
+    baseLabel = outputLabel;
+    hasVisual = true;
+
+    // Audio: reuse the two video inputs (they already carry the extended
+    // source windows) and ramp `afade` down/up across the same overlap, so
+    // `amix` sums to a linear audio crossfade.
+    if (from.track.muted !== true) {
+      const addCrossfadeAudio = (clip, index, layerFrames, leadFrames, delayedStartFrames, outgoing) => {
+        const media = findMedia(project, clip.mediaId);
+        if (media === null || media.hasAudio !== true) return;
+        const speed = speedForClip(clip);
+        const parts = [
+          `atrim=duration=${formatSeconds(framesToSeconds(layerFrames * speed, fps))}`,
+          'asetpts=PTS-STARTPTS',
+        ];
+        if (speed !== 1) parts.push(...atempoChain(speed));
+        parts.push(
+          outgoing
+            ? `afade=t=out:st=${formatSeconds(offsetSeconds)}:d=${formatSeconds(transitionSeconds)}`
+            : `afade=t=in:st=0:d=${formatSeconds(transitionSeconds)}`,
+        );
+        const ownFades = fadesForClip(clip, new Map());
+        if (ownFades.inFrames > 0) {
+          parts.push(`afade=t=in:st=${formatSeconds(framesToSeconds(leadFrames, fps))}` +
+            `:d=${formatSeconds(framesToSeconds(ownFades.inFrames, fps))}`);
+        }
+        if (ownFades.outFrames > 0) {
+          parts.push(
+            `afade=t=out:st=${formatSeconds(framesToSeconds(leadFrames + clipDurationFrames(clip) - ownFades.outFrames, fps))}` +
+            `:d=${formatSeconds(framesToSeconds(ownFades.outFrames, fps))}`,
+          );
+        }
+        const volumeExpression = buildKeyframeExpression(keyframeList(clip, 'volume'), {
+          fps,
+          offsetSeconds: 0,
+          scale: 1,
+          clampMin: 0,
+          clampMax: 1,
+        });
+        if (volumeExpression !== null) {
+          parts.push(`volume=eval=frame:volume=${quoteFilterExpression(volumeExpression)}`);
+        } else {
+          parts.push(`volume=${formatScalar(clamp01(clip.volume ?? 1))}`);
+        }
+        const delay = Math.max(0, Math.round(framesToSeconds(delayedStartFrames, fps) * 1000));
+        parts.push(`adelay=${delay}:all=1`);
+        const audioLabel = `a${audioCounter}`;
+        audioCounter += 1;
+        chains.push(`[${index}:a]${parts.join(',')}[${audioLabel}]`);
+        audioLabels.push(audioLabel);
+      };
+
+      addCrossfadeAudio(clipA, indexA, layerFramesA, 0, Number(clipA.startFrame) || 0, true);
+      addCrossfadeAudio(
+        clipB,
+        indexB,
+        layerFramesB,
+        sideB,
+        (Number(clipB.startFrame) || 0) - sideB,
+        false,
+      );
+    }
+
+    return true;
   };
 
   const addTextClip = (clip) => {
@@ -868,6 +1400,7 @@ export function buildExportArgs({ project, projectRoot, outputPath } = {}) {
 
     for (const clip of clips) {
       if (clip === null || typeof clip !== 'object') continue;
+      if (coveredClipIds.has(clip.id)) continue;
 
       if (clip.type === 'text') {
         if (!trackHidden) addTextClip(clip);
@@ -880,6 +1413,14 @@ export function buildExportArgs({ project, projectRoot, outputPath } = {}) {
       }
 
       if (clip.type !== 'video' && clip.type !== 'image') continue;
+
+      const trueTransition = trueTransitions.get(clip.id);
+      if (trueTransition !== undefined) {
+        coveredClipIds.add(trueTransition.to.clip.id);
+        if (addTrueTransition(trueTransition)) continue;
+        coveredClipIds.delete(trueTransition.to.clip.id);
+      }
+
       const media = findMedia(project, clip.mediaId);
       if (media === null) continue;
       const wantsVisual = !trackHidden;
@@ -934,12 +1475,10 @@ export function buildExportArgs({ project, projectRoot, outputPath } = {}) {
     args.push('-an');
   }
 
+  args.push(...videoEncodeArgs(settings));
+  args.push('-movflags', '+faststart');
+  if (settings.fpsProvided) args.push('-r', formatScalar(settings.fps));
   args.push(
-    '-c:v', 'libx264',
-    '-pix_fmt', 'yuv420p',
-    '-preset', 'veryfast',
-    '-crf', '20',
-    '-movflags', '+faststart',
     '-t', formatSeconds(durationSeconds),
     '-progress', 'pipe:1',
     '-nostats',
@@ -960,7 +1499,15 @@ export function buildExportArgs({ project, projectRoot, outputPath } = {}) {
  *   onProgress?: (progress: number) => void, signal?: AbortSignal }} input
  * @returns {Promise<{ outputPath: string, durationFrames: number }>}
  */
-export async function runExport({ project, projectRoot, outputPath, onProgress, signal } = {}) {
+export async function runExport({
+  project,
+  projectRoot,
+  outputPath,
+  onProgress,
+  signal,
+  options,
+  ...inlineOptions
+} = {}) {
   if (signal?.aborted) {
     const error = new ExportError('The export was aborted', 'aborted');
     error.name = 'AbortError';
@@ -969,7 +1516,12 @@ export async function runExport({ project, projectRoot, outputPath, onProgress, 
 
   let built;
   try {
-    built = buildExportArgs({ project, projectRoot, outputPath });
+    built = buildExportArgs({
+      project,
+      projectRoot,
+      outputPath,
+      ...(options !== undefined ? { options } : inlineOptions),
+    });
   } catch (error) {
     if (error instanceof ExportError) throw error;
     throw new ExportError(`Could not build the export command: ${error.message}`, 'invalid-input', { cause: error });

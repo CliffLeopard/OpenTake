@@ -1,6 +1,6 @@
 # OpenTake Studio：完整功能复刻差距与路线
 
-状态：Phase 1 已实现 · 2026-11-08 · 分支 `feat/dsh-native-studio`
+状态：Phase 1–2 已实现（媒体库 Host/UI 已入）· 2026-11-08 · 分支 `feat/dsh-native-studio`
 
 当前 `plugins/opentake-studio` 是**纯 DSH 原生编辑器 MVP**（工程、媒体、时间线、预览、文本、基础导出、15 个 Agent 工具），
 不是 Rust/Tauri 版 OpenTake 的完整功能复刻。本文是“完整功能”的验收清单与路线，避免把 MVP 当成完成。
@@ -19,7 +19,7 @@ Rust/Tauri 版包含：
 “完整功能复刻为 DSH 插件”= 上述**用户可见功能**全部在 DSH 内可用，且有自动化/真实验收。
 这不是一个会话能真实完成的工作量；分阶段交付必须明确每阶段验收。
 
-## 2. 当前已经可用（MVP）
+## 2. 当前已经可用（MVP + Phase 1/2）
 
 | 域 | 已实现 |
 |---|---|
@@ -35,14 +35,16 @@ Rust/Tauri 版包含：
 ## 3. 未完成清单（按验收域；Phase 1 项已划掉）
 
 ### A. NLE 核心
-- ✅ 转场（Phase 1：fadeToBlack 精确；dissolve/wipe 为淡入淡出近似）
+- ✅ 转场（Phase 2：dissolve/wipe 对静态不透明同轨片段用真正 xfade，其余回退淡入淡出）
 - ✅ 关键帧 volume/opacity/x/y（width/height/rotation 预览，导出静态降级）
 - ✅ 变速 0.25–4x（视频 setpts / 音频 atempo）
 - ✅ 淡入淡出、每片段效果（eq/colorbalance/gblur/unsharp/chromakey/lut3d）
 - ✅ SRT/VTT 导入导出、字幕片段编辑；逐词时间轴待 Phase 2
 - ✅ 吸附加标记/多选/复制粘贴/波纹删除/快照 undo
-- ❌ 多轨混合模式、画中画、遮罩/裁剪、旋转导出
-- ❌ 音频 ducking/增益自动化、独立轨道音量/静音 UI、5.1/采样率策略
+- ✅ 旋转静态导出（关键帧旋转降级）
+- ❌ 多轨混合模式、画中画、遮罩/裁剪
+- ✅ 轨道静音/隐藏/重命名/删除 UI
+- ❌ 音频 ducking/增益自动化、独立轨道音量、5.1/采样率策略
 - ❌ 帧精确播放/丢帧策略/代理媒体/HDR/色彩管理
 - ❌ 字幕组批量同步、逐词时间轴
 - ❌ 嵌套序列、多工程、分组、滚动编辑

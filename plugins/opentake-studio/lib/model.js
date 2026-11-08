@@ -1483,6 +1483,34 @@ function removeTrackOperation(project, operation) {
   project.tracks.splice(index, 1);
 }
 
+/**
+ * Rename a track and/or toggle its mute/hidden state. Empty tracks stay in the
+ * project (tracks are only removed explicitly via `remove-track`).
+ */
+function updateTrackOperation(project, operation) {
+  const trackId = requireId(operation.trackId, 'invalid-input', 'trackId');
+  const track = findTrack(project, trackId);
+  if (!track) fail('track-not-found', `track not found: ${trackId}`);
+
+  const hasName = operation.name !== undefined;
+  const hasMuted = operation.muted !== undefined;
+  const hasHidden = operation.hidden !== undefined;
+
+  const name = hasName ? requireNonEmptyString(operation.name, 'invalid-input', 'name') : track.name;
+  const muted = hasMuted ? requireBoolean(operation.muted, 'invalid-input', 'muted') : track.muted;
+  const hidden = hasHidden ? requireBoolean(operation.hidden, 'invalid-input', 'hidden') : track.hidden;
+
+  // No fields is an allowed no-op (still produces a new stamped project).
+  track.name = name;
+  track.muted = muted;
+  track.hidden = hidden;
+}
+
+/** Rename the project. Frame semantics are untouched (no fps/resolution edits). */
+function renameProjectOperation(project, operation) {
+  project.name = requireNonEmptyString(operation.name, 'invalid-input', 'name');
+}
+
 function addMediaOperation(project, operation) {
   if (operation.media === undefined) fail('invalid-input', 'media is required');
   const media = normalizeMedia(operation.media, project.fps);
@@ -2175,7 +2203,9 @@ function updateCaptionOperation(project, operation) {
 
 const OPERATIONS = Object.freeze({
   'add-track': addTrackOperation,
+  'update-track': updateTrackOperation,
   'remove-track': removeTrackOperation,
+  'rename-project': renameProjectOperation,
   'add-media': addMediaOperation,
   'remove-media': removeMediaOperation,
   'add-clip': addClipOperation,

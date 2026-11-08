@@ -49,6 +49,10 @@ const IDENTITY_CUBE = [
 
 let phaseRoot = null;
 let phaseRealProject = null;
+let redMedia = null;
+let blueMedia = null;
+let greenMedia = null;
+let phase2Project = null;
 
 function mediaEntry(overrides = {}) {
   return {
@@ -104,6 +108,30 @@ function makeProject({
 
 function buildPhase(project, outputPath = path.join(phaseRoot, 'out.mp4')) {
   return buildExportArgs({ project, projectRoot: phaseRoot, outputPath });
+}
+
+function trueTransitionProject(type = 'dissolve', { trimStartFrame = 20 } = {}) {
+  const media = [
+    mediaEntry({ durationFrames: 300 }),
+    mediaEntry({ id: 'media-video-b', name: 'b.mp4', fileName: 'b.mp4', durationFrames: 300 }),
+  ];
+  const clips = [
+    makeClip({
+      id: 'tt-a', type: 'video', mediaId: 'media-video', startFrame: 0, durationFrames: 45,
+    }),
+    makeClip({
+      id: 'tt-b', type: 'video', mediaId: 'media-video-b', startFrame: 45, durationFrames: 45,
+      trimStartFrame,
+    }),
+  ];
+  return makeProject({
+    media,
+    clips,
+    transitions: [{
+      id: 'tt', trackId: 'track-video', fromClipId: 'tt-a', toClipId: 'tt-b',
+      type, durationFrames: 20,
+    }],
+  });
 }
 
 function createFixtureProject() {
@@ -220,6 +248,61 @@ async function ffmpegSupportsDrawtext() {
 
 const drawtextAvailable = initialTools.available ? await ffmpegSupportsDrawtext() : false;
 
+async function ffmpegEncoderNames() {
+  if (!initialTools.available || initialTools.ffmpeg === null) return new Set();
+  return new Promise((resolve) => {
+    const child = spawn(initialTools.ffmpeg, ['-hide_banner', '-encoders'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let stdout = '';
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+      if (stdout.length > 4_000_000) stdout = stdout.slice(-4_000_000);
+    });
+    child.on('error', () => resolve(new Set()));
+    child.on('close', (code) => {
+      const names = new Set();
+      if (code === 0) {
+        for (const line of stdout.split('\n')) {
+          const match = /^\s*V[A-Za-z.]*\s+(\S+)/.exec(line);
+          if (match !== null) names.add(match[1]);
+        }
+      }
+      resolve(names);
+    });
+  });
+}
+
+const encoderNames = initialTools.available ? await ffmpegEncoderNames() : new Set();
+const hasH265Encoder = encoderNames.has('libx265') || encoderNames.has('hevc_videotoolbox');
+
+function samplePixel(filePath, seconds, x, y) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(initialTools.ffmpeg, [
+      '-hide_banner', '-loglevel', 'error',
+      '-ss', String(seconds),
+      '-i', filePath,
+      '-frames:v', '1',
+      '-vf', `crop=8:8:${x}:${y},scale=1:1`,
+      '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const chunks = [];
+    let stderr = '';
+    child.stdout.on('data', (chunk) => chunks.push(chunk));
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`samplePixel failed (${code}): ${stderr}`));
+        return;
+      }
+      const buffer = Buffer.concat(chunks);
+      resolve({ r: buffer[0] ?? 0, g: buffer[1] ?? 0, b: buffer[2] ?? 0 });
+    });
+  });
+}
+
 let exportTemp = null;
 let exportProjectRoot = null;
 let realProject = null;
@@ -248,6 +331,27 @@ before(async () => {
     '-f', 'lavfi', '-i', 'color=c=green:s=320x180:d=1',
     '-frames:v', '1',
     path.join(sourceDir, 'card.png'),
+  ]);
+
+  // Phase 2 fixtures: solid red/blue clips for the true-dissolve pixel test
+  // and a solid green poster for the rotation overlay.
+  await runFfmpeg([
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'color=c=red:s=320x180:r=30:d=2',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+    path.join(sourceDir, 'red.mp4'),
+  ]);
+  await runFfmpeg([
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'color=c=blue:s=320x180:r=30:d=2',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+    path.join(sourceDir, 'blue.mp4'),
+  ]);
+  await runFfmpeg([
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'color=c=green:s=320x180:d=1',
+    '-frames:v', '1',
+    path.join(sourceDir, 'greenposter.png'),
   ]);
 
   exportProjectRoot = path.join(exportTemp, 'project');
@@ -339,6 +443,56 @@ before(async () => {
       },
     ],
     transitions: [],
+  };
+
+  redMedia = byName.get('red.mp4');
+  blueMedia = byName.get('blue.mp4');
+  greenMedia = byName.get('greenposter.png');
+
+  // True dissolve between red (0..30 frames, 1s) and blue (trimStart 10,
+  // 30..60) with 10 transition frames (5 per side), plus a 45-degree rotated
+  // green poster on a second track from 60..75.
+  phase2Project = {
+    version: 1,
+    name: 'phase2',
+    fps: 30,
+    width: 320,
+    height: 180,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    media: imported.media,
+    tracks: [
+      {
+        id: 'phase2-video', type: 'video', name: 'Video 1', muted: false, hidden: false,
+        clips: [
+          makeClip({
+            id: 'phase2-a', type: 'video', mediaId: redMedia.id,
+            startFrame: 0, durationFrames: 30, trimStartFrame: 0,
+          }),
+          makeClip({
+            id: 'phase2-b', type: 'video', mediaId: blueMedia.id,
+            startFrame: 30, durationFrames: 30, trimStartFrame: 10,
+          }),
+        ],
+      },
+      {
+        id: 'phase2-overlay', type: 'video', name: 'Overlay', muted: false, hidden: false,
+        clips: [
+          makeClip({
+            id: 'phase2-rotated', type: 'image', mediaId: greenMedia.id,
+            startFrame: 60, durationFrames: 15,
+            transform: { x: 0, y: 0, width: 1, height: 1, rotation: 45 },
+          }),
+        ],
+      },
+    ],
+    transitions: [
+      {
+        id: 'phase2-transition', trackId: 'phase2-video',
+        fromClipId: 'phase2-a', toClipId: 'phase2-b',
+        type: 'dissolve', durationFrames: 10,
+      },
+    ],
   };
 });
 
@@ -960,9 +1114,11 @@ it('uses per-segment caption PNG renders when present', async () => {
   assert.equal((filter.match(/overlay=/g) ?? []).length, 1);
 });
 
-it('approximates transitions with fade out/in fades', () => {
+it('approximates transitions with fade out/in fades when source has no headroom', () => {
+  // 45-frame clip on a 45-frame source and an image incoming clip: neither
+  // side can extend, so true xfade overlap is impossible and fades are used.
   const media = [
-    mediaEntry(),
+    mediaEntry({ durationFrames: 45 }),
     mediaEntry({
       id: 'media-image', name: 'card.png', kind: 'image', fileName: 'image.png',
       durationFrames: null, sourceDurationSeconds: null, hasAudio: false,
@@ -1075,3 +1231,332 @@ it('exports with speed, fades and effects, verified by ffprobe', { skip: toolSki
   assert.ok(progress.length >= 1);
   assert.equal(progress.at(-1), 1);
 });
+
+// ---------------------------------------------------------------------------
+// Phase 2: true transitions, rotation, export presets
+// ---------------------------------------------------------------------------
+
+it('builds a true overlapping dissolve for butt-joined full-frame clips', () => {
+  const built = buildPhase(trueTransitionProject('dissolve'));
+  const filter = filterOf(built);
+  const inputs = inputsOf(built.args);
+
+  assert.equal(inputs.length, 3, 'base + outgoing source + incoming source');
+  assert.ok(hasPair(built.args, '-ss', '0.333333'), 'incoming trim moves 10 frames before its start');
+  assert.equal(
+    built.args.filter((value, index) => built.args[index - 1] === '-t' && value === '1.833333').length,
+    2,
+    'both sources are extended to 55 frames',
+  );
+
+  // A 20-frame transition splits into 10 frames per side: xfade duration
+  // 20/30s starting 10 frames before the cut (45-10=35 frames = 1.166667s).
+  assert.match(filter, /\[v0\]\[v1\]xfade=transition=dissolve:duration=0\.666667:offset=1\.166667/);
+  assert.match(filter, /setpts=PTS-STARTPTS\+0\/TB/);
+  assert.match(filter, /overlay=x=0:y=0:enable='between\(t,0,3\)'/);
+  assert.ok(!filter.includes(',fade=t=out'), 'true dissolve does not use the fade fallback');
+
+  // Audio crossfade over the same overlap window.
+  assert.ok(filter.includes('afade=t=out:st=1.166667:d=0.666667'), filter);
+  assert.ok(filter.includes('afade=t=in:st=0:d=0.666667'), filter);
+  assert.ok(filter.includes('adelay=1167:all=1'), filter);
+  assert.ok(filter.includes('amix=inputs=2:normalize=0'));
+});
+
+it('maps wipeLeft/wipeRight to xfade wipes', () => {
+  assert.match(filterOf(buildPhase(trueTransitionProject('wipeLeft'))), /xfade=transition=wipeleft:/);
+  assert.match(filterOf(buildPhase(trueTransitionProject('wipeRight'))), /xfade=transition=wiperight:/);
+});
+
+it('uses a one-sided true crossfade when the incoming clip has no pre-roll', () => {
+  const built = buildPhase(trueTransitionProject('dissolve', { trimStartFrame: 0 }));
+  const filter = filterOf(built);
+
+  // sideB is clamped to 0, so the requested 20-frame window moves onto the
+  // outgoing tail instead of being halved.
+  assert.match(filter, /xfade=transition=dissolve:duration=0\.666667:offset=1\.5/);
+  assert.ok(hasPair(built.args, '-ss', '0'), 'incoming source starts at its normal trim');
+  assert.ok(filter.includes('afade=t=out:st=1.5:d=0.666667'), filter);
+  assert.ok(filter.includes('afade=t=in:st=0:d=0.666667'), filter);
+  assert.ok(filter.includes('adelay=1500:all=1'), filter);
+});
+
+it('supports a true transition when the outgoing clip is a still image', () => {
+  const media = [
+    mediaEntry({
+      id: 'media-image', name: 'card.png', kind: 'image', fileName: 'image.png',
+      durationFrames: null, sourceDurationSeconds: null, hasAudio: false,
+    }),
+    mediaEntry({ id: 'media-video-b', name: 'b.mp4', fileName: 'b.mp4', durationFrames: 300 }),
+  ];
+  const clips = [
+    makeClip({
+      id: 'img-a', type: 'image', mediaId: 'media-image', startFrame: 0, durationFrames: 30,
+    }),
+    makeClip({
+      id: 'img-b', type: 'video', mediaId: 'media-video-b', startFrame: 30, durationFrames: 30,
+      trimStartFrame: 10,
+    }),
+  ];
+  const project = makeProject({
+    media,
+    clips,
+    transitions: [{
+      id: 'img-tr', trackId: 'track-video', fromClipId: 'img-a', toClipId: 'img-b',
+      type: 'dissolve', durationFrames: 10,
+    }],
+  });
+  const built = buildPhase(project);
+  const filter = filterOf(built);
+
+  // Outgoing still image has no tail: the 10-frame window moves entirely onto
+  // the incoming clip's 10-frame pre-roll.
+  assert.match(filter, /xfade=transition=dissolve:duration=0\.333333:offset=0\.666667/);
+  assert.ok(hasPair(built.args, '-loop', '1'), 'image input is looped');
+  assert.ok(hasPair(built.args, '-t', '1'), 'image layer lasts its 30-frame duration');
+  assert.ok(hasPair(built.args, '-t', '1.333333'), 'incoming source covers 40 frames');
+});
+
+it('falls back to fades when a true transition clip is transformed', () => {
+  const project = trueTransitionProject('dissolve');
+  project.tracks[0].clips[0].transform = { x: 0.25, y: 0.25, width: 0.5, height: 0.5, rotation: 0 };
+  const filter = filterOf(buildPhase(project));
+  assert.ok(!filter.includes('xfade='));
+  assert.ok(filter.includes('fade=t=out:st=1.166667:d=0.333333'));
+  assert.ok(filter.includes('fade=t=in:st=1.5:d=0.333333'));
+});
+
+it('applies static rotation with an expanded canvas fitted inside the transform box', () => {
+  const full = makeProject({
+    clips: [
+      makeClip({
+        id: 'rot-full', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 45,
+        transform: { x: 0, y: 0, width: 1, height: 1, rotation: 90 },
+      }),
+    ],
+  });
+  const fullFilter = filterOf(buildPhase(full));
+  assert.ok(
+    fullFilter.includes('rotate=1.570796:ow=180:oh=320:fillcolor=none'),
+    fullFilter,
+  );
+  assert.ok(fullFilter.includes('scale=101:180'), fullFilter);
+  assert.ok(fullFilter.includes('overlay=x=110:y=0'), fullFilter);
+
+  const half = makeProject({
+    clips: [
+      makeClip({
+        id: 'rot-half', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 45,
+        transform: { x: 0.25, y: 0.25, width: 0.5, height: 0.5, rotation: 45 },
+      }),
+    ],
+  });
+  const halfFilter = filterOf(buildPhase(half));
+  assert.ok(halfFilter.includes('rotate=0.785398:ow=177:oh=177:fillcolor=none'), halfFilter);
+  assert.ok(halfFilter.includes('scale=90:90'), halfFilter);
+  assert.ok(halfFilter.includes('overlay=x=115:y=45'), halfFilter);
+});
+
+it('does not rotate drawtext or honor rotation keyframes', () => {
+  const textProject = makeProject({
+    clips: [
+      makeClip({
+        id: 'rot-text', type: 'text', mediaId: null, startFrame: 0, durationFrames: 30,
+        transform: { x: 0.1, y: 0.1, width: 0.8, height: 0.2, rotation: 90 },
+        text: { content: 'upright', fontSize: 20, color: '#ffffff', fontWeight: '400', align: 'left' },
+      }),
+    ],
+  });
+  const textFilter = filterOf(buildPhase(textProject));
+  assert.ok(!textFilter.includes('rotate='), 'drawtext fallback cannot rotate');
+  assert.ok(textFilter.includes("text='upright'"));
+
+  const keyframed = makeProject({
+    clips: [
+      makeClip({
+        id: 'rot-kf', type: 'video', mediaId: 'media-video', startFrame: 0, durationFrames: 30,
+        keyframes: { rotation: [{ frame: 0, value: 0 }, { frame: 30, value: 90 }] },
+      }),
+    ],
+  });
+  const kfFilter = filterOf(buildPhase(keyframed));
+  assert.ok(!kfFilter.includes('rotate='), 'rotation keyframes degrade to the static value');
+  assert.match(kfFilter, /\[1:v\]scale=320:180,setsar=1,fps=30,setpts=PTS-STARTPTS\+0\/TB/);
+});
+
+it('builds codec/resolution/fps/crf/bitrate presets and validates them', () => {
+  const project = makeProject({
+    clips: [
+      makeClip({ id: 'preset-clip', type: 'video', mediaId: 'media-video', startFrame: 0, durationFrames: 45 }),
+    ],
+  });
+  const defaults = buildPhase(project);
+  assert.ok(hasPair(defaults.args, '-c:v', 'libx264'));
+  assert.ok(hasPair(defaults.args, '-preset', 'veryfast'));
+  assert.ok(hasPair(defaults.args, '-crf', '20'));
+
+  const sizedBuilt = buildExportArgs({
+    project,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'sized.mp4'),
+    options: { width: 640, height: 360, fps: 24, crf: 28 },
+  });
+  assert.match(inputsOf(sizedBuilt.args)[0], /^color=c=black:s=640x360:r=30:d=1\.5$/);
+  assert.match(filterOf(sizedBuilt), /scale=640:360/);
+  assert.ok(hasPair(sizedBuilt.args, '-r', '24'));
+  assert.ok(hasPair(sizedBuilt.args, '-crf', '28'));
+  assert.equal(sizedBuilt.durationFrames, 45);
+
+  const bitrateBuilt = buildExportArgs({
+    project,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'bitrate.mp4'),
+    options: { bitrate: '5M' },
+  });
+  assert.ok(hasPair(bitrateBuilt.args, '-b:v', '5M'));
+  assert.ok(!hasPair(bitrateBuilt.args, '-crf', '20'));
+
+  const numeric = buildExportArgs({
+    project,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'bitrate2.mp4'),
+    options: { bitrate: 4000 },
+  });
+  assert.ok(hasPair(numeric.args, '-b:v', '4000k'));
+
+  // Top-level (inline) options are accepted for convenience.
+  const inline = buildExportArgs({
+    project,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'inline.mp4'),
+    codec: 'h265',
+    crf: 30,
+  });
+  if (encoderNames.has('libx265')) {
+    assert.ok(hasPair(inline.args, '-c:v', 'libx265'));
+    assert.ok(hasPair(inline.args, '-tag:v', 'hvc1'));
+    assert.ok(hasPair(inline.args, '-crf', '30'));
+  } else if (encoderNames.has('hevc_videotoolbox')) {
+    assert.ok(hasPair(inline.args, '-c:v', 'hevc_videotoolbox'));
+    assert.ok(hasPair(inline.args, '-b:v', '8M'));
+    assert.ok(!hasPair(inline.args, '-crf', '30'));
+  } else if (initialTools.available) {
+    assert.throws(
+      () => buildPhase(project, path.join(phaseRoot, 'h265.mp4')),
+      (error) => error instanceof ExportError && error.code === 'encoder-unavailable',
+    );
+  } else {
+    assert.ok(hasPair(inline.args, '-c:v', 'libx265'));
+  }
+
+  for (const options of [
+    { codec: 'vp9' },
+    { width: 0 },
+    { height: 1 },
+    { fps: 0 },
+    { fps: 300 },
+    { crf: 52 },
+    { bitrate: 'abc' },
+  ]) {
+    assert.throws(
+      () => buildExportArgs({ project, projectRoot: phaseRoot, outputPath: path.join(phaseRoot, 'x.mp4'), options }),
+      (error) => error instanceof ExportError && error.code === 'invalid-input',
+      `expected invalid-input for ${JSON.stringify(options)}`,
+    );
+  }
+});
+
+it('keeps true-transition visuals on muted tracks and hides them on hidden tracks', () => {
+  const muted = trueTransitionProject('dissolve');
+  muted.tracks[0].muted = true;
+  const mutedBuilt = buildPhase(muted);
+  const mutedFilter = filterOf(mutedBuilt);
+  assert.ok(mutedFilter.includes('xfade=transition=dissolve:'));
+  assert.ok(!mutedFilter.includes('afade='));
+  assert.ok(!mutedFilter.includes('amix'));
+  assert.ok(mutedBuilt.args.includes('-an'));
+
+  const hidden = trueTransitionProject('dissolve');
+  hidden.tracks[0].hidden = true;
+  const hiddenFilter = filterOf(buildPhase(hidden));
+  assert.ok(!hiddenFilter.includes('xfade='), 'hidden tracks never build a visual transition');
+  assert.ok(!hiddenFilter.includes('overlay='));
+  assert.ok(!hiddenFilter.includes('drawtext='));
+});
+
+it('exports a true dissolve and rotation with H.264, verified by pixel sampling', { skip: toolSkip }, async () => {
+  const outputPath = path.join(exportTemp, 'phase2-h264.mp4');
+  const progress = [];
+  const result = await runExport({
+    project: phase2Project,
+    projectRoot: exportProjectRoot,
+    outputPath,
+    onProgress: (value) => progress.push(value),
+  });
+
+  assert.equal(result.durationFrames, 75);
+  const info = await stat(outputPath);
+  assert.ok(info.size > 1000);
+
+  const probe = await probeMedia(outputPath);
+  assert.equal(probe.kind, 'video');
+  assert.equal(probe.width, 320);
+  assert.equal(probe.height, 180);
+  assert.ok(probe.durationSeconds > 2.2 && probe.durationSeconds < 3, `duration ${probe.durationSeconds}`);
+  assert.equal(probe.hasAudio, false, 'the phase 2 fixture has no audio sources');
+
+  const parsed = JSON.parse(await runFfprobe([
+    '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+  ]));
+  const videoStream = parsed.streams.find((stream) => stream.codec_type === 'video');
+  assert.equal(videoStream.codec_name, 'h264');
+
+  // 10 transition frames split 5/5 around the 1s cut (window 0.833..1.167).
+  const before = await samplePixel(outputPath, 0.2, 160, 90);
+  assert.ok(before.r > 180 && before.b < 80, `expected red before the cut, got ${JSON.stringify(before)}`);
+  const blended = await samplePixel(outputPath, 1, 160, 90);
+  assert.ok(
+    blended.r > 50 && blended.b > 50,
+    `expected a true red/blue dissolve at the cut, got ${JSON.stringify(blended)}`,
+  );
+  const after = await samplePixel(outputPath, 1.8, 160, 90);
+  assert.ok(after.b > 180 && after.r < 80, `expected blue after the cut, got ${JSON.stringify(after)}`);
+  const rotated = await samplePixel(outputPath, 2.2, 160, 90);
+  assert.ok(
+    rotated.g > 90 && rotated.r < 40 && rotated.b < 40,
+    `expected the rotated green poster at 2.2s, got ${JSON.stringify(rotated)}`,
+  );
+
+  assert.ok(progress.length >= 1);
+  assert.equal(progress.at(-1), 1);
+});
+
+it(
+  'exports H.265 with resolution/fps presets when the encoder is available',
+  { skip: toolSkip ? toolSkip : (!hasH265Encoder ? 'no H.265 encoder available' : false) },
+  async () => {
+    const outputPath = path.join(exportTemp, 'phase2-h265.mp4');
+    const result = await runExport({
+      project: phase2Project,
+      projectRoot: exportProjectRoot,
+      outputPath,
+      options: { codec: 'h265', width: 160, height: 90, fps: 15 },
+    });
+    assert.equal(result.durationFrames, 75);
+
+    const probe = await probeMedia(outputPath);
+    assert.equal(probe.kind, 'video');
+    assert.equal(probe.width, 160);
+    assert.equal(probe.height, 90);
+    assert.equal(probe.fps, 15);
+    assert.ok(probe.durationSeconds > 2.2 && probe.durationSeconds < 3);
+
+    const parsed = JSON.parse(await runFfprobe([
+      '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+    ]));
+    const videoStream = parsed.streams.find((stream) => stream.codec_type === 'video');
+    assert.equal(videoStream.codec_name, 'hevc');
+  },
+);

@@ -3624,3 +3624,212 @@ describe('phase 1 normalize, purity and invariants', () => {
     assert.deepEqual(clipById(project, 'cap').transform, { x: 0.05, y: 0.78, width: 0.9, height: 0.16, rotation: 0 });
   });
 });
+
+// ===========================================================================
+// Phase 2: track updates + project rename (DESIGN Phase 2 model additions).
+// ===========================================================================
+
+describe('update-track', () => {
+  it('renames a track and preserves its type and clips', () => {
+    let project = fixture();
+    project = addClip(project, { clipId: 'c1', startFrame: 0, durationFrames: 50 });
+    project = applyOperation(project, {
+      type: 'update-track',
+      trackId: 't-video',
+      name: 'B-roll',
+    });
+    const track = findTrack(project, 't-video');
+    assert.equal(track.name, 'B-roll');
+    assert.equal(track.type, 'video');
+    assert.equal(track.muted, false);
+    assert.equal(track.hidden, false);
+    assert.deepEqual(track.clips.map((clip) => clip.id), ['c1']);
+  });
+
+  it('mutes and hides tracks independently', () => {
+    let project = fixture();
+    project = applyOperation(project, { type: 'update-track', trackId: 't-video', muted: true });
+    assert.equal(findTrack(project, 't-video').muted, true);
+    assert.equal(findTrack(project, 't-video').hidden, false);
+
+    project = applyOperation(project, { type: 'update-track', trackId: 't-video', hidden: true });
+    const track = findTrack(project, 't-video');
+    assert.equal(track.muted, true);
+    assert.equal(track.hidden, true);
+    assert.equal(findTrack(project, 't-video2').muted, false);
+    assert.equal(findTrack(project, 't-audio').hidden, false);
+  });
+
+  it('supports partial updates and a no-op', () => {
+    let project = fixture();
+    project = applyOperation(project, {
+      type: 'update-track',
+      trackId: 't-audio',
+      name: 'Music',
+      muted: true,
+    });
+    project = applyOperation(project, { type: 'update-track', trackId: 't-audio', hidden: true });
+    let track = findTrack(project, 't-audio');
+    assert.equal(track.name, 'Music');
+    assert.equal(track.muted, true);
+    assert.equal(track.hidden, true);
+
+    const noop = applyOperation(project, { type: 'update-track', trackId: 't-audio' });
+    track = findTrack(noop, 't-audio');
+    assert.equal(track.name, 'Music');
+    assert.equal(track.muted, true);
+    assert.equal(track.hidden, true);
+    assert.equal(typeof noop.updatedAt, 'number');
+  });
+
+  it('keeps empty tracks instead of deleting them', () => {
+    let project = fixture();
+    project = addClip(project, { clipId: 'c1', startFrame: 0, durationFrames: 50 });
+    project = applyOperation(project, { type: 'remove-clips', clipIds: ['c1'] });
+    assert.deepEqual(findTrack(project, 't-video').clips, []);
+    project = applyOperation(project, { type: 'update-track', trackId: 't-video', name: 'Empty' });
+    const track = findTrack(project, 't-video');
+    assert.ok(track !== null);
+    assert.equal(track.name, 'Empty');
+    assert.deepEqual(track.clips, []);
+  });
+
+  it('rejects invalid update-track input', () => {
+    const project = fixture();
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 'ghost', name: 'X' }),
+      'track-not-found',
+    );
+    expectModelError(() => applyOperation(project, { type: 'update-track' }), 'invalid-input');
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 't-video', name: '' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 't-video', name: 42 }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 't-video', muted: 'yes' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 't-video', hidden: 0 }),
+      'invalid-input',
+    );
+  });
+
+  it('does not mutate the input project or operation', () => {
+    const project = fixture();
+    const before = JSON.stringify(project);
+    const operation = { type: 'update-track', trackId: 't-video', name: 'Renamed', muted: true };
+    const operationBefore = JSON.stringify(operation);
+    const next = applyOperation(project, operation);
+    assert.equal(JSON.stringify(project), before);
+    assert.equal(JSON.stringify(operation), operationBefore);
+    assert.equal(findTrack(next, 't-video').name, 'Renamed');
+    assert.equal(findTrack(project, 't-video').name, 'Video 1');
+  });
+
+  it('persists through normalizeProject', () => {
+    let project = fixture();
+    project = applyOperation(project, {
+      type: 'update-track',
+      trackId: 't-video2',
+      name: 'Overlay',
+      muted: true,
+      hidden: true,
+    });
+    const normalized = normalizeProject(project);
+    assert.deepEqual(normalized, project);
+    const track = findTrack(normalized, 't-video2');
+    assert.equal(track.name, 'Overlay');
+    assert.equal(track.muted, true);
+    assert.equal(track.hidden, true);
+    assert.deepEqual(normalizeProject(normalized), normalized);
+  });
+});
+
+describe('rename-project', () => {
+  it('renames the project without touching its contents', () => {
+    let project = fixture();
+    project = addClip(project, { clipId: 'c1', startFrame: 0, durationFrames: 50 });
+    const tracksBefore = JSON.stringify(project.tracks);
+    project = applyOperation(project, { type: 'rename-project', name: 'Final Cut' });
+    assert.equal(project.name, 'Final Cut');
+    assert.equal(JSON.stringify(project.tracks), tracksBefore);
+    assert.equal(project.version, 1);
+    assert.equal(project.fps, 30);
+    assert.equal(project.width, 1920);
+    assert.equal(project.height, 1080);
+  });
+
+  it('rejects empty or missing names', () => {
+    const project = fixture();
+    expectModelError(() => applyOperation(project, { type: 'rename-project' }), 'invalid-input');
+    expectModelError(() => applyOperation(project, { type: 'rename-project', name: '' }), 'invalid-input');
+    expectModelError(() => applyOperation(project, { type: 'rename-project', name: 7 }), 'invalid-input');
+  });
+
+  it('is pure, allows renaming to the same name, and persists', () => {
+    const project = fixture();
+    const before = JSON.stringify(project);
+    const next = applyOperation(project, { type: 'rename-project', name: project.name });
+    assert.equal(JSON.stringify(project), before);
+    assert.equal(next.name, project.name);
+    assert.deepEqual(normalizeProject(next), next);
+    const renamed = applyOperation(next, { type: 'rename-project', name: 'Second' });
+    assert.equal(renamed.name, 'Second');
+    assert.equal(normalizeProject(renamed).name, 'Second');
+  });
+});
+
+describe('transform rotation range', () => {
+  it('accepts and preserves -360..360 degree rotations', () => {
+    let project = phase1Fixture();
+    for (const rotation of [-360, -180, -45, 0, 45, 180, 360]) {
+      project = applyOperation(project, {
+        type: 'set-clip-properties',
+        clipIds: ['c1'],
+        transform: { rotation },
+      });
+      assert.equal(clipById(project, 'c1').transform.rotation, rotation);
+    }
+  });
+
+  it('normalizes negative rotation values and rejects non-numeric ones', () => {
+    const raw = mutatedRaw((value) => {
+      value.tracks[0].clips[0].transform = { rotation: -270 };
+    });
+    const project = normalizeProject(raw);
+    const clip = project.tracks[0].clips.find((item) => item.id === 'c2');
+    assert.equal(clip.transform.rotation, -270);
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.tracks[0].clips[0].transform = { rotation: '-90' };
+          }),
+        ),
+      'invalid-clip',
+    );
+  });
+
+  it('accepts negative rotation keyframes', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'c1',
+      property: 'rotation',
+      keyframes: [
+        { frame: 0, value: -180, easing: 'linear' },
+        { frame: 100, value: 180, easing: 'ease-in-out' },
+      ],
+    });
+    assert.deepEqual(clipById(project, 'c1').keyframes.rotation, [
+      { frame: 0, value: -180, easing: 'linear' },
+      { frame: 100, value: 180, easing: 'ease-in-out' },
+    ]);
+    assert.equal(evaluateKeyframes(clipById(project, 'c1').keyframes.rotation, 50, 0), 0);
+  });
+});

@@ -119,7 +119,6 @@ window.__ModuleLoader__.load({
 			const rows = [];
 			if (!project) return rows;
 			for (const track of project.tracks) {
-				if (track.hidden) continue;
 				for (const clip of track.clips) {
 					if (frame >= clip.startFrame && frame < clip.startFrame + clip.durationFrames) {
 						rows.push({ track, clip });
@@ -135,6 +134,18 @@ window.__ModuleLoader__.load({
 
 		function mediaThumbUrl(mediaId) {
 			return `${ROUTE}/media/thumb/${encodeURIComponent(mediaId)}`;
+		}
+
+		function libraryThumbUrl(itemId) {
+			return `${ROUTE}/library/thumb/${encodeURIComponent(itemId)}`;
+		}
+
+		function libraryItemsQuery(query, kind, favoritesOnly) {
+			const params = [];
+			if (typeof query === 'string' && query.trim().length > 0) params.push(`query=${encodeURIComponent(query.trim())}`);
+			if (kind !== undefined && kind !== 'all' && kind !== '') params.push(`kind=${encodeURIComponent(kind)}`);
+			if (favoritesOnly) params.push('favorite=true');
+			return params.length > 0 ? `library?${params.join('&')}` : 'library';
 		}
 
 		function slugify(value) {
@@ -156,6 +167,45 @@ window.__ModuleLoader__.load({
 		function suggestedExportName(project) {
 			const base = slugify(project && project.name ? project.name : 'opentake-studio');
 			return `${base}-${Date.now()}.mp4`;
+		}
+
+		function effectiveExportSettings(project, dialog) {
+			const source = dialog && typeof dialog === 'object' ? dialog : {};
+			const projectWidth = project && Number.isFinite(Number(project.width)) ? Math.max(1, Math.round(Number(project.width))) : 1920;
+			const projectHeight = project && Number.isFinite(Number(project.height)) ? Math.max(1, Math.round(Number(project.height))) : 1080;
+			const projectFps = project && Number.isFinite(Number(project.fps)) ? Math.max(1, Number(project.fps)) : 30;
+			const codec = source.codec === 'h265' ? 'h265' : 'h264';
+			const resolution = ['project', '1080p', '720p', 'custom'].includes(source.resolution) ? source.resolution : 'project';
+			let width = projectWidth;
+			let height = projectHeight;
+			if (resolution === '1080p') {
+				width = 1920;
+				height = 1080;
+			} else if (resolution === '720p') {
+				width = 1280;
+				height = 720;
+			} else if (resolution === 'custom') {
+				width = Math.max(2, Math.round(finiteNumber(source.width, projectWidth)));
+				height = Math.max(2, Math.round(finiteNumber(source.height, projectHeight)));
+			}
+			const fpsMode = ['project', 24, 25, 30, 50, 60].includes(Number(source.fps)) ? Number(source.fps) : 'project';
+			const fps = fpsMode === 'project' ? projectFps : fpsMode;
+			const qualityMode = source.qualityMode === 'bitrate' ? 'bitrate' : 'crf';
+			const crf = clamp(Math.round(finiteNumber(source.crf, 20)), 0, 51);
+			const rawBitrate = typeof source.bitrate === 'string' ? source.bitrate.trim() : '';
+			const bitrate = rawBitrate.length > 0 ? rawBitrate : '8M';
+			return {
+				codec,
+				resolution,
+				width,
+				height,
+				fpsMode,
+				fps,
+				qualityMode,
+				crf,
+				bitrate,
+				overwrite: source.overwrite === true,
+			};
 		}
 
 		function normalizeTransform(transform) {
@@ -423,19 +473,36 @@ window.__ModuleLoader__.load({
 			return frame >= windowInfo.start && frame < windowInfo.end;
 		}
 
-		function transitionOpacityAt(project, clip, frame) {
+		function transitionRenderState(project, clip, frame) {
 			const entry = transitionEntryForClip(project, clip);
-			if (!entry) return 1;
+			if (!entry) return { opacity: 1, clipRect: null };
 			const windowInfo = transitionBoundaryOf(project, clip, entry);
-			if (frame < windowInfo.start || frame >= windowInfo.end) return 1;
+			if (frame < windowInfo.start || frame >= windowInfo.end) return { opacity: 1, clipRect: null };
 			const span = Math.max(0.0001, windowInfo.end - windowInfo.start);
 			const progress = clamp01((frame - windowInfo.start) / span);
 			const type = TRANSITION_TYPES.includes(entry.transition.type) ? entry.transition.type : 'dissolve';
-			if (type === 'fadeToBlack') {
-				if (entry.role === 'from') return progress < 0.5 ? 1 - progress * 2 : 0;
-				return progress > 0.5 ? (progress - 0.5) * 2 : 0;
+			if (type === 'wipeLeft' || type === 'wipeRight') {
+				const width = project.width;
+				const height = project.height;
+				let rect;
+				if (type === 'wipeLeft') {
+					rect =
+						entry.role === 'from'
+							? { x: 0, y: 0, width: width * (1 - progress), height }
+							: { x: width * (1 - progress), y: 0, width: width * progress, height };
+				} else {
+					rect =
+						entry.role === 'from'
+							? { x: width * progress, y: 0, width: width * (1 - progress), height }
+							: { x: 0, y: 0, width: width * progress, height };
+				}
+				return { opacity: 1, clipRect: rect };
 			}
-			return entry.role === 'from' ? 1 - progress : progress;
+			if (type === 'fadeToBlack') {
+				if (entry.role === 'from') return { opacity: progress < 0.5 ? 1 - progress * 2 : 0, clipRect: null };
+				return { opacity: progress > 0.5 ? (progress - 0.5) * 2 : 0, clipRect: null };
+			}
+			return { opacity: entry.role === 'from' ? 1 - progress : progress, clipRect: null };
 		}
 
 		function captionOf(clip) {
@@ -970,15 +1037,28 @@ window.__ModuleLoader__.load({
 					if (!clipIsVisibleAt(project, clip, frame)) continue;
 					const relative = clipRelativeFrame(clip, frame);
 					const fade = clipFadeFactor(clip, frame);
-					const transition = transitionOpacityAt(project, clip, frame);
+					const transitionState = transitionRenderState(project, clip, frame);
 					const opacity =
-						clamp01(clipPropertyAt(clip, 'opacity', relative, finiteNumber(clip.opacity, 1))) * fade * transition;
+						clamp01(clipPropertyAt(clip, 'opacity', relative, finiteNumber(clip.opacity, 1))) *
+						fade *
+						transitionState.opacity;
 					if (opacity <= 0.001) continue;
+					if (transitionState.clipRect && transitionState.clipRect.width <= 0.5) continue;
 					const media = clip.mediaId ? findMedia(project, clip.mediaId) : null;
 					const elements = clip.mediaId ? mediaElements[clip.mediaId] : null;
 					const box = transformBox(clipTransformAt(clip, relative), width, height);
 					const effectFilter = effectsFilterOf(clipEffects(clip)).filter;
 					context.save();
+					if (transitionState.clipRect) {
+						context.beginPath();
+						context.rect(
+							transitionState.clipRect.x,
+							transitionState.clipRect.y,
+							Math.max(0, transitionState.clipRect.width),
+							Math.max(0, transitionState.clipRect.height),
+						);
+						context.clip();
+					}
 					context.globalAlpha = opacity;
 					if (effectFilter !== 'none') {
 						try {
@@ -1120,6 +1200,27 @@ window.__ModuleLoader__.load({
 .ots-media-add{background:var(--dsw-alias-bg-overlay);border:0;border-radius:5px;color:var(--dsw-alias-label-primary);cursor:pointer;font-size:14px;height:22px;line-height:1;opacity:0;position:absolute;right:4px;top:4px;width:22px;transition:opacity .12s}
 .ots-media-card:hover .ots-media-add,.ots-media-add:focus-visible{opacity:1}
 .ots-media-empty{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5;padding:18px 10px;text-align:center}
+.ots-media-tabs{background:var(--dsw-alias-bg-layer-1);border-bottom:.5px solid var(--dsw-alias-border-l2);display:flex;flex:0 0 auto;gap:2px;padding:4px 8px 0}
+.ots-media-tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:1 1 0;font-size:11.5px;height:26px;padding:0 6px}
+.ots-media-tab:hover{color:var(--dsw-alias-label-primary)}
+.ots-media-tab[data-active="true"]{border-bottom-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary);font-weight:600}
+.ots-library-panel{display:flex;flex-direction:column;gap:8px;min-width:0}
+.ots-library-toolbar{display:flex;flex-direction:column;gap:5px}
+.ots-library-search-row{display:grid;gap:4px;grid-template-columns:minmax(0,1fr) auto auto}
+.ots-library-search-row .ots-input,.ots-library-search-row .ots-select{height:24px;font-size:11px}
+.ots-library-actions-row{align-items:center;display:flex;flex-wrap:wrap;gap:4px}
+.ots-library-card .ots-library-actions-row{padding:0 6px 6px}
+.ots-library-card .ots-library-actions-row .ots-mini{font-size:9.5px;height:18px;padding:0 4px}
+.ots-library-status{align-items:center;color:var(--dsw-alias-label-secondary);display:flex;flex-direction:column;font-size:11.5px;gap:8px;padding:16px 8px;text-align:center}
+.ots-library-error{color:var(--dsw-alias-state-error-primary)}
+.ots-library-error .ots-btn{align-self:center}
+.ots-library-star{background:var(--dsw-alias-bg-overlay);border:.5px solid var(--dsw-alias-border-l1);border-radius:50%;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:11px;height:20px;left:4px;line-height:1;padding:0;position:absolute;top:4px;width:20px;z-index:2}
+.ots-library-star[data-active="true"]{color:var(--dsw-alias-state-warn-primary)}
+.ots-library-star:disabled{opacity:.5;cursor:default}
+.ots-library-category{color:var(--dsw-alias-label-secondary);display:inline-block;max-width:74px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-library-card .ots-library-actions-row .ots-mini{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ots-modal-fixed{position:fixed}
+
 .ots-media-empty-title{color:var(--dsw-alias-label-secondary);display:block;font-weight:600;margin-bottom:4px}
 .ots-drop-hint{border:.5px dashed var(--dsw-alias-border-l1);border-radius:8px;color:var(--dsw-alias-label-secondary);font-size:11.5px;margin-top:8px;padding:10px;text-align:center}
 .ots-center{background:var(--dsw-alias-bg-base);display:flex;flex-direction:column;min-height:0;min-width:0}
@@ -1177,9 +1278,30 @@ window.__ModuleLoader__.load({
 .ots-ruler-label{color:var(--dsw-alias-label-secondary);font-size:9.5px;left:3px;position:absolute;top:1px;white-space:nowrap;font-variant-numeric:tabular-nums}
 .ots-track{display:flex;height:52px;border-bottom:.5px solid var(--dsw-alias-border-l2)}
 .ots-track:last-child{border-bottom:0}
-.ots-track-head{background:var(--dsw-alias-bg-layer-1);border-right:.5px solid var(--dsw-alias-border-l2);display:flex;flex:0 0 132px;flex-direction:column;justify-content:center;gap:1px;min-width:0;padding:0 8px;position:sticky;left:0;z-index:3}
+.ots-track-head{background:var(--dsw-alias-bg-layer-1);border-right:.5px solid var(--dsw-alias-border-l2);display:flex;flex:0 0 132px;flex-direction:column;justify-content:center;gap:2px;min-width:0;padding:2px 6px;position:sticky;left:0;z-index:3}
+.ots-track-head-row{align-items:center;display:flex;gap:2px;min-width:0}
+.ots-track-name-btn{background:none;border:0;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:1 1 auto;font-size:11px;line-height:1.2;min-width:0;overflow:hidden;padding:0;text-align:left;text-overflow:ellipsis;white-space:nowrap}
+.ots-track-name-btn:hover{color:var(--dsw-alias-label-primary)}
+.ots-track-name-input{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-brand-primary);border-radius:3px;color:var(--dsw-alias-label-primary);flex:1 1 auto;font-size:10.5px;height:17px;min-width:0;outline:none;padding:0 3px}
+.ots-track-actions{display:flex;flex:0 0 auto;gap:1px}
+.ots-track-icon{background:transparent;border:0;border-radius:3px;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:9px;font-weight:600;height:15px;line-height:1;padding:0;width:15px}
+.ots-track-icon:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ots-track-icon[data-active="true"]{background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-brand-primary)}
+.ots-track-icon[data-danger="true"]:hover{color:var(--dsw-alias-state-error-primary)}
+.ots-track[data-muted="true"] .ots-track-lane{opacity:.62}
+.ots-track[data-hidden="true"] .ots-track-lane{opacity:.38}
+.ots-track[data-hidden="true"] .ots-track-name-btn{color:var(--dsw-alias-label-secondary);text-decoration:line-through}
+.ots-track-confirm{align-items:center;background:var(--dsw-alias-bg-overlay);border:.5px solid var(--dsw-alias-state-error-primary);border-radius:4px;display:flex;flex-direction:column;gap:2px;inset:1px;justify-content:center;padding:2px;position:absolute;z-index:4}
+.ots-track-confirm-text{color:var(--dsw-alias-label-primary);font-size:9px;line-height:1.15;text-align:center}
+.ots-track-confirm-actions{display:flex;gap:3px}
+.ots-track-confirm .ots-mini{font-size:9px;height:16px;padding:0 4px}
+.ots-export-grid{display:grid;gap:8px;grid-template-columns:1fr 1fr}
+.ots-export-summary{background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.5;padding:6px 8px}
+.ots-export-check{align-items:center;display:flex;gap:6px;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:11.5px}
+.ots-export-check input{accent-color:var(--dsw-alias-brand-primary);margin:0}
+.ots-export-custom{display:grid;gap:6px;grid-template-columns:1fr 1fr;grid-column:1/-1}
 .ots-track-name{color:var(--dsw-alias-label-secondary);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ots-track-kind{color:var(--dsw-alias-label-secondary);font-size:10px;letter-spacing:.25px;text-transform:uppercase}
+.ots-track-kind{color:var(--dsw-alias-label-secondary);font-size:10px;letter-spacing:.25px;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ots-track-lane{flex:0 0 auto;position:relative;background:var(--dsw-alias-bg-base);background-image:linear-gradient(to right,var(--dsw-alias-border-l2) .5px,transparent .5px);background-size:calc(var(--ots-grid,60px)) 100%;cursor:default}
 .ots-track-lane:hover{background-color:var(--dsw-alias-bg-layer-1)}
 .ots-clip{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:5px;cursor:grab;display:flex;align-items:center;height:40px;margin-top:6px;min-width:2px;overflow:hidden;position:absolute;top:0;user-select:none}
@@ -1445,6 +1567,7 @@ window.__ModuleLoader__.load({
 			'status.deleted': 'Clip deleted.',
 			'status.split': 'Clip split.',
 			'status.trackAdded': 'Track added.',
+			'status.trackRemoved': 'Track removed.',
 			'status.textAdded': 'Text clip added.',
 			'status.clipAdded': 'Clip added to the timeline.',
 			'status.loading': 'Loading…',
@@ -1557,6 +1680,77 @@ window.__ModuleLoader__.load({
 			'status.effectAdded': 'Effect added.',
 			'status.transitionAdded': 'Transition added.',
 			'error.captions': 'Could not handle the caption file: {message}',
+			'timeline.muteTrack': 'Mute track',
+			'timeline.unmuteTrack': 'Unmute track',
+			'timeline.hideTrack': 'Hide track',
+			'timeline.showTrack': 'Show track',
+			'timeline.renameTrack': 'Rename track',
+			'timeline.deleteTrack': 'Delete track',
+			'timeline.confirmDeleteTrack': 'Delete this track and all its clips?',
+			'timeline.deleteConfirm': 'Delete',
+			'timeline.muted': 'muted',
+			'timeline.hidden': 'hidden',
+			'export.settings': 'Export settings',
+			'export.codec': 'Codec',
+			'export.codecH264': 'H.264',
+			'export.codecH265': 'H.265',
+			'export.resolution': 'Resolution',
+			'export.resProject': 'Project ({width}×{height})',
+			'export.res1080p': '1080p',
+			'export.res720p': '720p',
+			'export.resCustom': 'Custom',
+			'export.fps': 'Frame rate',
+			'export.fpsProject': 'Project ({fps} fps)',
+			'export.quality': 'Quality',
+			'export.qualityCrf': 'CRF',
+			'export.qualityBitrate': 'Bitrate',
+			'export.crf': 'CRF (0–51)',
+			'export.bitrate': 'Bitrate',
+			'export.bitratePlaceholder': '8M',
+			'export.customWidth': 'Width',
+			'export.customHeight': 'Height',
+			'export.overwrite': 'Overwrite an existing file',
+			'export.summary': '{codec} · {width}×{height} · {fps} fps · {quality}',
+			'export.summaryCrf': 'CRF {value}',
+			'export.summaryBitrate': '{value}',
+			'export.invalidSize': 'Custom width and height must be positive whole numbers.',
+			'export.invalidBitrate': 'Enter a bitrate such as 8M or 6000k.',
+			'export.estimated': 'Estimated settings',
+			'library.tabProject': 'Project',
+			'library.tabLibrary': 'Library',
+			'library.search': 'Search name, category or tags',
+			'library.kind': 'Media kind',
+			'library.kindAll': 'All kinds',
+			'library.favoritesOnly': 'Favorites only',
+			'library.import': 'Import folder',
+			'library.importing': 'Importing…',
+			'library.imported': 'Imported {count} item(s) into the library; skipped {skipped}.',
+			'library.empty': 'Library is empty',
+			'library.emptyHint': 'Import a folder to build a reusable global media library.',
+			'library.loading': 'Loading library…',
+			'library.retry': 'Retry',
+			'library.error': 'Library error: {message}',
+			'library.favorite': 'Add to favorites',
+			'library.unfavorite': 'Remove from favorites',
+			'library.addToProject': 'Add to project',
+			'library.added': 'Added “{name}” to the project.',
+			'library.edit': 'Edit library item',
+			'library.editTitle': 'Edit library item',
+			'library.name': 'Name',
+			'library.nameRequired': 'A name is required.',
+			'library.category': 'Category',
+			'library.tags': 'Tags',
+			'library.tagsPlaceholder': 'outdoor, b-roll',
+			'library.save': 'Save',
+			'library.updated': 'Library item updated.',
+			'library.delete': 'Delete library item',
+			'library.deleteTitle': 'Delete library item',
+			'library.deleteConfirm': 'Delete',
+			'library.deleted': 'Library item deleted.',
+			'library.importFolder': 'Folder path',
+			'library.importHint': 'Every video, audio and image file in the folder is imported into the global library.',
+			'library.importConfirm': 'Import',
+			'library.working': 'Working…',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -1744,6 +1938,7 @@ window.__ModuleLoader__.load({
 			'status.deleted': '已删除片段。',
 			'status.split': '已分割片段。',
 			'status.trackAdded': '已添加轨道。',
+			'status.trackRemoved': '已删除轨道。',
 			'status.textAdded': '已添加文本片段。',
 			'status.clipAdded': '已把片段添加到时间线。',
 			'status.loading': '加载中…',
@@ -1856,6 +2051,77 @@ window.__ModuleLoader__.load({
 			'status.effectAdded': '已添加效果。',
 			'status.transitionAdded': '已添加转场。',
 			'error.captions': '处理字幕文件失败：{message}',
+			'timeline.muteTrack': '静音轨道',
+			'timeline.unmuteTrack': '取消静音',
+			'timeline.hideTrack': '隐藏轨道',
+			'timeline.showTrack': '显示轨道',
+			'timeline.renameTrack': '重命名轨道',
+			'timeline.deleteTrack': '删除轨道',
+			'timeline.confirmDeleteTrack': '删除此轨道及其全部片段？',
+			'timeline.deleteConfirm': '删除',
+			'timeline.muted': '已静音',
+			'timeline.hidden': '已隐藏',
+			'export.settings': '导出设置',
+			'export.codec': '编码',
+			'export.codecH264': 'H.264',
+			'export.codecH265': 'H.265',
+			'export.resolution': '分辨率',
+			'export.resProject': '工程（{width}×{height}）',
+			'export.res1080p': '1080p',
+			'export.res720p': '720p',
+			'export.resCustom': '自定义',
+			'export.fps': '帧率',
+			'export.fpsProject': '工程（{fps} fps）',
+			'export.quality': '质量',
+			'export.qualityCrf': 'CRF',
+			'export.qualityBitrate': '码率',
+			'export.crf': 'CRF（0–51）',
+			'export.bitrate': '码率',
+			'export.bitratePlaceholder': '8M',
+			'export.customWidth': '宽',
+			'export.customHeight': '高',
+			'export.overwrite': '覆盖已存在的文件',
+			'export.summary': '{codec} · {width}×{height} · {fps} fps · {quality}',
+			'export.summaryCrf': 'CRF {value}',
+			'export.summaryBitrate': '{value}',
+			'export.invalidSize': '自定义宽高必须为正整数。',
+			'export.invalidBitrate': '请输入码率，例如 8M 或 6000k。',
+			'export.estimated': '预计设置',
+			'library.tabProject': '工程',
+			'library.tabLibrary': '素材库',
+			'library.search': '搜索名称、分类或标签',
+			'library.kind': '媒体类型',
+			'library.kindAll': '全部类型',
+			'library.favoritesOnly': '仅收藏',
+			'library.import': '导入文件夹',
+			'library.importing': '正在导入…',
+			'library.imported': '已导入 {count} 个素材到素材库，跳过 {skipped} 个。',
+			'library.empty': '素材库为空',
+			'library.emptyHint': '导入文件夹以建立可复用的全局素材库。',
+			'library.loading': '正在加载素材库…',
+			'library.retry': '重试',
+			'library.error': '素材库错误：{message}',
+			'library.favorite': '加入收藏',
+			'library.unfavorite': '取消收藏',
+			'library.addToProject': '添加到工程',
+			'library.added': '已将“{name}”添加到工程。',
+			'library.edit': '编辑素材',
+			'library.editTitle': '编辑素材',
+			'library.name': '名称',
+			'library.nameRequired': '名称不能为空。',
+			'library.category': '分类',
+			'library.tags': '标签',
+			'library.tagsPlaceholder': '户外, 空镜',
+			'library.save': '保存',
+			'library.updated': '素材已更新。',
+			'library.delete': '删除素材',
+			'library.deleteTitle': '删除素材',
+			'library.deleteConfirm': '删除',
+			'library.deleted': '素材已删除。',
+			'library.importFolder': '文件夹路径',
+			'library.importHint': '该文件夹中所有视频、音频和图片都会导入全局素材库。',
+			'library.importConfirm': '导入',
+			'library.working': '处理中…',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -1969,6 +2235,8 @@ window.__ModuleLoader__.load({
 					min: props.min,
 					max: props.max,
 					value: props.value,
+					'aria-label': props.label,
+					title: props.label,
 					onChange: (event) => props.onChange(event.target.value),
 					onBlur: props.onBlur,
 					onKeyDown: (event) => {
@@ -1991,6 +2259,8 @@ window.__ModuleLoader__.load({
 					{
 						className: 'ots-select',
 						value: props.value,
+						'aria-label': props.label,
+						title: props.label,
 						onChange: (event) => props.onChange(event.target.value),
 					},
 					props.options.map((option) =>
@@ -2152,89 +2422,281 @@ window.__ModuleLoader__.load({
 		// Media library
 		// -------------------------------------------------------------------
 
-		function MediaLibrary(props) {
-			const { t, project, onImport, onAddMedia, onDropFiles, importing, uploading, ffmpegAvailable } = props;
-			const media = project ? project.media : [];
-			const fps = project ? project.fps : 30;
-			const handleDrop = (event) => {
-				event.preventDefault();
-				if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length > 0) {
-					onDropFiles(event.dataTransfer.files);
+		function LibraryThumb(props) {
+			const [failed, setFailed] = React.useState(false);
+			const item = props.item;
+			if (item.kind === 'audio' || failed) {
+				const glyph = item.kind === 'audio' ? 'media.glyphAudio' : item.kind === 'image' ? 'media.glyphImage' : 'media.glyphVideo';
+				return h('span', { className: 'ots-media-glyph', 'aria-hidden': 'true' }, props.t(glyph));
+			}
+			return h('img', {
+				src: libraryThumbUrl(item.id),
+				alt: '',
+				loading: 'lazy',
+				draggable: false,
+				onError: () => setFailed(true),
+			});
+		}
+
+		function LibraryPanel(props) {
+			const { t, pickDirectory, onState, showNotice, ffmpegAvailable, projectAvailable } = props;
+			const [items, setItems] = React.useState([]);
+			const [query, setQuery] = React.useState('');
+			const [kind, setKind] = React.useState('all');
+			const [favoritesOnly, setFavoritesOnly] = React.useState(false);
+			const [loading, setLoading] = React.useState(true);
+			const [error, setError] = React.useState(null);
+			const [importing, setImporting] = React.useState(false);
+			const [busyId, setBusyId] = React.useState(null);
+			const [editing, setEditing] = React.useState(null);
+			const [deleting, setDeleting] = React.useState(null);
+			const [importPath, setImportPath] = React.useState(null);
+			const importSeq = React.useRef(0);
+
+			const errorText = (issue) => {
+				const raw = issue && issue.message ? issue.message : String(issue || '');
+				return t('library.error', { message: raw });
+			};
+
+			const fetchLibrary = async () => {
+				const data = await hostRequest(libraryItemsQuery(query, kind, favoritesOnly));
+				const nextItems = data && Array.isArray(data.items) ? data.items : [];
+				setItems(nextItems);
+				return data;
+			};
+
+			React.useEffect(() => {
+				const seq = importSeq.current + 1;
+				importSeq.current = seq;
+				setLoading(true);
+				setError(null);
+				fetchLibrary()
+					.catch((issue) => {
+						if (importSeq.current === seq) setError(errorText(issue));
+					})
+					.finally(() => {
+						if (importSeq.current === seq) setLoading(false);
+					});
+			}, [query, kind, favoritesOnly]);
+
+			const reload = async () => {
+				setError(null);
+				try {
+					await fetchLibrary();
+				} catch (issue) {
+					setError(errorText(issue));
 				}
 			};
-			return h(
-				'aside',
-				{ className: 'ots-panel ots-media', 'aria-label': t('media.title') },
+			const replaceItem = (nextItem) => {
+				if (!nextItem || typeof nextItem.id !== 'string') return;
+				setItems((previous) => previous.map((item) => (item.id === nextItem.id ? nextItem : item)));
+			};
+			const doImport = async (folder) => {
+				const folderPath = typeof folder === 'string' ? folder.trim() : '';
+				if (folderPath.length === 0) {
+					setImportPath('');
+					return;
+				}
+				setImporting(true);
+				setError(null);
+				try {
+					const data = await hostPost('library/import', { path: folderPath });
+					const imported = data && Array.isArray(data.imported) ? data.imported.length : 0;
+					const skipped = data && Array.isArray(data.skipped) ? data.skipped.length : 0;
+					setImportPath(null);
+					await reload();
+					showNotice(t('library.imported', { count: imported, skipped }));
+				} catch (issue) {
+					setError(errorText(issue));
+				} finally {
+					setImporting(false);
+				}
+			};
+			const chooseImportFolder = async () => {
+				let picked;
+				try {
+					picked = pickDirectory ? await pickDirectory() : undefined;
+				} catch (issue) {
+					setError(errorText(issue));
+					return;
+				}
+				if (picked === undefined) {
+					setImportPath('');
+					return;
+				}
+				if (picked === null) return;
+				await doImport(picked);
+			};
+			const toggleFavorite = async (item) => {
+				setBusyId(item.id);
+				setError(null);
+				try {
+					const data = await hostPost('library/update', {
+						id: item.id,
+						patch: { favorite: item.favorite !== true },
+					});
+					if (data && data.item) replaceItem(data.item);
+					if (favoritesOnly && data && data.item && data.item.favorite !== true) {
+						setItems((previous) => previous.filter((entry) => entry.id !== item.id));
+					}
+				} catch (issue) {
+					setError(errorText(issue));
+				} finally {
+					setBusyId(null);
+				}
+			};
+			const addToProject = async (item) => {
+				setBusyId(item.id);
+				setError(null);
+				try {
+					const payload = await hostPost('library/add-to-project', { id: item.id });
+					if (typeof onState === 'function') onState(payload);
+					showNotice(t('library.added', { name: item.name }));
+				} catch (issue) {
+					setError(errorText(issue));
+				} finally {
+					setBusyId(null);
+				}
+			};
+			const saveEdit = async () => {
+				if (!editing) return;
+				const name = String(editing.name || '').trim();
+				if (name.length === 0) {
+					setEditing(Object.assign({}, editing, { error: t('library.nameRequired') }));
+					return;
+				}
+				const tags = String(editing.tags || '')
+					.split(',')
+					.map((tag) => tag.trim())
+					.filter((tag) => tag.length > 0);
+				setBusyId(editing.id);
+				setError(null);
+				try {
+					const data = await hostPost('library/update', {
+						id: editing.id,
+						patch: { name, category: String(editing.category || '').trim(), tags },
+					});
+					if (data && data.item) replaceItem(data.item);
+					setEditing(null);
+					showNotice(t('library.updated'));
+				} catch (issue) {
+					setEditing(Object.assign({}, editing, { error: errorText(issue) }));
+				} finally {
+					setBusyId(null);
+				}
+			};
+			const confirmDelete = async () => {
+				if (!deleting) return;
+				setBusyId(deleting.id);
+				setError(null);
+				try {
+					await hostPost('library/delete', { id: deleting.id });
+					setItems((previous) => previous.filter((item) => item.id !== deleting.id));
+					setDeleting(null);
+					showNotice(t('library.deleted'));
+				} catch (issue) {
+					setError(errorText(issue));
+				} finally {
+					setBusyId(null);
+				}
+			};
+
+			const toolbar = h(
+				'div',
+				{ className: 'ots-library-toolbar' },
 				h(
 					'div',
-					{ className: 'ots-panel-head' },
-					h('span', { className: 'ots-panel-title' }, t('media.title')),
-					importing ? h('span', { className: 'ots-panel-sub', role: 'status' }, t('media.importing')) : null,
+					{ className: 'ots-library-search-row' },
+					h('input', {
+						className: 'ots-input',
+						type: 'search',
+						value: query,
+						placeholder: t('library.search'),
+						'aria-label': t('library.search'),
+						onChange: (event) => setQuery(event.target.value),
+					}),
 					h(
-						Btn,
+						'select',
 						{
-							variant: 'outline',
-							onClick: onImport,
-							disabled: importing || !ffmpegAvailable,
-							title: ffmpegAvailable ? t('media.import') : t('ffmpeg.missingTitle'),
+							className: 'ots-select',
+							value: kind,
+							'aria-label': t('library.kind'),
+							onChange: (event) => setKind(event.target.value),
 						},
-						t('media.import'),
+						h('option', { value: 'all' }, t('library.kindAll')),
+						['video', 'audio', 'image'].map((value) => h('option', { key: value, value }, t(`media.${value}`))),
+					),
+					h(
+						'button',
+						{
+							type: 'button',
+							className: 'ots-mini',
+							'data-active': favoritesOnly ? 'true' : 'false',
+							title: t('library.favoritesOnly'),
+							'aria-label': t('library.favoritesOnly'),
+							'aria-pressed': favoritesOnly ? 'true' : 'false',
+							onClick: () => setFavoritesOnly((value) => !value),
+						},
+						'★',
 					),
 				),
 				h(
 					'div',
-					{
-						className: 'ots-panel-body',
-						onDragOver: (event) => {
-							event.preventDefault();
+					{ className: 'ots-library-actions-row' },
+					h(
+						Btn,
+						{
+							variant: 'outline',
+							onClick: chooseImportFolder,
+							disabled: importing || !ffmpegAvailable,
+							title: ffmpegAvailable ? t('library.import') : t('ffmpeg.missingTitle'),
 						},
-						onDrop: handleDrop,
-					},
-					media.length === 0
+						importing ? t('library.importing') : t('library.import'),
+					),
+					importing ? h('span', { className: 'ots-panel-sub', role: 'status' }, t('library.importing')) : null,
+				),
+			);
+
+			const grid = loading
+				? h('div', { className: 'ots-library-status', role: 'status', 'aria-live': 'polite' }, t('library.loading'))
+				: error
+					? h(
+							'div',
+							{ className: 'ots-library-status ots-library-error', role: 'alert' },
+							h('span', {}, error),
+							h(Btn, { variant: 'outline', onClick: () => void reload() }, t('library.retry')),
+						)
+					: items.length === 0
 						? h(
 								'div',
 								{ className: 'ots-media-empty' },
-								h('span', { className: 'ots-media-empty-title' }, t('media.empty')),
-								h('span', {}, t('media.emptyHint')),
-								h('div', { className: 'ots-drop-hint' }, t('media.dropHint')),
+								h('span', { className: 'ots-media-empty-title' }, t('library.empty')),
+								h('span', {}, t('library.emptyHint')),
 							)
 						: h(
 								'div',
 								{ className: 'ots-media-grid' },
-								media.map((item) =>
+								items.map((item) =>
 									h(
 										'div',
-										{
-											key: item.id,
-											className: 'ots-media-card',
-											title: item.name,
-											draggable: true,
-											'data-media-id': item.id,
-											onDragStart: (event) => {
-												if (!event.dataTransfer) return;
-												event.dataTransfer.effectAllowed = 'copy';
-												event.dataTransfer.setData('application/x-opentake-media', item.id);
-												event.dataTransfer.setData('text/plain', item.id);
-											},
-											onDoubleClick: () => onAddMedia(item.id, null, null),
-										},
+										{ key: item.id, className: 'ots-media-card ots-library-card', title: item.name },
 										h(
 											'div',
 											{ className: 'ots-media-thumb' },
-											h(MediaThumb, { media: item, t }),
+											h(LibraryThumb, { item, t }),
 											h(
 												'button',
 												{
 													type: 'button',
-													className: 'ots-media-add',
-													onClick: (event) => {
-														event.stopPropagation();
-														onAddMedia(item.id, null, null);
-													},
-													title: t('media.addToTimeline'),
-													'aria-label': t('media.addToTimeline'),
+													className: 'ots-library-star',
+													'data-active': item.favorite === true ? 'true' : 'false',
+													title: item.favorite === true ? t('library.unfavorite') : t('library.favorite'),
+													'aria-label': item.favorite === true ? t('library.unfavorite') : t('library.favorite'),
+													'aria-pressed': item.favorite === true ? 'true' : 'false',
+													disabled: busyId === item.id,
+													onClick: () => void toggleFavorite(item),
 												},
-												'+',
+												item.favorite === true ? '★' : '☆',
 											),
 										),
 										h(
@@ -2248,16 +2710,371 @@ window.__ModuleLoader__.load({
 												h(
 													'span',
 													{},
-													item.durationFrames === null
+													item.durationSeconds === null || item.durationSeconds === undefined
 														? t('media.still')
-														: formatDurationFrames(item.durationFrames, fps),
+														: formatClock(finiteNumber(item.durationSeconds, 0)),
 												),
+												item.category ? h('span', { className: 'ots-library-category', title: item.category }, item.category) : null,
+											),
+										),
+										h(
+											'div',
+											{ className: 'ots-library-actions-row' },
+											h(
+												'button',
+												{
+													type: 'button',
+													className: 'ots-mini',
+													disabled: busyId === item.id || !projectAvailable,
+													title: t('library.addToProject'),
+													onClick: () => void addToProject(item),
+												},
+												busyId === item.id ? t('library.working') : t('library.addToProject'),
+											),
+											h(
+												'button',
+												{
+													type: 'button',
+													className: 'ots-mini',
+													title: t('library.edit'),
+													'aria-label': t('library.edit'),
+													onClick: () =>
+														setEditing({
+															id: item.id,
+															name: item.name || '',
+															category: item.category || '',
+															tags: Array.isArray(item.tags) ? item.tags.join(', ') : '',
+															error: null,
+														}),
+												},
+												'✎',
+											),
+											h(
+												'button',
+												{
+													type: 'button',
+													className: 'ots-mini',
+													'data-danger': 'true',
+													title: t('library.delete'),
+													'aria-label': t('library.delete'),
+													onClick: () => setDeleting(item),
+												},
+												'×',
+											),
+										),
+									),
+								),
+							);
+
+			const editDialog = editing
+				? h(
+						'div',
+						{
+							className: 'ots-modal-backdrop ots-modal-fixed',
+							role: 'dialog',
+							'aria-modal': 'true',
+							'aria-label': t('library.editTitle'),
+							onPointerDown: (event) => {
+								if (event.target === event.currentTarget) setEditing(null);
+							},
+						},
+						h(
+							'div',
+							{ className: 'ots-modal' },
+							h('h2', { className: 'ots-modal-title' }, t('library.editTitle')),
+							h(
+								'div',
+								{ className: 'ots-modal-body' },
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('library.name')),
+									h('input', {
+										className: 'ots-input',
+										type: 'text',
+										value: editing.name,
+										'aria-label': t('library.name'),
+										onChange: (event) => setEditing(Object.assign({}, editing, { name: event.target.value })),
+									}),
+								),
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('library.category')),
+									h('input', {
+										className: 'ots-input',
+										type: 'text',
+										value: editing.category,
+										'aria-label': t('library.category'),
+										onChange: (event) => setEditing(Object.assign({}, editing, { category: event.target.value })),
+									}),
+								),
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('library.tags')),
+									h('input', {
+										className: 'ots-input',
+										type: 'text',
+										value: editing.tags,
+										placeholder: t('library.tagsPlaceholder'),
+										'aria-label': t('library.tags'),
+										onChange: (event) => setEditing(Object.assign({}, editing, { tags: event.target.value })),
+									}),
+								),
+								editing.error ? h('p', { className: 'ots-modal-error', role: 'alert' }, editing.error) : null,
+							),
+							h(
+								'div',
+								{ className: 'ots-modal-actions' },
+								h(Btn, { variant: 'ghost', onClick: () => setEditing(null) }, t('actions.cancel')),
+								h(Btn, { variant: 'primary', onClick: saveEdit, disabled: busyId === editing.id }, t('library.save')),
+							),
+						),
+					)
+				: null;
+			const deleteDialog = deleting
+				? h(
+						'div',
+						{
+							className: 'ots-modal-backdrop ots-modal-fixed',
+							role: 'dialog',
+							'aria-modal': 'true',
+							'aria-label': t('library.deleteTitle'),
+							onPointerDown: (event) => {
+								if (event.target === event.currentTarget) setDeleting(null);
+							},
+						},
+						h(
+							'div',
+							{ className: 'ots-modal' },
+							h('h2', { className: 'ots-modal-title' }, t('library.deleteTitle')),
+							h('p', { className: 'ots-modal-hint' }, deleting.name),
+							h(
+								'div',
+								{ className: 'ots-modal-actions' },
+								h(Btn, { variant: 'ghost', onClick: () => setDeleting(null) }, t('actions.cancel')),
+								h(Btn, { variant: 'primary', onClick: confirmDelete, disabled: busyId === deleting.id }, t('library.deleteConfirm')),
+							),
+						),
+					)
+				: null;
+			const importDialog =
+				importPath !== null
+					? h(
+							'div',
+							{
+								className: 'ots-modal-backdrop ots-modal-fixed',
+								role: 'dialog',
+								'aria-modal': 'true',
+								'aria-label': t('library.import'),
+								onPointerDown: (event) => {
+									if (event.target === event.currentTarget && !importing) setImportPath(null);
+								},
+							},
+							h(
+								'div',
+								{ className: 'ots-modal' },
+								h('h2', { className: 'ots-modal-title' }, t('library.import')),
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('library.importFolder')),
+									h('input', {
+										className: 'ots-input',
+										type: 'text',
+										value: importPath,
+										placeholder: t('dialog.pathPlaceholder'),
+										'aria-label': t('library.importFolder'),
+										onChange: (event) => setImportPath(event.target.value),
+									}),
+								),
+								h('p', { className: 'ots-modal-hint' }, t('library.importHint')),
+								h(
+									'div',
+									{ className: 'ots-modal-actions' },
+									h(Btn, { variant: 'ghost', onClick: () => setImportPath(null), disabled: importing }, t('actions.cancel')),
+									h(Btn, { variant: 'primary', onClick: () => void doImport(importPath), disabled: importing }, importing ? t('library.importing') : t('library.importConfirm')),
+								),
+							),
+						)
+					: null;
+
+			return h(
+				'div',
+				{ className: 'ots-library-panel' },
+				toolbar,
+				grid,
+				editDialog,
+				deleteDialog,
+				importDialog,
+			);
+		}
+
+		function MediaLibrary(props) {
+			const {
+				t,
+				project,
+				onImport,
+				onAddMedia,
+				onDropFiles,
+				importing,
+				uploading,
+				ffmpegAvailable,
+				pickDirectory,
+				onLibraryState,
+				showNotice,
+			} = props;
+			const [tab, setTab] = React.useState('project');
+			const media = project ? project.media : [];
+			const fps = project ? project.fps : 30;
+			const handleDrop = (event) => {
+				event.preventDefault();
+				if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+					onDropFiles(event.dataTransfer.files);
+				}
+			};
+			const projectContent =
+				media.length === 0
+					? h(
+							'div',
+							{ className: 'ots-media-empty' },
+							h('span', { className: 'ots-media-empty-title' }, t('media.empty')),
+							h('span', {}, t('media.emptyHint')),
+							h('div', { className: 'ots-drop-hint' }, t('media.dropHint')),
+						)
+					: h(
+							'div',
+							{ className: 'ots-media-grid' },
+							media.map((item) =>
+								h(
+									'div',
+									{
+										key: item.id,
+										className: 'ots-media-card',
+										title: item.name,
+										draggable: true,
+										'data-media-id': item.id,
+										onDragStart: (event) => {
+											if (!event.dataTransfer) return;
+											event.dataTransfer.effectAllowed = 'copy';
+											event.dataTransfer.setData('application/x-opentake-media', item.id);
+											event.dataTransfer.setData('text/plain', item.id);
+										},
+										onDoubleClick: () => onAddMedia(item.id, null, null),
+									},
+									h(
+										'div',
+										{ className: 'ots-media-thumb' },
+										h(MediaThumb, { media: item, t }),
+										h(
+											'button',
+											{
+												type: 'button',
+												className: 'ots-media-add',
+												onClick: (event) => {
+													event.stopPropagation();
+													onAddMedia(item.id, null, null);
+												},
+												title: t('media.addToTimeline'),
+												'aria-label': t('media.addToTimeline'),
+											},
+											'+',
+										),
+									),
+									h(
+										'div',
+										{ className: 'ots-media-meta' },
+										h('span', { className: 'ots-media-name' }, item.name),
+										h(
+											'span',
+											{ className: 'ots-media-sub' },
+											h('span', {}, t(`media.${item.kind}`)),
+											h(
+												'span',
+												{},
+												item.durationFrames === null
+													? t('media.still')
+													: formatDurationFrames(item.durationFrames, fps),
 											),
 										),
 									),
 								),
 							),
-					uploading ? h('div', { className: 'ots-panel-sub', role: 'status' }, uploading) : null,
+						);
+			return h(
+				'aside',
+				{ className: 'ots-panel ots-media', 'aria-label': t('media.title') },
+				h(
+					'div',
+					{ className: 'ots-panel-head' },
+					h('span', { className: 'ots-panel-title' }, t('media.title')),
+					importing ? h('span', { className: 'ots-panel-sub', role: 'status' }, t('media.importing')) : null,
+					tab === 'project'
+						? h(
+								Btn,
+								{
+									variant: 'outline',
+									onClick: onImport,
+									disabled: importing || !ffmpegAvailable,
+									title: ffmpegAvailable ? t('media.import') : t('ffmpeg.missingTitle'),
+								},
+								t('media.import'),
+							)
+						: null,
+				),
+				h(
+					'div',
+					{ className: 'ots-media-tabs', role: 'tablist', 'aria-label': t('media.title') },
+					h(
+						'button',
+						{
+							type: 'button',
+							role: 'tab',
+							className: 'ots-media-tab',
+							'data-active': tab === 'project' ? 'true' : 'false',
+							'aria-selected': tab === 'project' ? 'true' : 'false',
+							onClick: () => setTab('project'),
+						},
+						t('library.tabProject'),
+					),
+					h(
+						'button',
+						{
+							type: 'button',
+							role: 'tab',
+							className: 'ots-media-tab',
+							'data-active': tab === 'library' ? 'true' : 'false',
+							'aria-selected': tab === 'library' ? 'true' : 'false',
+							onClick: () => setTab('library'),
+						},
+						t('library.tabLibrary'),
+					),
+				),
+				h(
+					'div',
+					{
+						className: 'ots-panel-body',
+						onDragOver: (event) => {
+							if (tab === 'project') event.preventDefault();
+						},
+						onDrop: (event) => {
+							if (tab === 'project') handleDrop(event);
+						},
+					},
+					tab === 'project'
+						? projectContent
+						: h(LibraryPanel, {
+								t,
+								pickDirectory,
+								onState: onLibraryState,
+								showNotice,
+								ffmpegAvailable,
+								projectAvailable: Boolean(project),
+							}),
+					tab === 'project' && uploading
+						? h('div', { className: 'ots-panel-sub', role: 'status' }, uploading)
+						: null,
 				),
 			);
 		}
@@ -3516,6 +4333,8 @@ window.__ModuleLoader__.load({
 							h(NumberField, {
 								label: t('inspector.rotation'),
 								value: source.rotation,
+								min: -360,
+								max: 360,
 								step: 1,
 								onChange: (value) => onPropertyChange({ transform: { rotation: value } }),
 								onBlur: onPropertyCommit,
@@ -3696,11 +4515,16 @@ window.__ModuleLoader__.load({
 				onAddMarker,
 				onAddTrack,
 				onAddText,
+				onUpdateTrack,
+				onRemoveTrack,
 			} = props;
 			const scrollRef = React.useRef(null);
 			const rowRefs = React.useRef({});
 			const dragRef = React.useRef(null);
 			const [dragState, setDragState] = React.useState(null);
+			const [editingTrackId, setEditingTrackId] = React.useState(null);
+			const [trackNameDraft, setTrackNameDraft] = React.useState('');
+			const [confirmTrackId, setConfirmTrackId] = React.useState(null);
 			const scrollSize = useElementSize(scrollRef);
 			const fps = project ? project.fps : 30;
 			const duration = project ? timelineDurationFrames(project) : 0;
@@ -3997,6 +4821,164 @@ window.__ModuleLoader__.load({
 				onDropMedia(mediaId, trackId, frameFromClientX(event.clientX));
 			};
 
+			const startRenameTrack = (track) => {
+				setConfirmTrackId(null);
+				setEditingTrackId(track.id);
+				setTrackNameDraft(track.name || '');
+			};
+			const cancelRenameTrack = () => {
+				setEditingTrackId(null);
+			};
+			const commitRenameTrack = () => {
+				const trackId = editingTrackId;
+				if (!trackId) return;
+				const track = tracks.find((candidate) => candidate.id === trackId);
+				const name = trackNameDraft.trim();
+				setEditingTrackId(null);
+				if (track && name.length > 0 && name !== track.name) onUpdateTrack(trackId, { name });
+			};
+			const renderTrackHead = (track) => {
+				const muted = track.muted === true;
+				const hidden = track.hidden === true;
+				const typeLabel = t(track.type === 'audio' ? 'timeline.audioTrack' : 'timeline.videoTrack');
+				const stateSuffix = [muted ? t('timeline.muted') : null, hidden ? t('timeline.hidden') : null]
+					.filter(Boolean)
+					.join(' · ');
+				return h(
+					'div',
+					{
+						className: 'ots-track-head',
+						'data-muted': muted ? 'true' : 'false',
+						'data-hidden': hidden ? 'true' : 'false',
+					},
+					h(
+						'div',
+						{ className: 'ots-track-head-row' },
+						editingTrackId === track.id
+							? h('input', {
+									className: 'ots-track-name-input',
+									type: 'text',
+									value: trackNameDraft,
+									autoFocus: true,
+									'aria-label': t('timeline.renameTrack'),
+									onChange: (event) => setTrackNameDraft(event.target.value),
+									onBlur: commitRenameTrack,
+									onKeyDown: (event) => {
+										if (event.key === 'Enter') {
+											event.preventDefault();
+											commitRenameTrack();
+										} else if (event.key === 'Escape') {
+											event.preventDefault();
+											cancelRenameTrack();
+										}
+									},
+								})
+							: h(
+									'button',
+									{
+										type: 'button',
+										className: 'ots-track-name-btn',
+										title: t('timeline.renameTrack'),
+										onDoubleClick: () => startRenameTrack(track),
+										onClick: (event) => event.stopPropagation(),
+									},
+									track.name || typeLabel,
+								),
+						h(
+							'div',
+							{ className: 'ots-track-actions' },
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'ots-track-icon',
+									'data-active': muted ? 'true' : 'false',
+									title: muted ? t('timeline.unmuteTrack') : t('timeline.muteTrack'),
+									'aria-label': muted ? t('timeline.unmuteTrack') : t('timeline.muteTrack'),
+									'aria-pressed': muted ? 'true' : 'false',
+									onClick: () => onUpdateTrack(track.id, { muted: !muted }),
+								},
+								'M',
+							),
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'ots-track-icon',
+									'data-active': hidden ? 'true' : 'false',
+									title: hidden ? t('timeline.showTrack') : t('timeline.hideTrack'),
+									'aria-label': hidden ? t('timeline.showTrack') : t('timeline.hideTrack'),
+									'aria-pressed': hidden ? 'true' : 'false',
+									onClick: () => onUpdateTrack(track.id, { hidden: !hidden }),
+								},
+								'H',
+							),
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'ots-track-icon',
+									title: t('timeline.renameTrack'),
+									'aria-label': t('timeline.renameTrack'),
+									onClick: () => startRenameTrack(track),
+								},
+								'✎',
+							),
+							h(
+								'button',
+								{
+									type: 'button',
+									className: 'ots-track-icon',
+									'data-danger': 'true',
+									title: t('timeline.deleteTrack'),
+									'aria-label': t('timeline.deleteTrack'),
+									onClick: () => setConfirmTrackId(track.id),
+								},
+								'×',
+							),
+						),
+					),
+					h(
+						'span',
+						{ className: 'ots-track-kind', title: `${typeLabel} · ${t('timeline.clipCount', { count: track.clips.length })}${stateSuffix ? ` · ${stateSuffix}` : ''}` },
+						`${typeLabel} · ${t('timeline.clipCount', { count: track.clips.length })}${stateSuffix ? ` · ${stateSuffix}` : ''}`,
+					),
+					confirmTrackId === track.id
+						? h(
+								'div',
+								{ className: 'ots-track-confirm' },
+								h('span', { className: 'ots-track-confirm-text' }, t('timeline.confirmDeleteTrack')),
+								h(
+									'div',
+									{ className: 'ots-track-confirm-actions' },
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'ots-mini',
+											'data-danger': 'true',
+											onClick: () => {
+												setConfirmTrackId(null);
+												onRemoveTrack(track.id);
+											},
+										},
+										t('timeline.deleteConfirm'),
+									),
+									h(
+										'button',
+										{
+											type: 'button',
+											className: 'ots-mini',
+											onClick: () => setConfirmTrackId(null),
+										},
+										t('actions.cancel'),
+									),
+								),
+							)
+						: null,
+				);
+			};
+
 			const renderClip = (track, clip, preview) => {
 				const startFrame = preview ? preview.startFrame : clip.startFrame;
 				const durationFrames = preview ? preview.durationFrames : clip.durationFrames;
@@ -4070,13 +5052,10 @@ window.__ModuleLoader__.load({
 							else delete rowRefs.current[track.id];
 						},
 						'data-track-id': track.id,
+						'data-muted': track.muted === true ? 'true' : 'false',
+						'data-hidden': track.hidden === true ? 'true' : 'false',
 					},
-					h(
-						'div',
-						{ className: 'ots-track-head' },
-						h('span', { className: 'ots-track-name', title: track.name }, track.name || t(track.type === 'audio' ? 'timeline.audioTrack' : 'timeline.videoTrack')),
-						h('span', { className: 'ots-track-kind' }, `${t(track.type === 'audio' ? 'timeline.audioTrack' : 'timeline.videoTrack')} · ${t('timeline.clipCount', { count: track.clips.length })}`),
-					),
+					renderTrackHead(track),
 					h(
 						'div',
 						{
@@ -4230,10 +5209,225 @@ window.__ModuleLoader__.load({
 		// -------------------------------------------------------------------
 
 		function Dialog(props) {
-			const { t, dialog, onPathChange, onNameChange, onBrowse, onSubmit, onClose, title } = props;
+			const { t, dialog, project, onPatch, onBrowse, onSubmit, onClose, title } = props;
 			const isExport = dialog.mode === 'export';
 			const isNew = dialog.mode === 'new';
 			const busy = Boolean(dialog.busy);
+			const exportSettings = isExport ? effectiveExportSettings(project, dialog) : null;
+			const exportQuality = exportSettings
+				? exportSettings.qualityMode === 'crf'
+					? t('export.summaryCrf', { value: exportSettings.crf })
+					: t('export.summaryBitrate', { value: exportSettings.bitrate })
+				: '';
+			const exportSummary = exportSettings
+				? t('export.summary', {
+						codec: t(exportSettings.codec === 'h265' ? 'export.codecH265' : 'export.codecH264'),
+						width: exportSettings.width,
+						height: exportSettings.height,
+						fps: exportSettings.fps,
+						quality: exportQuality,
+					})
+				: '';
+			const projectLabel = h(
+				'label',
+				{ className: 'ots-field' },
+				h('span', { className: 'ots-field-label' }, isExport ? t('dialog.outputFile') : dialog.mode === 'import' ? t('dialog.mediaFolder') : t('dialog.folder')),
+				h(
+					'div',
+					{ className: 'ots-modal-path-row' },
+					h('input', {
+						className: 'ots-input',
+						type: 'text',
+						value: dialog.path,
+						placeholder: isExport ? t('dialog.outputPlaceholder') : t('dialog.pathPlaceholder'),
+						spellCheck: false,
+						onChange: (event) => onPatch({ path: event.target.value }),
+						onKeyDown: (event) => {
+							if (event.key === 'Enter') {
+								event.preventDefault();
+								onSubmit();
+							}
+						},
+						autoFocus: true,
+					}),
+					h(Btn, { variant: 'outline', onClick: onBrowse, disabled: busy }, t('actions.browse')),
+				),
+				h(
+					'p',
+					{ className: 'ots-modal-hint' },
+					isNew
+						? t('dialog.newHint')
+						: dialog.mode === 'open'
+							? t('dialog.openHint')
+							: dialog.mode === 'import'
+								? t('dialog.importHint')
+								: t('dialog.exportHint'),
+				),
+				h('p', { className: 'ots-modal-hint' }, t('dialog.pathHint')),
+			);
+			const exportOptions = isExport
+				? [
+						h(
+							'div',
+							{ className: 'ots-export-grid', key: 'export-options' },
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('export.codec')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: dialog.codec === 'h265' ? 'h265' : 'h264',
+										'aria-label': t('export.codec'),
+										title: t('export.codec'),
+										onChange: (event) => onPatch({ codec: event.target.value }),
+									},
+									h('option', { value: 'h264' }, t('export.codecH264')),
+									h('option', { value: 'h265' }, t('export.codecH265')),
+								),
+							),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('export.fps')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: String(dialog.fps),
+										'aria-label': t('export.fps'),
+										title: t('export.fps'),
+										onChange: (event) => onPatch({ fps: event.target.value === 'project' ? 'project' : Number(event.target.value) }),
+									},
+									h('option', { value: 'project' }, t('export.fpsProject', { fps: project ? project.fps : 30 })),
+									[24, 25, 30, 50, 60].map((fps) => h('option', { key: fps, value: String(fps) }, `${fps} fps`)),
+								),
+							),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('export.resolution')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: ['project', '1080p', '720p', 'custom'].includes(dialog.resolution) ? dialog.resolution : 'project',
+										'aria-label': t('export.resolution'),
+										title: t('export.resolution'),
+										onChange: (event) => onPatch({ resolution: event.target.value }),
+									},
+									h('option', { value: 'project' }, t('export.resProject', { width: project ? project.width : 1920, height: project ? project.height : 1080 })),
+									h('option', { value: '1080p' }, t('export.res1080p')),
+									h('option', { value: '720p' }, t('export.res720p')),
+									h('option', { value: 'custom' }, t('export.resCustom')),
+								),
+							),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('export.quality')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: dialog.qualityMode === 'bitrate' ? 'bitrate' : 'crf',
+										'aria-label': t('export.quality'),
+										title: t('export.quality'),
+										onChange: (event) => onPatch({ qualityMode: event.target.value }),
+									},
+									h('option', { value: 'crf' }, t('export.qualityCrf')),
+									h('option', { value: 'bitrate' }, t('export.qualityBitrate')),
+								),
+							),
+							dialog.resolution === 'custom'
+								? h(
+										'div',
+										{ className: 'ots-export-custom', key: 'custom-size' },
+										h(
+											'label',
+											{ className: 'ots-field' },
+											h('span', { className: 'ots-field-label' }, t('export.customWidth')),
+											h('input', {
+												className: 'ots-input',
+												type: 'number',
+												min: 2,
+												step: 1,
+												value: dialog.width,
+												'aria-label': t('export.customWidth'),
+												title: t('export.customWidth'),
+												onChange: (event) => onPatch({ width: event.target.value }),
+											}),
+										),
+										h(
+											'label',
+											{ className: 'ots-field' },
+											h('span', { className: 'ots-field-label' }, t('export.customHeight')),
+											h('input', {
+												className: 'ots-input',
+												type: 'number',
+												min: 2,
+												step: 1,
+												value: dialog.height,
+												'aria-label': t('export.customHeight'),
+												title: t('export.customHeight'),
+												onChange: (event) => onPatch({ height: event.target.value }),
+											}),
+										),
+									)
+								: null,
+							dialog.qualityMode === 'bitrate'
+								? h(
+										'label',
+										{ className: 'ots-field', key: 'bitrate' },
+										h('span', { className: 'ots-field-label' }, t('export.bitrate')),
+										h('input', {
+											className: 'ots-input',
+											type: 'text',
+											value: dialog.bitrate,
+											placeholder: t('export.bitratePlaceholder'),
+											'aria-label': t('export.bitrate'),
+											title: t('export.bitrate'),
+											spellCheck: false,
+											onChange: (event) => onPatch({ bitrate: event.target.value }),
+										}),
+									)
+								: h(
+										'label',
+										{ className: 'ots-field', key: 'crf' },
+										h('span', { className: 'ots-field-label' }, t('export.crf')),
+										h('input', {
+											className: 'ots-input',
+											type: 'number',
+											min: 0,
+											max: 51,
+											step: 1,
+											value: dialog.crf,
+											'aria-label': t('export.crf'),
+											title: t('export.crf'),
+											onChange: (event) => onPatch({ crf: event.target.value }),
+										}),
+									),
+						),
+						h(
+							'label',
+							{ className: 'ots-export-check', key: 'overwrite' },
+							h('input', {
+								type: 'checkbox',
+								checked: dialog.overwrite === true,
+								'aria-label': t('export.overwrite'),
+								onChange: (event) => onPatch({ overwrite: event.target.checked }),
+							}),
+							t('export.overwrite'),
+						),
+						h(
+							'div',
+							{ className: 'ots-export-summary', key: 'summary' },
+							h('strong', {}, t('export.estimated')),
+							h('div', {}, exportSummary),
+						),
+					]
+				: [];
 			return h(
 				'div',
 				{
@@ -4252,43 +5446,7 @@ window.__ModuleLoader__.load({
 					h(
 						'div',
 						{ className: 'ots-modal-body' },
-						h(
-							'label',
-							{ className: 'ots-field' },
-							h('span', { className: 'ots-field-label' }, isExport ? t('dialog.outputFile') : dialog.mode === 'import' ? t('dialog.mediaFolder') : t('dialog.folder')),
-							h(
-								'div',
-								{ className: 'ots-modal-path-row' },
-								h('input', {
-									className: 'ots-input',
-									type: 'text',
-									value: dialog.path,
-									placeholder: isExport ? t('dialog.outputPlaceholder') : t('dialog.pathPlaceholder'),
-									spellCheck: false,
-									onChange: (event) => onPathChange(event.target.value),
-									onKeyDown: (event) => {
-										if (event.key === 'Enter') {
-											event.preventDefault();
-											onSubmit();
-										}
-									},
-									autoFocus: true,
-								}),
-								h(Btn, { variant: 'outline', onClick: onBrowse, disabled: busy }, t('actions.browse')),
-							),
-							h(
-								'p',
-								{ className: 'ots-modal-hint' },
-								isNew
-									? t('dialog.newHint')
-									: dialog.mode === 'open'
-										? t('dialog.openHint')
-										: dialog.mode === 'import'
-											? t('dialog.importHint')
-											: t('dialog.exportHint'),
-							),
-							h('p', { className: 'ots-modal-hint' }, t('dialog.pathHint')),
-						),
+						projectLabel,
 						isNew
 							? h(
 									'label',
@@ -4299,7 +5457,7 @@ window.__ModuleLoader__.load({
 										type: 'text',
 										value: dialog.name,
 										placeholder: t('dialog.projectNamePlaceholder'),
-										onChange: (event) => onNameChange(event.target.value),
+										onChange: (event) => onPatch({ name: event.target.value }),
 										onKeyDown: (event) => {
 											if (event.key === 'Enter') {
 												event.preventDefault();
@@ -4309,6 +5467,8 @@ window.__ModuleLoader__.load({
 									}),
 								)
 							: null,
+						isExport ? h('h3', { className: 'ots-section-title' }, t('export.settings')) : null,
+						isExport ? exportOptions : null,
 						dialog.status ? h('p', { className: 'ots-modal-hint', role: 'status', 'aria-live': 'polite' }, dialog.status) : null,
 						dialog.error ? h('p', { className: 'ots-modal-error', role: 'alert' }, dialog.error) : null,
 					),
@@ -4653,7 +5813,8 @@ window.__ModuleLoader__.load({
 					const clip = row.clip;
 					const media = findMedia(currentProject, clip.mediaId);
 					if (!media) continue;
-					if (clip.type === 'audio' || (clip.type === 'video' && media.hasAudio)) {
+					const muted = Boolean(row.track && row.track.muted);
+					if (!muted && (clip.type === 'audio' || (clip.type === 'video' && media.hasAudio))) {
 						if (!audioByMedia.has(media.id)) audioByMedia.set(media.id, clip);
 					}
 					if (clip.type === 'video' && !videoByMedia.has(media.id)) videoByMedia.set(media.id, clip);
@@ -4727,6 +5888,13 @@ window.__ModuleLoader__.load({
 				syncMedia(frame, playingRef.current);
 				if (drawRef.current) drawRef.current(frame);
 			};
+			React.useEffect(() => {
+				if (currentFrameRef.current > duration) {
+					currentFrameRef.current = duration;
+					clockRef.current.frame = duration;
+					setCurrentFrame(duration);
+				}
+			}, [duration]);
 			refreshFrameRef.current = () => {
 				applyFrame(currentFrameRef.current);
 			};
@@ -4857,9 +6025,25 @@ window.__ModuleLoader__.load({
 				}
 			};
 			const handleExport = () => {
-				if (!projectRef.current) return;
-				const suggested = suggestedExportName(projectRef.current);
-				setDialog({ mode: 'export', path: '', name: suggested, error: null, busy: false });
+				const projectValue = projectRef.current;
+				if (!projectValue) return;
+				const suggested = suggestedExportName(projectValue);
+				setDialog({
+					mode: 'export',
+					path: '',
+					name: suggested,
+					error: null,
+					busy: false,
+					codec: 'h264',
+					resolution: 'project',
+					width: projectValue.width,
+					height: projectValue.height,
+					fps: 'project',
+					qualityMode: 'crf',
+					crf: 20,
+					bitrate: '8M',
+					overwrite: false,
+				});
 			};
 			const handleSave = async () => {
 				const payload = await perform(() => hostPost('project/save'));
@@ -4930,6 +6114,15 @@ window.__ModuleLoader__.load({
 			const handleAddTrack = async (type) => {
 				const payload = await perform(() => hostPost('tracks', { type }));
 				if (payload) showNotice(t('status.trackAdded'));
+			};
+			const handleUpdateTrack = (trackId, patch) => {
+				if (!trackId) return;
+				void runEdit([{ type: 'update-track', trackId, ...patch }]);
+			};
+			const handleRemoveTrack = async (trackId) => {
+				if (!trackId) return;
+				const payload = await runEdit([{ type: 'remove-track', trackId }]);
+				if (payload) showNotice(t('status.trackRemoved'));
 			};
 			const handleAddText = async () => {
 				if (!projectRef.current) return;
@@ -5208,7 +6401,7 @@ window.__ModuleLoader__.load({
 					if (properties.transform !== undefined) {
 						const transform = {};
 						for (const key of Object.keys(properties.transform)) {
-							if (key === 'rotation') transform.rotation = finiteNumber(properties.transform.rotation, 0);
+							if (key === 'rotation') transform.rotation = clamp(finiteNumber(properties.transform.rotation, 0), -360, 360);
 							else transform[key] = clamp01(finiteNumber(properties.transform[key], 0));
 						}
 						operation.transform = transform;
@@ -5320,6 +6513,26 @@ window.__ModuleLoader__.load({
 					setDialog(Object.assign({}, current, { error: t('dialog.requiredOutput') }));
 					return;
 				}
+				let exportSettings = null;
+				if (current.mode === 'export') {
+					exportSettings = effectiveExportSettings(projectRef.current, current);
+					const rawWidth = Number(current.width);
+					const rawHeight = Number(current.height);
+					if (
+						exportSettings.resolution === 'custom' &&
+						(!Number.isInteger(rawWidth) || rawWidth < 2 || !Number.isInteger(rawHeight) || rawHeight < 2)
+					) {
+						setDialog(Object.assign({}, current, { error: t('export.invalidSize') }));
+						return;
+					}
+					if (
+						exportSettings.qualityMode === 'bitrate' &&
+						(typeof current.bitrate !== 'string' || current.bitrate.trim().length === 0)
+					) {
+						setDialog(Object.assign({}, current, { error: t('export.invalidBitrate') }));
+						return;
+					}
+				}
 				const workingDialog = Object.assign({}, current, { busy: true, error: null, status: null });
 				setDialog(workingDialog);
 				try {
@@ -5341,7 +6554,17 @@ window.__ModuleLoader__.load({
 							await prepareExportRenders(exportProject);
 							setDialog(Object.assign({}, workingDialog, { status: t('dialog.preparingText') }));
 						}
-						payload = await hostPost('export', pathValue.length > 0 ? { path: pathValue } : {});
+						const exportBody = {
+							...(pathValue.length > 0 ? { path: pathValue } : {}),
+							overwrite: exportSettings.overwrite === true,
+							codec: exportSettings.codec,
+							width: exportSettings.width,
+							height: exportSettings.height,
+							fps: exportSettings.fps,
+						};
+						if (exportSettings.qualityMode === 'crf') exportBody.crf = exportSettings.crf;
+						else exportBody.bitrate = exportSettings.bitrate;
+						payload = await hostPost('export', exportBody);
 					}
 					absorb(payload);
 					setDialog(null);
@@ -5508,6 +6731,9 @@ window.__ModuleLoader__.load({
 										importing,
 										uploading,
 										ffmpegAvailable: Boolean(snapshot && snapshot.ffmpeg && snapshot.ffmpeg.available),
+										pickDirectory,
+										onLibraryState: absorb,
+										showNotice,
 										onImport: handleImport,
 										onAddMedia: handleAddMedia,
 										onDropFiles: handleDropFiles,
@@ -5634,15 +6860,17 @@ window.__ModuleLoader__.load({
 									onAddMarker: handleAddMarker,
 									onAddTrack: handleAddTrack,
 									onAddText: handleAddText,
+									onUpdateTrack: handleUpdateTrack,
+									onRemoveTrack: handleRemoveTrack,
 								}),
 							),
 				dialog
 					? h(Dialog, {
 							t,
 							dialog,
+							project,
 							title: dialogTitle,
-							onPathChange: (value) => setDialog((current) => (current ? Object.assign({}, current, { path: value }) : current)),
-							onNameChange: (value) => setDialog((current) => (current ? Object.assign({}, current, { name: value }) : current)),
+							onPatch: (patch) => setDialog((current) => (current ? Object.assign({}, current, patch) : current)),
 							onBrowse: browseDialog,
 							onSubmit: submitDialog,
 							onClose: () => setDialog(null),

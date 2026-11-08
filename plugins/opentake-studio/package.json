@@ -21,7 +21,7 @@
     "docs/DESIGN.md"
   ],
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node --check lib/model.js && node --check lib/project.js && node --check lib/media.js && node --check lib/export.js && node --check lib/captions.js",
+    "check": "node --check index.js && node --check client.js && node --check lib/model.js && node --check lib/project.js && node --check lib/media.js && node --check lib/export.js && node --check lib/captions.js && node --check lib/library.js",
     "test": "node --test test/"
   },
   "dsh": {

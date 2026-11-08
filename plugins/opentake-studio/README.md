@@ -160,8 +160,14 @@ Importing only fills the media library; it does not add clips to the timeline.
 - **Effects**: brightness, contrast, saturation, temperature, blur, sharpen,
   chroma key and .cube LUT, ordered per clip.
 - **Transitions**: add a transition at an adjacent clip boundary (dissolve,
-  fade-to-black, wipe left/right). `fadeToBlack` is exact; dissolve/wipe are
-  approximated by fades in this phase.
+  fade-to-black, wipe left/right). Dissolve/wipe use true `xfade` when both
+  clips are opaque, static, full-frame; otherwise the export falls back to a
+  documented fade approximation.
+- **Global media library**: project/library tabs with search, kind/favorite
+  filters, thumbnails, favorites, categories/tags, rename/delete and Add to
+  project. Library assets are content-addressed and shared across projects.
+- **Export presets**: H.264/H.265, project/1080p/720p/custom resolution, fps,
+  CRF or bitrate.
 - **Captions**: add a caption clip, edit timed segments and style, import SRT/VTT
   text, and export SRT/VTT.
 - **Markers**: add markers at the playhead, label/color them, click the ruler tick
@@ -263,6 +269,14 @@ MCP endpoint, client or credential is involved.
 | `opentake_studio_edit` | `operations` | Advanced batch edit: speed, keyframes, effects, fades, markers, transitions, captions and all timeline ops from DESIGN §11.2. |
 | `opentake_studio_import_captions` | `text`, `style?`, `trackId?` | Parses SRT/VTT and adds a caption clip on a Captions track. |
 | `opentake_studio_export_captions` | `format?` (`srt`/`vtt`) | Returns all caption cues as SRT or WebVTT text. |
+| `opentake_studio_rename_project` | `name` | Renames the project display name. |
+| `opentake_studio_update_track` | `trackId`, `name?`, `muted?`, `hidden?` | Renames/mutes/hides/shows a track. |
+| `opentake_studio_remove_track` | `trackId` | Removes a track and its clips. |
+| `opentake_studio_library_list` | `query?`, `kind?`, `favorite?`, `category?` | Lists the global media library. |
+| `opentake_studio_library_import` | `path` | Imports an absolute folder into the global library (content-deduped). |
+| `opentake_studio_library_add_to_project` | `id` | Adds a library asset to the current project. |
+| `opentake_studio_library_update` | `id`, `patch` | Renames/favorites/categorizes a library item. |
+| `opentake_studio_library_delete` | `id` | Deletes a library item and its asset. |
 | `opentake_studio_new_project` | `path`, `name?`, `fps?`, `width?`, `height?` | Creates a project at an absolute folder path. |
 | `opentake_studio_open_project` | `path` | Opens the folder containing `opentake-studio.json`. |
 | `opentake_studio_import_media` | `path` | Imports every supported media file in an absolute folder; returns imported and skipped paths. |
@@ -275,7 +289,7 @@ MCP endpoint, client or credential is involved.
 | `opentake_studio_add_text` | `content`, `startFrame`, `durationFrames?`, `trackId?`, `fontSize?`, `color?`, `x?`, `y?` | Adds a text overlay; `durationFrames` defaults to 90 frames, `x`/`y` are normalized top-left coordinates. Uses or creates a `Text` video track with a free interval. |
 | `opentake_studio_undo` | — | Undoes the most recent edit. |
 | `opentake_studio_redo` | — | Redoes the most recently undone edit. |
-| `opentake_studio_export` | `path?`, `overwrite?` | Starts an asynchronous ffmpeg export; omit `path` to write into `exports/`. An existing output is refused unless `overwrite:true`. Poll `get_state` for progress. |
+| `opentake_studio_export` | `path?`, `overwrite?`, `codec?` (h264/h265), `width?`, `height?`, `fps?`, `crf?`, `bitrate?` | Starts an asynchronous ffmpeg export; omit `path` to write into `exports/`. Existing output refused unless `overwrite:true`. Poll `get_state` for progress. |
 
 ### Frames and fps
 
@@ -353,9 +367,10 @@ inside it:
 This is a deliberately small, verifiable editing loop, not a full NLE. Known
 gaps:
 
-- **Transitions are phase-1 approximations:** `fadeToBlack` is a dip; dissolve
-  and wipe are implemented as fades, not true crossfades/wipes. Text and caption
-  clips are excluded from transitions.
+- **True transitions are limited:** dissolve/wipe use `xfade` only for opaque,
+  static, full-frame, same-track clips with source headroom. Text/caption,
+  transformed/rotated/chroma-keyed/keyframed, or chained endpoints fall back to
+  a fade approximation; `fadeToBlack` is always a dip.
 - **Keyframes are phase-1:** volume/opacity/x/y keyframes affect export; width,
   height and rotation keyframes preview but degrade to static transform in
   export. Opacity keyframes are approximated by fades.
@@ -369,8 +384,7 @@ gaps:
 - **Preview is approximate.** The canvas composite is for interaction, not a
   frame-accurate reference. Export is authoritative. Browser codec support can
   differ from ffmpeg.
-- **Rotation previews but does not export.** The inspector can set rotation and
-  the preview applies it, but the ffmpeg overlay path does not rotate clips.
+- **Rotation exports statically.** Static clip rotation is baked into export; rotation keyframes degrade to the static value. Drawtext-only text cannot rotate (browser-rendered PNG overlays can).
 - **Text export depends on the client.** UI export pre-renders text to PNGs in
   the browser, so a browser client must be open when export starts. If no PNG
   exists (for example, an agent calls `opentake_studio_export` directly), export
@@ -451,7 +465,7 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **241/241 tests pass**, 27 suites, 0 failures (model, project, media, export, captions, host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **269/269 tests pass**, 27 suites, 0 failures (model, project, media, export, captions, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |

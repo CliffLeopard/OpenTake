@@ -9,7 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync } from 'node:fs';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -31,6 +31,16 @@ import {
 } from './lib/media.js';
 import { runExport } from './lib/export.js';
 import { captionClipFromSegments, parseSubtitles, projectCaptionSegments, serializeSubtitles } from './lib/captions.js';
+import {
+  addLibraryItemToProject,
+  deleteLibraryItem,
+  ensureLibraryThumbnail,
+  importFolderToLibrary,
+  libraryAssetPath,
+  libraryPaths,
+  listLibrary,
+  updateLibraryItem,
+} from './lib/library.js';
 
 export const name = 'opentake-studio';
 export const inject = ['tools', 'webServer', 'connection'];
@@ -547,6 +557,37 @@ export function apply(ctx) {
     }
   }
 
+  async function serveFileWithRange(req, res, file, contentType) {
+    const info = await stat(file);
+    if (!info.isFile()) throw new RouteError('File not found', 'media-not-found', 404);
+    const size = info.size;
+    const parsed = parseRange(req.headers.range, size);
+    if (parsed === 'invalid') {
+      res.statusCode = 416;
+      res.setHeader('content-range', `bytes */${size}`);
+      res.end();
+      return;
+    }
+    const start = parsed === null ? 0 : parsed.start;
+    const end = parsed === null ? size - 1 : parsed.end;
+    res.statusCode = parsed === null ? 200 : 206;
+    res.setHeader('content-type', contentType);
+    res.setHeader('content-length', String(end - start + 1));
+    res.setHeader('accept-ranges', 'bytes');
+    res.setHeader('cache-control', 'no-store');
+    if (parsed !== null) res.setHeader('content-range', `bytes ${start}-${end}/${size}`);
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    await new Promise((resolve, reject) => {
+      const stream = createReadStream(file, { start, end });
+      stream.on('error', reject);
+      stream.on('end', resolve);
+      stream.pipe(res);
+    });
+  }
+
   async function serveMediaFile(req, res, mediaId) {
     const project = ensureProject();
     const media = findMedia(project, mediaId);
@@ -822,6 +863,51 @@ export function apply(ctx) {
     return { text: 'LUT saved', data: { file: safeName, bytes: size } };
   }
 
+  function libraryItemById(itemId) {
+    return listLibrary({}).then((result) => {
+      const item = result.items.find((entry) => entry.id === itemId);
+      if (item === undefined) throw new RouteError('Library item not found', 'library-item-not-found', 404);
+      return item;
+    });
+  }
+
+  async function importLibraryFolder(input) {
+    const folder = input.path;
+    if (typeof folder !== 'string' || folder.trim().length === 0) {
+      throw new RouteError('A library import needs an absolute folder path', 'invalid-input');
+    }
+    const result = await importFolderToLibrary({ folderPath: path.resolve(folder) });
+    return { items: result.library.items, imported: result.imported, skipped: result.skipped };
+  }
+
+  async function addLibraryItemToCurrentProject(input) {
+    const project = ensureProject();
+    const itemId = typeof input.id === 'string' ? input.id : '';
+    if (itemId.length === 0) throw new RouteError('Library add needs an item id', 'invalid-input');
+    const media = await addLibraryItemToProject({
+      projectRoot: state.paths.root,
+      projectFps: project.fps,
+      itemId,
+    });
+    return applyOperations([{ type: 'add-media', media }]);
+  }
+
+  async function serveLibraryFile(req, res, itemId) {
+    const item = await libraryItemById(itemId);
+    const file = libraryAssetPath(undefined, item);
+    await serveFileWithRange(req, res, file, mediaMimeType(item.name));
+  }
+
+  async function serveLibraryThumbnail(res, itemId) {
+    const item = await libraryItemById(itemId);
+    const thumbnail = await ensureLibraryThumbnail({ item });
+    const data = await readFile(thumbnail);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'image/jpeg');
+    res.setHeader('cache-control', 'no-store');
+    res.end(data);
+  }
+
   async function importCaptions(input) {
     const project = ensureProject();
     const text = typeof input.text === 'string' ? input.text : '';
@@ -862,10 +948,15 @@ export function apply(ctx) {
     const controller = new AbortController();
     state.exportAbort = controller;
     const exportProject = structuredClone(project);
+    const exportOptions = {};
+    for (const key of ['codec', 'width', 'height', 'fps', 'crf', 'bitrate']) {
+      if (input[key] !== undefined) exportOptions[key] = input[key];
+    }
     void runExport({
       project: exportProject,
       projectRoot: state.paths.root,
       outputPath: output,
+      options: exportOptions,
       signal: controller.signal,
       onProgress: (progress) => {
         if (state.export.state === 'running') state.export.progress = Math.max(0, Math.min(1, progress));
@@ -953,6 +1044,45 @@ export function apply(ctx) {
     let sub = url.pathname.startsWith(PREFIX) ? url.pathname.slice(PREFIX.length) : url.pathname;
     if (sub === '' || sub === '/') sub = '/state';
     try {
+      if (sub === '/library' && req.method === 'GET') {
+        const query = url.searchParams;
+        const result = await listLibrary({
+          query: query.get('query') ?? undefined,
+          kind: query.get('kind') ?? undefined,
+          favorite: query.get('favorite') === null ? undefined : query.get('favorite') === 'true',
+          category: query.get('category') ?? undefined,
+        });
+        sendJson(res, 200, { items: result.items, root: result.root });
+        return;
+      }
+      if (sub === '/library/import' && req.method === 'POST') {
+        sendJson(res, 200, await importLibraryFolder(await readBoundedJson(req)));
+        return;
+      }
+      if (sub === '/library/update' && req.method === 'POST') {
+        const body = await readBoundedJson(req);
+        const item = await updateLibraryItem({ itemId: body.id, patch: body.patch });
+        sendJson(res, 200, { ok: true, item });
+        return;
+      }
+      if (sub === '/library/delete' && req.method === 'POST') {
+        const body = await readBoundedJson(req);
+        const item = await deleteLibraryItem({ itemId: body.id });
+        sendJson(res, 200, { ok: true, item });
+        return;
+      }
+      if (sub === '/library/add-to-project' && req.method === 'POST') {
+        sendJson(res, 200, await addLibraryItemToCurrentProject(await readBoundedJson(req)));
+        return;
+      }
+      if (sub.startsWith('/library/file/') && (req.method === 'GET' || req.method === 'HEAD')) {
+        await serveLibraryFile(req, res, safeDecode(sub.slice('/library/file/'.length), 'library item id'));
+        return;
+      }
+      if (sub.startsWith('/library/thumb/') && req.method === 'GET') {
+        await serveLibraryThumbnail(res, safeDecode(sub.slice('/library/thumb/'.length), 'library item id'));
+        return;
+      }
       if (sub === '/state' && req.method === 'GET') {
         sendJson(res, 200, await buildState());
         return;
@@ -1131,6 +1261,60 @@ export function apply(ctx) {
   );
 
   registerTool(
+    'opentake_studio_rename_project',
+    'Rename the current project (display name only; folder path is unchanged).',
+    {
+      type: 'object',
+      properties: { name: { type: 'string' } },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await applyOperations([{ type: 'rename-project', name: args.name }]);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_update_track',
+    'Rename, mute, hide or show a track.',
+    {
+      type: 'object',
+      properties: {
+        trackId: { type: 'string' },
+        name: { type: 'string' },
+        muted: { type: 'boolean' },
+        hidden: { type: 'boolean' },
+      },
+      required: ['trackId'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const operation = { type: 'update-track', trackId: args.trackId };
+      if (args.name !== undefined) operation.name = args.name;
+      if (args.muted !== undefined) operation.muted = args.muted;
+      if (args.hidden !== undefined) operation.hidden = args.hidden;
+      const result = await applyOperations([operation]);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_remove_track',
+    'Remove an empty or populated track and all of its clips.',
+    {
+      type: 'object',
+      properties: { trackId: { type: 'string' } },
+      required: ['trackId'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await applyOperations([{ type: 'remove-track', trackId: args.trackId }]);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
     'opentake_studio_import_captions',
     'Import SRT or WebVTT subtitle text into a caption clip on a dedicated Captions track.',
     {
@@ -1160,6 +1344,85 @@ export function apply(ctx) {
     async (args) => {
       const exported = exportCaptions(args.format);
       return { text: exported.text, data: { format: exported.format } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_library_list',
+    'List the global media library (name, kind, dimensions, duration, favorite, category).',
+    {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        kind: { type: 'string', enum: ['video', 'audio', 'image'] },
+        favorite: { type: 'boolean' },
+        category: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await listLibrary(args);
+      return { text: JSON.stringify(result.items), data: { items: result.items, root: result.root } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_library_import',
+    'Import every media file in an absolute folder into the global media library.',
+    {
+      type: 'object',
+      properties: { path: { type: 'string' } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await importLibraryFolder(args);
+      return { text: `Imported ${result.imported.length} item(s)`, data: result };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_library_add_to_project',
+    'Add a library item to the current project as a media asset.',
+    {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await addLibraryItemToCurrentProject(args);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_library_update',
+    'Update a library item name, favorite flag, category or tags.',
+    {
+      type: 'object',
+      properties: { id: { type: 'string' }, patch: { type: 'object' } },
+      required: ['id', 'patch'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const item = await updateLibraryItem({ itemId: args.id, patch: args.patch });
+      return { text: JSON.stringify(item), data: { item } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_library_delete',
+    'Delete a library item and its asset.',
+    {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const item = await deleteLibraryItem({ itemId: args.id });
+      return { text: 'Library item deleted', data: { item } };
     },
   );
 
@@ -1370,7 +1633,16 @@ export function apply(ctx) {
     'Start an asynchronous ffmpeg export of the current timeline to an MP4. Omit path to write into the project exports/ folder. Poll opentake_studio_get_state or read the returned path.',
     {
       type: 'object',
-      properties: { path: { type: 'string' }, overwrite: { type: 'boolean' } },
+      properties: {
+        path: { type: 'string' },
+        overwrite: { type: 'boolean' },
+        codec: { type: 'string', enum: ['h264', 'h265'] },
+        width: { type: 'number' },
+        height: { type: 'number' },
+        fps: { type: 'number' },
+        crf: { type: 'number' },
+        bitrate: { type: 'string' },
+      },
       additionalProperties: false,
     },
     async (args) => {
