@@ -1,0 +1,36 @@
+{
+  "name": "@opentake/studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A native DeepSeek Harness video editor: project, media library, timeline, preview, export and agent tools inside DSH.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "docs/DESIGN.md"
+  ],
+  "scripts": {
+    "check": "node --check index.js && node --check client.js && node --check lib/model.js && node --check lib/project.js && node --check lib/media.js && node --check lib/export.js",
+    "test": "node --test test/"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

@@ -114,6 +114,8 @@ Built-in Agent chat panel shares tool definitions and system prompt with MCP. It
 OpenAI/Anthropic BYOK or the user-installed official Codex CLI's ChatGPT sign-in; OpenTake never
 reads or stores the Codex credential.
 
+Separately from the Rust/Tauri app, [`plugins/opentake-studio/`](plugins/opentake-studio/README.md) is a pure DeepSeek Harness plugin that runs a small editor and native Agent tools inside DSH itself — no Tauri process and no MCP bridge.
+
 ### 🎬 Cross-Platform Media Engine
 
 | Capability | Technology |

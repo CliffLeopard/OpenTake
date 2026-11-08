@@ -54,6 +54,12 @@ docs/
 
 ---
 
+## 🔌 集成
+
+- [OpenTake Studio（DSH 原生编辑器插件）](integrations/opentake-studio.md)：纯 DeepSeek Harness 插件实现的最小视频编辑闭环（工程、媒体库、时间线、预览、导出、原生 Agent 工具），不启动 OpenTake/Tauri 进程，不经过 MCP。
+
+---
+
 ## 🏗️ 架构与规划 → [architecture/INDEX.md](architecture/INDEX.md)
 
 跨切面、不属单一模块的设计/规划/报告：总体架构、路线图、1:1 移植图与差距、剪映 gap、已知 Bug、编辑自动化 DOS。
