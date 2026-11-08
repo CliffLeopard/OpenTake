@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v2.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v3.node');
 }
 
 function loadAddon() {
@@ -190,8 +190,12 @@ export function apply(ctx) {
         return state.engine.canUndo();
       case 'can_redo':
         return state.engine.canRedo();
-      case 'project_new':
+      case 'project_new': {
+        if (typeof args.path === 'string' && args.path.length > 0) {
+          return JSON.parse(state.engine.newProjectAt(args.path));
+        }
         return JSON.parse(state.engine.newProject());
+      }
       case 'project_open': {
         if (typeof args.path !== 'string' || args.path.length === 0) throw new Error('project_open requires a path');
         return JSON.parse(state.engine.openProject(args.path));

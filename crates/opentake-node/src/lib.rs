@@ -36,6 +36,21 @@ impl Engine {
         json(&TimelineSnapshotDto::from(handle_project_new(&self.core)))
     }
 
+    /// Create a fresh project and immediately persist it at `path`, returning
+    /// the snapshot JSON with `projectPath` set.
+    #[napi]
+    pub fn new_project_at(&self, path: String) -> Result<String> {
+        let path = std::path::PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
+        }
+        self.core.new_project();
+        self.core
+            .save_project(Some(path))
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&TimelineSnapshotDto::from(handle_get_timeline(&self.core)))
+    }
+
     /// Open a `.opentake` project bundle; returns the snapshot JSON.
     #[napi]
     pub fn open_project(&self, path: String) -> Result<String> {
