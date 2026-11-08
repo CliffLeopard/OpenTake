@@ -1944,12 +1944,15 @@ describe('purity and determinism', () => {
     assert.equal(clipById(next, 'c1').durationFrames, 40);
   });
 
-  it('two identical operations on the same project produce the same result', () => {
+  it('two identical operations on the same project produce the same result', (t) => {
+    // Freeze Date so both applyOperation calls stamp the same updatedAt.
+    t.mock.timers.enable({ apis: ['Date'], now: 5_000 });
     const project = fixture();
     const operation = { type: 'add-track', trackId: 'extra', trackType: 'video' };
     const first = applyOperation(project, operation);
     const second = applyOperation(project, operation);
     assert.deepEqual(first, second);
+    t.mock.timers.reset();
   });
 
   it('stamps updatedAt with Date.now()', (t) => {
@@ -3530,10 +3533,13 @@ describe('phase 1 normalize, purity and invariants', () => {
     }
   });
 
-  it('two identical phase 1 operations produce the same result', () => {
+  it('two identical phase 1 operations produce the same result', (t) => {
+    // Freeze Date so both applyOperation calls stamp the same updatedAt.
+    t.mock.timers.enable({ apis: ['Date'], now: 5_000 });
     const project = richProject();
     const operation = { type: 'set-speed', clipId: 'b', speed: 2 };
     assert.deepEqual(applyOperation(project, operation), applyOperation(project, operation));
+    t.mock.timers.reset();
   });
 
   it('markers do not extend the timeline duration', () => {
@@ -4027,7 +4033,9 @@ describe('clip crop', () => {
     assert.ok(findClip(project, 'cap').clip.caption.segments.length > 0);
   });
 
-  it('is pure, deterministic and normalize-idempotent', () => {
+  it('is pure, deterministic and normalize-idempotent', (t) => {
+    // Freeze Date so both applyOperation calls stamp the same updatedAt.
+    t.mock.timers.enable({ apis: ['Date'], now: 5_000 });
     const project = phase1Fixture();
     const before = JSON.stringify(project);
     const operation = { type: 'set-crop', clipId: 'c1', crop: RECT };
@@ -4038,5 +4046,374 @@ describe('clip crop', () => {
     assert.equal(JSON.stringify(operation), operationBefore);
     assert.deepEqual(first, second);
     assert.deepEqual(normalizeProject(first), first);
+    t.mock.timers.reset();
+  });
+});
+
+// ===========================================================================
+// Phase 7: clip mask, blend mode, track volume (DESIGN §12).
+// ===========================================================================
+
+describe('clip mask', () => {
+  const RECT_MASK = {
+    shape: 'rect',
+    x: 0.1,
+    y: 0.2,
+    width: 0.5,
+    height: 0.4,
+    feather: 0.25,
+    invert: true,
+  };
+
+  it('defaults mask to null for every clip type and blendMode to normal', () => {
+    let project = phase1Fixture();
+    project = addClip(project, {
+      clipId: 'img',
+      mediaId: 'm-image',
+      trackId: 't-video2',
+      startFrame: 0,
+      durationFrames: 30,
+    });
+    project = addText(project, { clipId: 'txt', trackId: 't-video2', startFrame: 100, durationFrames: 30 });
+    project = addCaption(project, { clipId: 'cap', trackId: 't-video2', startFrame: 200, durationFrames: 30 });
+    for (const clipId of ['c1', 'img', 'txt', 'cap']) {
+      const clip = clipById(project, clipId);
+      assert.equal(clip.mask, null);
+      assert.equal(clip.blendMode, 'normal');
+    }
+  });
+
+  it('sets a rect mask and fills DESIGN defaults for omitted fields', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-mask',
+      clipId: 'c1',
+      mask: { shape: 'rect' },
+    });
+    assert.deepEqual(clipById(project, 'c1').mask, {
+      shape: 'rect',
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      feather: 0,
+      invert: false,
+    });
+
+    project = applyOperation(project, { type: 'set-mask', clipId: 'c1', mask: { width: 0.5 } });
+    assert.deepEqual(clipById(project, 'c1').mask, {
+      shape: 'rect',
+      x: 0,
+      y: 0,
+      width: 0.5,
+      height: 1,
+      feather: 0,
+      invert: false,
+    });
+  });
+
+  it('sets an ellipse mask, strips unknown keys and clears with null', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, {
+      type: 'set-mask',
+      clipId: 'c1',
+      mask: { ...RECT_MASK, bogus: 1 },
+    });
+    assert.deepEqual(clipById(project, 'c1').mask, RECT_MASK);
+    project = applyOperation(project, { type: 'set-mask', clipId: 'c1', mask: null });
+    assert.equal(clipById(project, 'c1').mask, null);
+  });
+
+  it('rejects invalid masks', () => {
+    const project = phase1Fixture();
+    const set = (mask) => applyOperation(project, { type: 'set-mask', clipId: 'c1', mask });
+    expectModelError(
+      () => applyOperation(project, { type: 'set-mask', clipId: 'ghost', mask: RECT_MASK }),
+      'clip-not-found',
+    );
+    expectModelError(() => applyOperation(project, { type: 'set-mask', clipId: 'c1' }), 'invalid-input');
+    expectModelError(() => set('nope'), 'invalid-input');
+    expectModelError(() => set({ shape: 'circle' }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', x: -0.1, width: 0.5, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', x: 0, width: 0, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', x: 0, width: 1.1, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', x: 0, y: 0, width: 0.5, height: 0 }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', x: 0.8, width: 0.5, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', y: 0.8, width: 0.5, height: 0.5 }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', x: 0, y: 0, width: 0.5, height: 0.5, feather: -0.1 }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', x: 0, y: 0, width: 0.5, height: 0.5, feather: 1.1 }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', x: 0, y: 0, width: 0.5, height: 0.5, invert: 'yes' }), 'invalid-input');
+    expectModelError(() => set({ shape: 'rect', x: Number.NaN, width: 0.5, height: 0.5 }), 'invalid-input');
+    // Edge-touching rects are valid (float tolerance).
+    assert.doesNotThrow(() =>
+      set({ shape: 'rect', x: 0.1, y: 0.9, width: 0.9, height: 0.1 }),
+    );
+  });
+
+  it('normalizes raw masks and keeps null when absent', () => {
+    const withMask = normalizeProject(
+      mutatedRaw((value) => {
+        value.tracks[0].clips[0].mask = { ...RECT_MASK, bogus: true };
+      }),
+    );
+    const masked = withMask.tracks[0].clips.find((clip) => clip.id === 'c2');
+    assert.deepEqual(masked.mask, RECT_MASK);
+    assert.deepEqual(normalizeProject(withMask), withMask);
+    assert.equal(normalizeProject(rawProject()).tracks[0].clips[0].mask, null);
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.tracks[0].clips[0].mask = { shape: 'triangle' };
+          }),
+        ),
+      'invalid-clip',
+    );
+  });
+
+  it('preserves mask through trim, move, speed, keyframes and crop edits', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'set-mask', clipId: 'c1', mask: RECT_MASK });
+    project = applyOperation(project, {
+      type: 'set-keyframes',
+      clipId: 'c1',
+      property: 'opacity',
+      keyframes: [{ frame: 0, value: 0.5 }],
+    });
+    project = applyOperation(project, { type: 'set-crop', clipId: 'c1', crop: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 } });
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'c1', durationFrames: 50 });
+    assert.deepEqual(clipById(project, 'c1').mask, RECT_MASK);
+    project = applyOperation(project, { type: 'move-clip', clipId: 'c1', startFrame: 20 });
+    assert.deepEqual(clipById(project, 'c1').mask, RECT_MASK);
+    project = applyOperation(project, { type: 'set-speed', clipId: 'c1', speed: 2 });
+    assert.deepEqual(clipById(project, 'c1').mask, RECT_MASK);
+    project = applyOperation(project, {
+      type: 'set-clip-properties',
+      clipIds: ['c1'],
+      transform: { rotation: 30 },
+    });
+    assert.deepEqual(clipById(project, 'c1').mask, RECT_MASK);
+    assert.equal(clipById(project, 'c1').transform.rotation, 30);
+  });
+
+  it('both split halves keep the mask (explicit and overlap splits)', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'set-mask', clipId: 'c1', mask: RECT_MASK });
+    project = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'c1',
+      atFrame: 40,
+      leftClipId: 'L',
+      rightClipId: 'R',
+    });
+    assert.deepEqual(clipById(project, 'L').mask, RECT_MASK);
+    assert.deepEqual(clipById(project, 'R').mask, RECT_MASK);
+
+    let overlap = fixture();
+    overlap = addClip(overlap, { clipId: 'old', startFrame: 0, durationFrames: 100 });
+    overlap = applyOperation(overlap, { type: 'set-mask', clipId: 'old', mask: RECT_MASK });
+    overlap = addClip(overlap, {
+      clipId: 'inside',
+      startFrame: 40,
+      durationFrames: 20,
+      splitRightClipId: 'old-right',
+    });
+    assert.deepEqual(clipById(overlap, 'old').mask, RECT_MASK);
+    assert.deepEqual(clipById(overlap, 'old-right').mask, RECT_MASK);
+  });
+
+  it('masks text, caption and image clips and is pure', (t) => {
+    // Freeze Date so both applyOperation calls stamp the same updatedAt.
+    t.mock.timers.enable({ apis: ['Date'], now: 5_000 });
+    let project = fixture();
+    project = addClip(project, {
+      clipId: 'img',
+      mediaId: 'm-image',
+      trackId: 't-video2',
+      startFrame: 0,
+      durationFrames: 30,
+    });
+    project = addText(project, { clipId: 'txt', trackId: 't-video2', startFrame: 100, durationFrames: 30 });
+    project = addCaption(project, { clipId: 'cap', trackId: 't-video2', startFrame: 200, durationFrames: 30 });
+    const before = JSON.stringify(project);
+    const operation = { type: 'set-mask', clipId: 'txt', mask: RECT_MASK };
+    const operationBefore = JSON.stringify(operation);
+    const first = applyOperation(project, operation);
+    const second = applyOperation(project, operation);
+    for (const clipId of ['img', 'txt', 'cap']) {
+      const mask = clipById(first, clipId).mask;
+      if (clipId === 'txt') assert.deepEqual(mask, RECT_MASK);
+      else assert.equal(mask, null);
+    }
+    assert.equal(JSON.stringify(project), before);
+    assert.equal(JSON.stringify(operation), operationBefore);
+    assert.deepEqual(first, second);
+    assert.deepEqual(normalizeProject(first), first);
+    t.mock.timers.reset();
+  });
+});
+
+describe('clip blend mode', () => {
+  const MODES = ['normal', 'screen', 'multiply', 'overlay', 'darken', 'lighten', 'add', 'difference'];
+
+  it('sets every DESIGN blend mode', () => {
+    let project = phase1Fixture();
+    for (const blendMode of MODES) {
+      project = applyOperation(project, { type: 'set-blend-mode', clipId: 'c1', blendMode });
+      assert.equal(clipById(project, 'c1').blendMode, blendMode);
+    }
+  });
+
+  it('rejects unknown modes and malformed operations', () => {
+    const project = phase1Fixture();
+    expectModelError(
+      () => applyOperation(project, { type: 'set-blend-mode', clipId: 'c1', blendMode: 'Normal' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-blend-mode', clipId: 'c1', blendMode: 'lighten2' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-blend-mode', clipId: 'c1' }),
+      'invalid-input',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'set-blend-mode', clipId: 'ghost', blendMode: 'screen' }),
+      'clip-not-found',
+    );
+  });
+
+  it('normalizes blendMode with normal as the default', () => {
+    const raw = mutatedRaw((value) => {
+      value.tracks[0].clips[0].blendMode = 'screen';
+    });
+    const project = normalizeProject(raw);
+    assert.equal(project.tracks[0].clips.find((clip) => clip.id === 'c2').blendMode, 'screen');
+    assert.equal(normalizeProject(rawProject()).tracks[0].clips[0].blendMode, 'normal');
+    assert.deepEqual(normalizeProject(project), project);
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.tracks[0].clips[0].blendMode = 'additive';
+          }),
+        ),
+      'invalid-clip',
+    );
+  });
+
+  it('survives trim/split and stays independent of mask/crop/transform', () => {
+    let project = phase1Fixture();
+    project = applyOperation(project, { type: 'set-blend-mode', clipId: 'c1', blendMode: 'multiply' });
+    project = applyOperation(project, { type: 'set-crop', clipId: 'c1', crop: { x: 0, y: 0, width: 0.5, height: 0.5 } });
+    project = applyOperation(project, { type: 'set-mask', clipId: 'c1', mask: { shape: 'ellipse' } });
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'c1', durationFrames: 50 });
+    assert.equal(clipById(project, 'c1').blendMode, 'multiply');
+    project = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'c1',
+      atFrame: 20,
+      leftClipId: 'L',
+      rightClipId: 'R',
+    });
+    assert.equal(clipById(project, 'L').blendMode, 'multiply');
+    assert.equal(clipById(project, 'R').blendMode, 'multiply');
+    assert.equal(clipById(project, 'L').mask.shape, 'ellipse');
+  });
+});
+
+describe('track volume', () => {
+  it('defaults to 1 for added and normalized tracks', () => {
+    const project = fixture();
+    for (const track of project.tracks) assert.equal(track.volume, 1);
+    const normalized = normalizeProject({
+      tracks: [{ id: 't', type: 'video', clips: [] }],
+    });
+    assert.equal(normalized.tracks[0].volume, 1);
+  });
+
+  it('updates volume alone and alongside other track fields', () => {
+    let project = fixture();
+    project = applyOperation(project, { type: 'update-track', trackId: 't-audio', volume: 0.5 });
+    let track = findTrack(project, 't-audio');
+    assert.equal(track.volume, 0.5);
+    assert.equal(track.name, 'Audio 1');
+    assert.equal(track.muted, false);
+    assert.equal(track.hidden, false);
+
+    project = applyOperation(project, {
+      type: 'update-track',
+      trackId: 't-audio',
+      name: 'Music',
+      muted: true,
+      hidden: true,
+      volume: 2,
+    });
+    track = findTrack(project, 't-audio');
+    assert.deepEqual(
+      { name: track.name, muted: track.muted, hidden: track.hidden, volume: track.volume },
+      { name: 'Music', muted: true, hidden: true, volume: 2 },
+    );
+    // 0 is a valid volume and must not fall back to a default.
+    project = applyOperation(project, { type: 'update-track', trackId: 't-audio', volume: 0 });
+    assert.equal(findTrack(project, 't-audio').volume, 0);
+  });
+
+  it('rejects out-of-range volumes and unknown tracks', () => {
+    const project = fixture();
+    for (const volume of [-0.1, 2.1, Number.NaN, Number.POSITIVE_INFINITY, '1']) {
+      expectModelError(
+        () => applyOperation(project, { type: 'update-track', trackId: 't-video', volume }),
+        'invalid-input',
+      );
+    }
+    expectModelError(
+      () => applyOperation(project, { type: 'update-track', trackId: 'ghost', volume: 1 }),
+      'track-not-found',
+    );
+  });
+
+  it('normalizes volume range and strips unknown track fields', () => {
+    expectModelError(
+      () =>
+        normalizeProject({
+          tracks: [{ id: 't', type: 'video', clips: [], volume: 3 }],
+        }),
+      'invalid-track',
+    );
+    expectModelError(
+      () =>
+        normalizeProject({
+          tracks: [{ id: 't', type: 'video', clips: [], volume: 'loud' }],
+        }),
+      'invalid-track',
+    );
+    const raw = mutatedRaw((value) => {
+      value.tracks[0].volume = 1.75;
+      value.tracks[0].bogus = true;
+    });
+    const project = normalizeProject(raw);
+    assert.equal(project.tracks[0].volume, 1.75);
+    assert.equal('bogus' in project.tracks[0], false);
+    assert.deepEqual(normalizeProject(project), project);
+  });
+
+  it('keeps clips and is pure/no-op-safe', () => {
+    let project = fixture();
+    project = addClip(project, { clipId: 'c1', startFrame: 0, durationFrames: 50 });
+    const before = JSON.stringify(project);
+    const operation = { type: 'update-track', trackId: 't-video', volume: 1.5 };
+    const operationBefore = JSON.stringify(operation);
+    const next = applyOperation(project, operation);
+    assert.equal(findTrack(next, 't-video').volume, 1.5);
+    assert.deepEqual(findTrack(next, 't-video').clips.map((clip) => clip.id), ['c1']);
+    assert.equal(JSON.stringify(project), before);
+    assert.equal(JSON.stringify(operation), operationBefore);
+
+    // No fields is still an allowed no-op and keeps the current volume.
+    const noop = applyOperation(next, { type: 'update-track', trackId: 't-video' });
+    assert.equal(findTrack(noop, 't-video').volume, 1.5);
+    assert.deepEqual(findTrack(noop, 't-video').clips.map((clip) => clip.id), ['c1']);
   });
 });

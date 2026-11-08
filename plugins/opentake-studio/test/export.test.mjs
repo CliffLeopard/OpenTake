@@ -60,6 +60,7 @@ let redMedia = null;
 let blueMedia = null;
 let greenMedia = null;
 let splitMedia = null;
+let audioMedia = null;
 let phase2Project = null;
 
 function mediaEntry(overrides = {}) {
@@ -288,6 +289,23 @@ const hasProresEncoder = encoderNames.has('prores_ks');
 const hasVp9Encoder = encoderNames.has('libvpx-vp9');
 const hasOpusEncoder = encoderNames.has('libopus');
 
+function meanVolumeDb(filePath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(initialTools.ffmpeg, [
+      '-hide_banner', '-nostats', '-i', filePath,
+      '-af', 'volumedetect', '-f', 'null', '-',
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      const match = /mean_volume:\s*(-?\d+(?:\.\d+)?) dB/.exec(stderr);
+      if (code === 0 && match !== null) resolve(Number(match[1]));
+      else reject(new Error(`volumedetect failed (${code}): ${stderr.slice(-400)}`));
+    });
+  });
+}
+
 function samplePixel(filePath, seconds, x, y) {
   return new Promise((resolve, reject) => {
     const child = spawn(initialTools.ffmpeg, [
@@ -468,6 +486,7 @@ before(async () => {
   blueMedia = byName.get('blue.mp4');
   greenMedia = byName.get('greenposter.png');
   splitMedia = byName.get('split.png');
+  audioMedia = byName.get('sound.m4a');
 
   // True dissolve between red (0..30 frames, 1s) and blue (trimStart 10,
   // 30..60) with 10 transition frames (5 per side), plus a 45-degree rotated
@@ -2006,4 +2025,295 @@ it('exports a cropped clip and samples only the cropped region', { skip: toolSki
   }
   const info = await stat(outputPath);
   assert.ok(info.size > 1000);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 7: masks, blend modes, track volume
+// ---------------------------------------------------------------------------
+
+it('applies rect/ellipse mask alpha with feather and invert via geq', () => {
+  const rect = makeProject({
+    clips: [
+      makeClip({
+        id: 'mask-rect', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30,
+        mask: { shape: 'rect', x: 0, y: 0, width: 0.5, height: 1, feather: 0, invert: false },
+      }),
+    ],
+  });
+  const rectFilter = filterOf(buildPhase(rect));
+  assert.ok(rectFilter.includes("geq=r='r(X,Y)'"), rectFilter);
+  assert.ok(rectFilter.includes("a='255*("), 'geq alpha is 0..255');
+  assert.ok(rectFilter.includes('gte(') && rectFilter.includes('lte('), 'hard rect edges');
+  assert.ok(rectFilter.indexOf('format=rgba') < rectFilter.indexOf('geq='));
+  assert.ok(rectFilter.indexOf('geq=') < rectFilter.indexOf('setpts='), 'mask before setpts/overlay');
+
+  const feather = makeProject({
+    clips: [
+      makeClip({
+        id: 'mask-feather', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30,
+        mask: { shape: 'rect', x: 0, y: 0, width: 0.5, height: 1, feather: 0.2, invert: false },
+      }),
+    ],
+  });
+  const featherFilter = filterOf(buildPhase(feather));
+  assert.ok(featherFilter.includes('3-2*'), 'smoothstep feather');
+  assert.ok(featherFilter.includes('/0.2'), 'feather fraction is used');
+
+  const ellipse = makeProject({
+    clips: [
+      makeClip({
+        id: 'mask-ellipse', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30,
+        mask: { shape: 'ellipse', x: 0.1, y: 0.1, width: 0.8, height: 0.8, feather: 0, invert: true },
+      }),
+    ],
+  });
+  const ellipseFilter = filterOf(buildPhase(ellipse));
+  assert.ok(ellipseFilter.includes('sqrt('), ellipseFilter);
+  assert.ok(ellipseFilter.includes('1-('), 'invert flips alpha');
+  assert.ok(ellipseFilter.includes('lte('), 'hard ellipse boundary');
+});
+
+it('applies masks to image clips and rendered text PNGs but not drawtext', async () => {
+  const imageProject = makeProject({
+    media: [
+      mediaEntry({
+        id: 'media-image', name: 'card.png', kind: 'image', fileName: 'image.png',
+        durationFrames: null, sourceDurationSeconds: null, hasAudio: false,
+      }),
+    ],
+    clips: [
+      makeClip({
+        id: 'mask-image', type: 'image', mediaId: 'media-image',
+        startFrame: 0, durationFrames: 30,
+        mask: { shape: 'ellipse', x: 0.1, y: 0.1, width: 0.8, height: 0.8, feather: 0.1, invert: false },
+      }),
+    ],
+  });
+  assert.ok(filterOf(buildPhase(imageProject)).includes('geq='));
+
+  const textClipId = 'mask-png-text';
+  const pngPath = path.join(phaseRoot, 'renders', `${textClipId}.png`);
+  await writeFile(pngPath, 'fake png for argv-only assertions');
+  const textPngProject = makeProject({
+    clips: [
+      makeClip({
+        id: textClipId, type: 'text', mediaId: null, startFrame: 0, durationFrames: 30,
+        mask: { shape: 'rect', x: 0, y: 0, width: 0.5, height: 0.5, feather: 0, invert: false },
+        text: { content: 'masked text', fontSize: 20, color: '#ffffff', fontWeight: '400', align: 'left' },
+      }),
+    ],
+  });
+  const textPngFilter = filterOf(buildPhase(textPngProject));
+  assert.ok(textPngFilter.includes('geq='), 'PNG render can be masked');
+  assert.ok(!textPngFilter.includes('drawtext='));
+
+  const drawtextProject = makeProject({
+    clips: [
+      makeClip({
+        id: 'mask-drawtext', type: 'text', mediaId: null, startFrame: 0, durationFrames: 30,
+        mask: { shape: 'rect', x: 0, y: 0, width: 0.5, height: 0.5, feather: 0, invert: false },
+        text: { content: 'unmasked text', fontSize: 20, color: '#ffffff', fontWeight: '400', align: 'left' },
+      }),
+    ],
+  });
+  const drawtextFilter = filterOf(buildPhase(drawtextProject));
+  assert.ok(!drawtextFilter.includes('geq='), 'drawtext fallback cannot mask');
+  assert.ok(drawtextFilter.includes("text='unmasked text'"));
+});
+
+it('falls back from true xfade for masked or blended clips', () => {
+  const masked = trueTransitionProject('dissolve');
+  masked.tracks[0].clips[0].mask = {
+    shape: 'rect', x: 0, y: 0, width: 1, height: 1, feather: 0, invert: false,
+  };
+  const maskedFilter = filterOf(buildPhase(masked));
+  assert.ok(!maskedFilter.includes('xfade='));
+  assert.ok(maskedFilter.includes('geq='));
+  assert.ok(maskedFilter.includes('fade=t=out:st=1.166667:d=0.333333'));
+
+  const blended = trueTransitionProject('dissolve');
+  blended.tracks[0].clips[0].blendMode = 'screen';
+  const blendedFilter = filterOf(buildPhase(blended));
+  assert.ok(!blendedFilter.includes('xfade='));
+  assert.ok(blendedFilter.includes('blend=all_mode=screen'));
+});
+
+it('uses blend for full-frame clips and falls back to overlay otherwise', () => {
+  const screen = makeProject({
+    clips: [
+      makeClip({
+        id: 'blend-screen', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30, blendMode: 'screen',
+      }),
+    ],
+  });
+  const screenFilter = filterOf(buildPhase(screen));
+  assert.ok(screenFilter.includes("blend=all_mode=screen:enable='between(t,0,1)'"), screenFilter);
+  assert.ok(!screenFilter.includes('overlay='), 'blend replaces overlay');
+
+  const add = makeProject({
+    clips: [
+      makeClip({
+        id: 'blend-add', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30, blendMode: 'add', opacity: 0.5,
+      }),
+    ],
+  });
+  const addFilter = filterOf(buildPhase(add));
+  assert.ok(addFilter.includes('blend=all_mode=addition:all_opacity=0.5:enable='), addFilter);
+
+  for (const [label, patch] of [
+    ['half transform', { transform: { x: 0.25, y: 0.25, width: 0.5, height: 0.5, rotation: 0 } }],
+    ['rotation', { transform: { x: 0, y: 0, width: 1, height: 1, rotation: 45 } }],
+    ['crop', { crop: { x: 0, y: 0, width: 0.5, height: 0.5 } }],
+    ['mask', { mask: { shape: 'rect', x: 0, y: 0, width: 0.5, height: 0.5, feather: 0, invert: false } }],
+  ]) {
+    const fallback = makeProject({
+      clips: [
+        makeClip({
+          id: `blend-fallback-${label}`, type: 'video', mediaId: 'media-video',
+          startFrame: 0, durationFrames: 30, blendMode: 'screen', ...patch,
+        }),
+      ],
+    });
+    const filter = filterOf(buildPhase(fallback));
+    assert.ok(!filter.includes('blend='), `${label} falls back to overlay`);
+    assert.ok(filter.includes('overlay='), `${label} uses overlay`);
+  }
+});
+
+it('multiplies track volume into clip volume, keyframes and transition audio', () => {
+  const project = makeProject({
+    media: [
+      mediaEntry(),
+      mediaEntry({
+        id: 'media-audio', name: 'music.m4a', kind: 'audio', fileName: 'music.m4a',
+        durationFrames: 120, sourceDurationSeconds: 4, width: null, height: null, hasAudio: true,
+      }),
+    ],
+    clips: [
+      makeClip({
+        id: 'tv', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30, volume: 0.75,
+      }),
+    ],
+    extraTracks: [
+      {
+        id: 'track-audio', type: 'audio', name: 'Audio', muted: false, hidden: false, volume: 0.5,
+        clips: [
+          makeClip({
+            id: 'ta', type: 'audio', mediaId: 'media-audio',
+            startFrame: 0, durationFrames: 30, volume: 0.8,
+          }),
+        ],
+      },
+    ],
+  });
+  // Video track has no volume property -> default 1.
+  project.tracks[0].volume = 2;
+  const filter = filterOf(buildPhase(project));
+  assert.ok(filter.includes('volume=1.5'), 'video clip audio: 0.75 * track 2');
+  assert.ok(filter.includes('volume=0.4'), 'audio clip: 0.8 * track 0.5');
+
+  const keyframed = makeProject({
+    media: [
+      mediaEntry({
+        id: 'media-audio', name: 'music.m4a', kind: 'audio', fileName: 'music.m4a',
+        durationFrames: 120, sourceDurationSeconds: 4, width: null, height: null, hasAudio: true,
+      }),
+    ],
+    clips: [],
+    extraTracks: [
+      {
+        id: 'track-audio', type: 'audio', name: 'Audio', muted: false, hidden: false, volume: 0.5,
+        clips: [
+          makeClip({
+            id: 'ta', type: 'audio', mediaId: 'media-audio',
+            startFrame: 0, durationFrames: 30,
+            keyframes: { volume: [{ frame: 0, value: 0 }, { frame: 30, value: 1 }] },
+          }),
+        ],
+      },
+    ],
+  });
+  const keyframeFilter = filterOf(buildPhase(keyframed));
+  assert.ok(keyframeFilter.includes("volume=eval=frame:volume='(if("), keyframeFilter);
+  assert.ok(keyframeFilter.includes(')*0.5'), 'keyframe volume is multiplied by track volume');
+
+  const transition = trueTransitionProject('dissolve');
+  transition.tracks[0].volume = 0.5;
+  const transitionFilter = filterOf(buildPhase(transition));
+  assert.equal((transitionFilter.match(/volume=0\.5/g) ?? []).length, 2, 'both crossfade inputs are scaled');
+});
+
+it('exports mask alpha and blend modes with pixel sampling', { skip: toolSkip }, async () => {
+  // Mask: green full-frame poster masked to the left half over black.
+  const maskProject = makeProject({
+    media: [greenMedia],
+    clips: [
+      makeClip({
+        id: 'mask-real', type: 'image', mediaId: greenMedia.id,
+        startFrame: 0, durationFrames: 30,
+        mask: { shape: 'rect', x: 0, y: 0, width: 0.5, height: 1, feather: 0, invert: false },
+      }),
+    ],
+  });
+  const maskOutput = path.join(exportTemp, 'mask-export.mp4');
+  await runExport({ project: maskProject, projectRoot: exportProjectRoot, outputPath: maskOutput });
+
+  const left = await samplePixel(maskOutput, 0.2, 60, 90);
+  assert.ok(left.g > 90 && left.r < 40 && left.b < 40, `expected green inside mask, got ${JSON.stringify(left)}`);
+  const right = await samplePixel(maskOutput, 0.2, 260, 90);
+  assert.ok(right.r < 40 && right.g < 40 && right.b < 40, `expected black outside mask, got ${JSON.stringify(right)}`);
+
+  // Blend: red base, blue clip with screen over it -> magenta.
+  const blendProject = makeProject({
+    media: [redMedia, blueMedia, audioMedia],
+    clips: [
+      makeClip({ id: 'blend-base', type: 'video', mediaId: redMedia.id, startFrame: 0, durationFrames: 30 }),
+    ],
+    extraTracks: [
+      {
+        id: 'blend-top', type: 'video', name: 'Blend', muted: false, hidden: false,
+        clips: [
+          makeClip({
+            id: 'blend-top-clip', type: 'video', mediaId: blueMedia.id,
+            startFrame: 0, durationFrames: 30, blendMode: 'screen',
+          }),
+        ],
+      },
+      {
+        id: 'blend-audio', type: 'audio', name: 'Audio', muted: false, hidden: false, volume: 1,
+        clips: [
+          makeClip({
+            id: 'blend-tone', type: 'audio', mediaId: audioMedia.id,
+            startFrame: 0, durationFrames: 30, volume: 0.8,
+          }),
+        ],
+      },
+    ],
+  });
+  const loudOutput = path.join(exportTemp, 'blend-loud.mp4');
+  await runExport({ project: blendProject, projectRoot: exportProjectRoot, outputPath: loudOutput });
+  const blended = await samplePixel(loudOutput, 0.2, 160, 90);
+  assert.ok(
+    blended.r > 150 && blended.b > 150 && blended.g < 90,
+    `expected screen(red, blue) = magenta, got ${JSON.stringify(blended)}`,
+  );
+
+  // Track volume 0.25 must bring the audio down versus the same project at 1.
+  const quietProject = structuredClone(blendProject);
+  quietProject.tracks[2].volume = 0.25;
+  const quietOutput = path.join(exportTemp, 'blend-quiet.mp4');
+  await runExport({ project: quietProject, projectRoot: exportProjectRoot, outputPath: quietOutput });
+
+  const loudDb = await meanVolumeDb(loudOutput);
+  const quietDb = await meanVolumeDb(quietOutput);
+  assert.ok(
+    quietDb < loudDb - 6,
+    `track volume 0.25 should lower mean volume (loud ${loudDb} dB, quiet ${quietDb} dB)`,
+  );
 });

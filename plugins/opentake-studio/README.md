@@ -170,6 +170,11 @@ Importing only fills the media library; it does not add clips to the timeline.
   custom resolution, fps, CRF or bitrate.
 - **Crop**: normalized per-clip crop applied before transform/effects, with
   preview and export support.
+- **Masks**: rect/ellipse clip masks with feather and invert, preview and export;
+  drawtext fallback cannot mask.
+- **Blend modes**: normal/screen/multiply/overlay/darken/lighten/add/difference;
+  true blend only for full-frame static clips, otherwise overlay fallback.
+- **Track volume**: 0–2 per-track gain in preview and export (mute still wins).
 - **Transcription**: optional Whisper-compatible endpoint; per-media
   transcribe action, transcript storage, caption generation, and a Transcripts
   tab. Requires `OPENTAKE_STUDIO_ASR_URL` (or defaults to OpenAI) and a key.
@@ -278,7 +283,9 @@ MCP endpoint, client or credential is involved.
 | `opentake_studio_import_captions` | `text`, `style?`, `trackId?` | Parses SRT/VTT and adds a caption clip on a Captions track. |
 | `opentake_studio_export_captions` | `format?` (`srt`/`vtt`) | Returns all caption cues as SRT or WebVTT text. |
 | `opentake_studio_rename_project` | `name` | Renames the project display name. |
-| `opentake_studio_update_track` | `trackId`, `name?`, `muted?`, `hidden?` | Renames/mutes/hides/shows a track. |
+| `opentake_studio_update_track` | `trackId`, `name?`, `muted?`, `hidden?`, `volume?` | Renames/mutes/hides/shows a track or sets track volume 0–2. |
+| `opentake_studio_set_mask` | `clipId`, `mask?` | Sets/clears a normalized rect/ellipse clip mask (feather/invert). |
+| `opentake_studio_set_blend_mode` | `clipId`, `blendMode` | Sets a clip blend mode. |
 | `opentake_studio_remove_track` | `trackId` | Removes a track and its clips. |
 | `opentake_studio_transcribe_media` | `mediaId`, `createCaptions?` | Transcribes a video/audio asset with the configured Whisper-compatible endpoint; optionally adds a caption clip. |
 | `opentake_studio_search` | `query` | Searches project media names and stored transcripts. |
@@ -481,7 +488,7 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **299/299 tests pass**, 31 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **322/322 tests pass**, 31 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |

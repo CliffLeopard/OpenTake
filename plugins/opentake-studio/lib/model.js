@@ -63,6 +63,18 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 /** Tolerance for normalized-rect edge sums (0.1 + 0.9 float noise). */
 const RECT_EPSILON = 1e-9;
 
+const MASK_SHAPES = ['rect', 'ellipse'];
+const BLEND_MODES = [
+  'normal',
+  'screen',
+  'multiply',
+  'overlay',
+  'darken',
+  'lighten',
+  'add',
+  'difference',
+];
+
 const DEFAULT_CLIP_TRANSFORM = Object.freeze({
   x: 0,
   y: 0,
@@ -296,6 +308,58 @@ function normalizeCrop(value, code) {
     fail(code, 'crop.y + crop.height must be <= 1');
   }
   return crop;
+}
+
+/**
+ * Normalize an optional clip mask (DESIGN §12.1). `null`/`undefined` means no
+ * mask. The rect is relative to the clip's transform box; a mask is applied
+ * after crop/scale and before overlay.
+ */
+function normalizeMask(value, code) {
+  if (value === undefined || value === null) return null;
+  assertObject(value, code, 'mask');
+  const shape = value.shape === undefined ? 'rect' : value.shape;
+  if (!MASK_SHAPES.includes(shape)) {
+    fail(code, `mask.shape must be one of ${MASK_SHAPES.join('/')}`);
+  }
+  const mask = { shape, x: 0, y: 0, width: 1, height: 1, feather: 0, invert: false };
+  for (const key of ['x', 'y', 'width', 'height']) {
+    if (value[key] !== undefined) mask[key] = requireFiniteNumber(value[key], code, `mask.${key}`);
+  }
+  if (mask.x < 0 || mask.x > 1) fail(code, 'mask.x must be in [0,1]');
+  if (mask.y < 0 || mask.y > 1) fail(code, 'mask.y must be in [0,1]');
+  if (!(mask.width > 0) || mask.width > 1) fail(code, 'mask.width must be in (0,1]');
+  if (!(mask.height > 0) || mask.height > 1) fail(code, 'mask.height must be in (0,1]');
+  if (mask.x + mask.width > 1 + RECT_EPSILON) {
+    fail(code, 'mask.x + mask.width must be <= 1');
+  }
+  if (mask.y + mask.height > 1 + RECT_EPSILON) {
+    fail(code, 'mask.y + mask.height must be <= 1');
+  }
+  if (value.feather !== undefined) {
+    mask.feather = requireFiniteNumber(value.feather, code, 'mask.feather');
+    if (mask.feather < 0 || mask.feather > 1) {
+      fail(code, 'mask.feather must be in [0,1]');
+    }
+  }
+  mask.invert = optionalBoolean(value.invert, false, code, 'mask.invert');
+  return mask;
+}
+
+/** Normalize a clip blend mode; defaults to `'normal'`. */
+function normalizeBlendMode(value, code) {
+  const blendMode = value === undefined ? 'normal' : value;
+  if (!BLEND_MODES.includes(blendMode)) {
+    fail(code, `clip.blendMode must be one of ${BLEND_MODES.join('/')}`);
+  }
+  return blendMode;
+}
+
+/** Normalize a track volume (0..2, default 1). */
+function normalizeTrackVolume(value, code) {
+  const volume = value === undefined ? 1 : requireFiniteNumber(value, code, 'track.volume');
+  if (volume < 0 || volume > 2) fail(code, 'track.volume must be in [0,2]');
+  return volume;
 }
 
 /** Merge a partial transform patch onto an already valid transform. */
@@ -755,6 +819,8 @@ function normalizeClip(value) {
   const opacity =
     value.opacity === undefined ? 1 : requireUnitNumber(value.opacity, code, 'clip.opacity');
   const transform = normalizeTransform(value.transform, code);
+  const mask = normalizeMask(value.mask, code);
+  const blendMode = normalizeBlendMode(value.blendMode, code);
 
   // Fades may not exceed the clip length. Trimming/speed changes shorter clips
   // clamp stale fades instead of rejecting the project (upstream behaviour).
@@ -810,6 +876,8 @@ function normalizeClip(value) {
     opacity,
     transform,
     crop,
+    mask,
+    blendMode,
     text,
     fadeInFrames,
     fadeOutFrames,
@@ -835,10 +903,11 @@ function normalizeTrack(value) {
       : requireNonEmptyString(value.name, code, 'track.name');
   const muted = optionalBoolean(value.muted, false, code, 'track.muted');
   const hidden = optionalBoolean(value.hidden, false, code, 'track.hidden');
+  const volume = normalizeTrackVolume(value.volume, code);
   const clipsValue = value.clips === undefined ? [] : value.clips;
   if (!Array.isArray(clipsValue)) fail(code, 'track.clips must be an array');
   const clips = clipsValue.map(normalizeClip).sort(compareClips);
-  return { id, type, name, muted, hidden, clips };
+  return { id, type, name, muted, hidden, volume, clips };
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,6 +1305,8 @@ function createClip({
   opacity = 1,
   transform = DEFAULT_CLIP_TRANSFORM,
   crop = null,
+  mask = null,
+  blendMode = 'normal',
   text = null,
   fadeInFrames = 0,
   fadeOutFrames = 0,
@@ -1255,6 +1326,8 @@ function createClip({
     opacity,
     transform: { ...transform },
     crop: crop === null ? null : { ...crop },
+    mask: mask === null ? null : { ...mask },
+    blendMode,
     text: text === null ? null : { ...text },
     fadeInFrames,
     fadeOutFrames,
@@ -1507,7 +1580,15 @@ function addTrackOperation(project, operation) {
     operation.name === undefined
       ? trackDefaultName(project, trackType)
       : requireNonEmptyString(operation.name, 'invalid-input', 'name');
-  project.tracks.push({ id: trackId, type: trackType, name, muted: false, hidden: false, clips: [] });
+  project.tracks.push({
+    id: trackId,
+    type: trackType,
+    name,
+    muted: false,
+    hidden: false,
+    volume: 1,
+    clips: [],
+  });
 }
 
 function removeTrackOperation(project, operation) {
@@ -1518,8 +1599,8 @@ function removeTrackOperation(project, operation) {
 }
 
 /**
- * Rename a track and/or toggle its mute/hidden state. Empty tracks stay in the
- * project (tracks are only removed explicitly via `remove-track`).
+ * Rename a track and/or change its mute/hidden/volume state. Empty tracks stay
+ * in the project (tracks are only removed explicitly via `remove-track`).
  */
 function updateTrackOperation(project, operation) {
   const trackId = requireId(operation.trackId, 'invalid-input', 'trackId');
@@ -1529,15 +1610,18 @@ function updateTrackOperation(project, operation) {
   const hasName = operation.name !== undefined;
   const hasMuted = operation.muted !== undefined;
   const hasHidden = operation.hidden !== undefined;
+  const hasVolume = operation.volume !== undefined;
 
   const name = hasName ? requireNonEmptyString(operation.name, 'invalid-input', 'name') : track.name;
   const muted = hasMuted ? requireBoolean(operation.muted, 'invalid-input', 'muted') : track.muted;
   const hidden = hasHidden ? requireBoolean(operation.hidden, 'invalid-input', 'hidden') : track.hidden;
+  const volume = hasVolume ? normalizeTrackVolume(operation.volume, 'invalid-input') : track.volume;
 
   // No fields is an allowed no-op (still produces a new stamped project).
   track.name = name;
   track.muted = muted;
   track.hidden = hidden;
+  track.volume = volume;
 }
 
 /** Rename the project. Frame semantics are untouched (no fps/resolution edits). */
@@ -1807,6 +1891,28 @@ function setCropOperation(project, operation) {
   if (!entry) fail('clip-not-found', `clip not found: ${clipId}`);
   if (operation.crop === undefined) return;
   entry.clip.crop = operation.crop === null ? null : normalizeCrop(operation.crop, 'invalid-input');
+}
+
+/** Set or clear a clip mask (DESIGN §12.2). `mask: null` clears it. */
+function setMaskOperation(project, operation) {
+  const clipId = requireId(operation.clipId, 'invalid-input', 'clipId');
+  const entry = findClip(project, clipId);
+  if (!entry) fail('clip-not-found', `clip not found: ${clipId}`);
+  if (operation.mask === undefined) {
+    fail('invalid-input', 'set-mask requires a mask object or null');
+  }
+  entry.clip.mask = operation.mask === null ? null : normalizeMask(operation.mask, 'invalid-input');
+}
+
+/** Set a clip blend mode from the DESIGN §12.1 enum. */
+function setBlendModeOperation(project, operation) {
+  const clipId = requireId(operation.clipId, 'invalid-input', 'clipId');
+  const entry = findClip(project, clipId);
+  if (!entry) fail('clip-not-found', `clip not found: ${clipId}`);
+  if (operation.blendMode === undefined) {
+    fail('invalid-input', 'set-blend-mode requires a blendMode');
+  }
+  entry.clip.blendMode = normalizeBlendMode(operation.blendMode, 'invalid-input');
 }
 
 function addTextOperation(project, operation) {
@@ -2261,6 +2367,8 @@ const OPERATIONS = Object.freeze({
   'remove-clips': removeClipsOperation,
   'set-clip-properties': setClipPropertiesOperation,
   'set-crop': setCropOperation,
+  'set-mask': setMaskOperation,
+  'set-blend-mode': setBlendModeOperation,
   'add-text': addTextOperation,
   'update-text': updateTextOperation,
   'reorder-tracks': reorderTracksOperation,

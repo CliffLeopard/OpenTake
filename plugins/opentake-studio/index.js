@@ -733,6 +733,7 @@ export function apply(ctx) {
         name: track.name,
         muted: track.muted,
         hidden: track.hidden,
+        ...(track.volume === undefined ? {} : { volume: track.volume }),
         clips: track.clips.map((clip) => ({
           id: clip.id,
           type: clip.type,
@@ -753,6 +754,8 @@ export function apply(ctx) {
             : {}),
           ...(clip.caption === undefined ? {} : { caption: clip.caption }),
           ...(clip.crop === undefined ? {} : { crop: clip.crop }),
+          ...(clip.mask === undefined ? {} : { mask: clip.mask }),
+          ...(clip.blendMode === undefined ? {} : { blendMode: clip.blendMode }),
         })),
       })),
       ...(project.markers === undefined ? {} : { markers: project.markers }),
@@ -1428,6 +1431,7 @@ export function apply(ctx) {
         name: { type: 'string' },
         muted: { type: 'boolean' },
         hidden: { type: 'boolean' },
+        volume: { type: 'number' },
       },
       required: ['trackId'],
       additionalProperties: false,
@@ -1437,6 +1441,7 @@ export function apply(ctx) {
       if (args.name !== undefined) operation.name = args.name;
       if (args.muted !== undefined) operation.muted = args.muted;
       if (args.hidden !== undefined) operation.hidden = args.hidden;
+      if (args.volume !== undefined) operation.volume = args.volume;
       const result = await applyOperations([operation]);
       return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
     },
@@ -1453,6 +1458,40 @@ export function apply(ctx) {
     },
     async (args) => {
       const result = await applyOperations([{ type: 'remove-track', trackId: args.trackId }]);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_set_mask',
+    'Set or clear a normalized rect/ellipse mask (with feather/invert) on a clip.',
+    {
+      type: 'object',
+      properties: { clipId: { type: 'string' }, mask: { type: 'object', description: 'Mask rect; omit to clear' } },
+      required: ['clipId'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await applyOperations([
+        { type: 'set-mask', clipId: args.clipId, mask: args.mask === undefined ? null : args.mask },
+      ]);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_set_blend_mode',
+    'Set a clip blend mode (normal/screen/multiply/overlay/darken/lighten/add/difference).',
+    {
+      type: 'object',
+      properties: { clipId: { type: 'string' }, blendMode: { type: 'string' } },
+      required: ['clipId', 'blendMode'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await applyOperations([
+        { type: 'set-blend-mode', clipId: args.clipId, blendMode: args.blendMode },
+      ]);
       return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
     },
   );

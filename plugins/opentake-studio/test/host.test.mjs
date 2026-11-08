@@ -58,6 +58,8 @@ const EXPECTED_TOOLS = [
   'opentake_studio_rename_project',
   'opentake_studio_update_track',
   'opentake_studio_remove_track',
+  'opentake_studio_set_mask',
+  'opentake_studio_set_blend_mode',
   'opentake_studio_import_captions',
   'opentake_studio_export_captions',
   'opentake_studio_transcribe_media',

@@ -45,6 +45,18 @@
  *     text/caption clips ignore crop (documented limitation). Cropped clips
  *     fall back from true xfade transitions to the fade approximation (xfade
  *     requires full-frame opaque layers).
+ *   - mask: `clip.mask` (rect/ellipse, feather, invert; normalized to the
+ *     transform box) replaces the RGBA alpha plane with a `geq` expression
+ *     after crop/scale/rotation. It applies to video/image and to
+ *     browser-rendered text/caption PNGs; drawtext-only clips cannot be
+ *     masked. `geq` alpha values are 0..255, so the mask expression is scaled.
+ *   - blend modes: `clip.blendMode` (screen/multiply/overlay/darken/lighten/
+ *     add/difference) composites full-frame clips (transform 0,0,1,1) with
+ *     `blend=all_mode=...`; clips with rotation/crop/mask, non-full-frame
+ *     transforms, visual keyframes or alpha effects fall back to `overlay`.
+ *     `normal` is unchanged. True xfade transitions also exclude blended clips.
+ *   - track volume: `Track.volume` (0..2, default 1) multiplies every audio
+ *     chain on that track after clip volume/keyframes; `muted` still wins.
  *   - rotation: static `transform.rotation` is applied with `rotate` on an
  *     expanded transparent canvas and then fitted back inside the transform
  *     box (letterboxed, centered). Rotation keyframes are NOT supported in
@@ -88,6 +100,17 @@ const DEFAULT_TEXT_TRANSFORM = Object.freeze({ x: 0.1, y: 0.1, width: 0.8, heigh
 const DEFAULT_CAPTION_TRANSFORM = Object.freeze({ x: 0.05, y: 0.8, width: 0.9, height: 0.15, rotation: 0 });
 
 const TRANSITION_TYPES = new Set(['fadeToBlack', 'dissolve', 'wipeLeft', 'wipeRight']);
+
+/** clip.blendMode -> ffmpeg blend `all_mode` (DESIGN §12). */
+const BLEND_MODE_MAP = Object.freeze({
+  screen: 'screen',
+  multiply: 'multiply',
+  overlay: 'overlay',
+  darken: 'darken',
+  lighten: 'lighten',
+  add: 'addition',
+  difference: 'difference',
+});
 const TRUE_TRANSITION_TYPES = new Set(['dissolve', 'wipeLeft', 'wipeRight']);
 const XFADE_NAMES = Object.freeze({
   dissolve: 'dissolve',
@@ -388,6 +411,114 @@ function clipEffectsProduceAlpha(clip) {
   );
 }
 
+function normalizeBlendMode(value) {
+  if (typeof value !== 'string') return 'normal';
+  const mode = value.toLowerCase();
+  if (mode === 'normal') return 'normal';
+  return Object.prototype.hasOwnProperty.call(BLEND_MODE_MAP, mode) ? mode : 'normal';
+}
+
+function blendFilterMode(value) {
+  const mode = normalizeBlendMode(value);
+  return mode === 'normal' ? null : BLEND_MODE_MAP[mode];
+}
+
+/** Track volume is 0..2, default 1 (mute handled separately). */
+function normalizeTrackVolume(track) {
+  const volume = Number(track?.volume);
+  if (!Number.isFinite(volume)) return 1;
+  return Math.min(2, Math.max(0, volume));
+}
+
+function clampAlphaExpression(expression) {
+  return `min(1,max(0,${expression}))`;
+}
+
+function smoothstepExpression(progress) {
+  return `(${progress})*(${progress})*(3-2*(${progress}))`;
+}
+
+/**
+ * Alpha (0..1) expression for a clip mask in transform-box normalized space.
+ * `rotation` supplies the pixel offset when the layer was fitted into the box.
+ */
+function maskAlphaExpression(mask, box, rotation) {
+  const offsetX = rotation === null ? 0 : rotation.offsetX;
+  const offsetY = rotation === null ? 0 : rotation.offsetY;
+  const normalizedX = `((X+${formatScalar(offsetX)})/${formatScalar(box.width)})`;
+  const normalizedY = `((Y+${formatScalar(offsetY)})/${formatScalar(box.height)})`;
+
+  const minimum = 1e-6;
+  const x = clampScalar(mask.x, 0, 1, 0);
+  const y = clampScalar(mask.y, 0, 1, 0);
+  let width = clampScalar(mask.width, minimum, 1, 1);
+  let height = clampScalar(mask.height, minimum, 1, 1);
+  if (x + width > 1) width = Math.max(minimum, 1 - x);
+  if (y + height > 1) height = Math.max(minimum, 1 - y);
+  const feather = clampScalar(mask.feather, 0, 1, 0);
+
+  let alpha;
+  if (mask.shape === 'ellipse') {
+    const centerX = x + width / 2;
+    const centerY = y + height / 2;
+    const radiusX = width / 2;
+    const radiusY = height / 2;
+    const dx = `((${normalizedX}-${formatScalar(centerX)})/${formatScalar(radiusX)})`;
+    const dy = `((${normalizedY}-${formatScalar(centerY)})/${formatScalar(radiusY)})`;
+    const distance = `sqrt((${dx})*(${dx})+(${dy})*(${dy}))`;
+    if (feather > 0) {
+      alpha = smoothstepExpression(
+        clampAlphaExpression(`(1-(${distance}))/${formatScalar(feather)}`),
+      );
+    } else {
+      alpha = `lte(${distance},1)`;
+    }
+  } else if (mask.shape === 'rect') {
+    const u = `((${normalizedX}-${formatScalar(x)})/${formatScalar(width)})`;
+    const v = `((${normalizedY}-${formatScalar(y)})/${formatScalar(height)})`;
+    if (feather > 0) {
+      const edgeU = clampAlphaExpression(`min(${u},1-(${u}))/${formatScalar(feather)}`);
+      const edgeV = clampAlphaExpression(`min(${v},1-(${v}))/${formatScalar(feather)}`);
+      alpha = `${smoothstepExpression(edgeU)}*${smoothstepExpression(edgeV)}`;
+    } else {
+      alpha = `gte(${u},0)*lte(${u},1)*gte(${v},0)*lte(${v},1)`;
+    }
+  } else {
+    return null;
+  }
+
+  if (mask.invert === true) alpha = `1-(${alpha})`;
+  return clampAlphaExpression(alpha);
+}
+
+/** ffmpeg `geq` filter that replaces the alpha plane with the mask. */
+function maskFilterFor(mask, box, rotation) {
+  if (mask === null || typeof mask !== 'object') return null;
+  const alpha = maskAlphaExpression(mask, box, rotation);
+  if (alpha === null) return null;
+  // geq works on 0..255 channel values for the 8-bit rgba format we force.
+  return (
+    `geq=r=${quoteFilterExpression('r(X,Y)')}` +
+    `:g=${quoteFilterExpression('g(X,Y)')}` +
+    `:b=${quoteFilterExpression('b(X,Y)')}` +
+    `:a=${quoteFilterExpression(`255*(${alpha})`)}`
+  );
+}
+
+/**
+ * Blend mode applies only to full-frame clips with no rotation/crop/mask and no
+ * visual keyframes (DESIGN §12.1); otherwise the normal overlay is used.
+ */
+function blendModeForClip(clip, { rotation, cropFilter, maskFilter }) {
+  const mode = blendFilterMode(clip.blendMode);
+  if (mode === null) return null;
+  if (rotation !== null || cropFilter !== null || maskFilter !== null) return null;
+  if (!transformIsFullFrame(clip.transform)) return null;
+  if (clipHasVisualKeyframes(clip)) return null;
+  if (clipEffectsProduceAlpha(clip)) return null;
+  return mode;
+}
+
 /**
  * True overlap transitions need two opaque, full-frame, static layers so that
  * `xfade` (which works on yuv frames without alpha) cannot lose transparency or
@@ -400,6 +531,8 @@ function canUseTrueTransition(fromEntry, toEntry) {
     const rotation = Number(clip.transform?.rotation) || 0;
     if (Math.abs(rotation) > 1e-6) return false;
     if (clip.crop !== null && clip.crop !== undefined) return false;
+    if (clip.mask !== null && clip.mask !== undefined) return false;
+    if (blendFilterMode(clip.blendMode) !== null) return false;
     if (!transformIsFullFrame(clip.transform)) return false;
     if (clamp01(clip.opacity ?? 1) < 1) return false;
     if (clipHasVisualKeyframes(clip)) return false;
@@ -1151,7 +1284,25 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     hasVisual = true;
   };
 
-  const addAudioChain = (clip, index, speed) => {
+  const appendClipVolume = (parts, clip, trackVolume) => {
+    const volumeExpression = buildKeyframeExpression(keyframeList(clip, 'volume'), {
+      fps,
+      offsetSeconds: 0,
+      scale: 1,
+      clampMin: 0,
+      clampMax: 1,
+    });
+    if (volumeExpression !== null) {
+      const scaled = trackVolume === 1
+        ? volumeExpression
+        : `(${volumeExpression})*${formatScalar(trackVolume)}`;
+      parts.push(`volume=eval=frame:volume=${quoteFilterExpression(scaled)}`);
+    } else {
+      parts.push(`volume=${formatScalar(clamp01(clip.volume ?? 1) * trackVolume)}`);
+    }
+  };
+
+  const addAudioChain = (clip, index, speed, trackVolume = 1) => {
     const duration = clipDurationFrames(clip);
     const durationSecondsForClip = framesToSeconds(duration, fps);
     const sourceSeconds = framesToSeconds(duration * speed, fps);
@@ -1170,18 +1321,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
       );
     }
 
-    const volumeExpression = buildKeyframeExpression(keyframeList(clip, 'volume'), {
-      fps,
-      offsetSeconds: 0,
-      scale: 1,
-      clampMin: 0,
-      clampMax: 1,
-    });
-    if (volumeExpression !== null) {
-      parts.push(`volume=eval=frame:volume=${quoteFilterExpression(volumeExpression)}`);
-    } else {
-      parts.push(`volume=${formatScalar(clamp01(clip.volume ?? 1))}`);
-    }
+    appendClipVolume(parts, clip, trackVolume);
 
     const startMilliseconds = Math.max(0, Math.round(framesToSeconds(clip.startFrame ?? 0, fps) * 1000));
     parts.push(`adelay=${startMilliseconds}:all=1`);
@@ -1201,6 +1341,12 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     const effects = buildEffectFilters(clip.effects, root);
     const rotation = rotationPlan(box, clip.transform?.rotation);
     const cropFilter = cropFilterFor(clip.crop);
+    const maskFilter = maskFilterFor(clip.mask, box, rotation);
+    const blendMode = blendModeForClip(clip, {
+      rotation,
+      cropFilter,
+      maskFilter,
+    });
 
     const parts = [];
     if (cropFilter !== null) parts.push(cropFilter);
@@ -1223,12 +1369,26 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
       }
     }
 
-    if (opacity < 1) {
+    if (maskFilter !== null) {
+      // Mask alpha is applied after crop/scale/rotation, before opacity/overlay.
+      if (!hasAlpha) {
+        parts.push('format=rgba');
+        hasAlpha = true;
+      }
+      parts.push(maskFilter);
+    }
+
+    if (opacity < 1 && blendMode === null) {
       if (!hasAlpha) {
         parts.push('format=rgba');
         hasAlpha = true;
       }
       parts.push(`colorchannelmixer=aa=${formatScalar(opacity)}`);
+    }
+
+    if (blendMode !== null) {
+      // blend needs matching yuv420p frames from both inputs.
+      parts.push('format=yuv420p');
     }
 
     // Speed: DESIGN §11.3. Keep the legacy string for speed=1 so existing
@@ -1281,9 +1441,18 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     const window = quoteFilterExpression(
       `between(t,${formatSeconds(startSeconds)},${formatSeconds(endSeconds)})`,
     );
-    chains.push(
-      `[${baseLabel}][${label}]overlay=x=${overlayX}:y=${overlayY}:enable=${window}[${outputLabel}]`,
-    );
+    if (blendMode !== null) {
+      const blendOptions = [`all_mode=${blendMode}`];
+      if (opacity < 1) blendOptions.push(`all_opacity=${formatScalar(opacity)}`);
+      blendOptions.push(`enable=${window}`);
+      chains.push(
+        `[${baseLabel}][${label}]blend=${blendOptions.join(':')}[${outputLabel}]`,
+      );
+    } else {
+      chains.push(
+        `[${baseLabel}][${label}]overlay=x=${overlayX}:y=${overlayY}:enable=${window}[${outputLabel}]`,
+      );
+    }
     baseLabel = outputLabel;
     hasVisual = true;
   };
@@ -1382,6 +1551,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     // source windows) and ramp `afade` down/up across the same overlap, so
     // `amix` sums to a linear audio crossfade.
     if (from.track.muted !== true) {
+      const trackVolume = normalizeTrackVolume(from.track);
       const addCrossfadeAudio = (clip, index, layerFrames, leadFrames, delayedStartFrames, outgoing) => {
         const media = findMedia(project, clip.mediaId);
         if (media === null || media.hasAudio !== true) return;
@@ -1407,18 +1577,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
             `:d=${formatSeconds(framesToSeconds(ownFades.outFrames, fps))}`,
           );
         }
-        const volumeExpression = buildKeyframeExpression(keyframeList(clip, 'volume'), {
-          fps,
-          offsetSeconds: 0,
-          scale: 1,
-          clampMin: 0,
-          clampMax: 1,
-        });
-        if (volumeExpression !== null) {
-          parts.push(`volume=eval=frame:volume=${quoteFilterExpression(volumeExpression)}`);
-        } else {
-          parts.push(`volume=${formatScalar(clamp01(clip.volume ?? 1))}`);
-        }
+        appendClipVolume(parts, clip, trackVolume);
         const delay = Math.max(0, Math.round(framesToSeconds(delayedStartFrames, fps) * 1000));
         parts.push(`adelay=${delay}:all=1`);
         const audioLabel = `a${audioCounter}`;
@@ -1541,6 +1700,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
 
     if (track.type === 'audio') {
       if (trackMuted) continue;
+      const trackVolume = normalizeTrackVolume(track);
       for (const clip of clips) {
         if (clip?.type !== 'audio') continue;
         const media = findMedia(project, clip.mediaId);
@@ -1553,12 +1713,13 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
           ['-ss', formatSeconds(trimSeconds), '-t', formatSeconds(sourceSeconds)],
           mediaFilePath(root, media),
         );
-        addAudioChain(clip, index, speed);
+        addAudioChain(clip, index, speed, trackVolume);
       }
       continue;
     }
 
     if (track.type !== 'video') continue;
+    const trackVolume = normalizeTrackVolume(track);
 
     for (const clip of clips) {
       if (clip === null || typeof clip !== 'object') continue;
@@ -1601,7 +1762,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
       const index = addInput(prefix, mediaFilePath(root, media));
 
       if (wantsVisual) addVisualOverlay(clip, index, speed);
-      if (wantsAudio) addAudioChain(clip, index, speed);
+      if (wantsAudio) addAudioChain(clip, index, speed, trackVolume);
     }
   }
 

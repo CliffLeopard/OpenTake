@@ -304,6 +304,112 @@ window.__ModuleLoader__.load({
 			};
 		}
 
+		const BLEND_MODES = ['normal', 'screen', 'multiply', 'overlay', 'darken', 'lighten', 'add', 'difference'];
+		const CANVAS_BLEND_MODES = Object.freeze({
+			normal: 'source-over',
+			screen: 'screen',
+			multiply: 'multiply',
+			overlay: 'overlay',
+			darken: 'darken',
+			lighten: 'lighten',
+			add: 'lighter',
+			difference: 'difference',
+		});
+
+		function clipMaskOf(clip) {
+			const value = clip && clip.mask;
+			if (!value || typeof value !== 'object') return null;
+			const width = clamp(finiteNumber(value.width, 1), 0.01, 1);
+			const height = clamp(finiteNumber(value.height, 1), 0.01, 1);
+			return {
+				shape: value.shape === 'ellipse' ? 'ellipse' : 'rect',
+				x: clamp(finiteNumber(value.x, 0), 0, 1 - width),
+				y: clamp(finiteNumber(value.y, 0), 0, 1 - height),
+				width,
+				height,
+				feather: clamp01(finiteNumber(value.feather, 0)),
+				invert: value.invert === true,
+			};
+		}
+
+		function maskDraftFromClip(clip) {
+			return (
+				clipMaskOf(clip) || {
+					shape: 'rect',
+					x: 0,
+					y: 0,
+					width: 1,
+					height: 1,
+					feather: 0,
+					invert: false,
+				}
+			);
+		}
+
+		function normalizeMaskDraft(draft) {
+			const width = clamp(finiteNumber(draft.width, 1), 0.01, 1);
+			const height = clamp(finiteNumber(draft.height, 1), 0.01, 1);
+			return {
+				shape: draft.shape === 'ellipse' ? 'ellipse' : 'rect',
+				x: clamp(finiteNumber(draft.x, 0), 0, 1 - width),
+				y: clamp(finiteNumber(draft.y, 0), 0, 1 - height),
+				width,
+				height,
+				feather: clamp01(finiteNumber(draft.feather, 0)),
+				invert: draft.invert === true,
+			};
+		}
+
+		function clipBlendMode(clip) {
+			return clip && BLEND_MODES.includes(clip.blendMode) ? clip.blendMode : 'normal';
+		}
+
+		function isFullFrameBlendClip(clip) {
+			if (!clip) return false;
+			if (clip.crop || clip.mask) return false;
+			const transform = normalizeTransform(clip.transform);
+			return transform.x === 0 && transform.y === 0 && transform.width === 1 && transform.height === 1 && transform.rotation === 0;
+		}
+
+		function addMaskShape(context, mask, box, shrink) {
+			const factor = clamp(finiteNumber(shrink, 1), 0.0001, 1);
+			const width = Math.max(0.5, mask.width * box.width * factor);
+			const height = Math.max(0.5, mask.height * box.height * factor);
+			const centerX = -box.width / 2 + (mask.x + mask.width / 2) * box.width;
+			const centerY = -box.height / 2 + (mask.y + mask.height / 2) * box.height;
+			const left = centerX - width / 2;
+			const top = centerY - height / 2;
+			if (mask.shape === 'ellipse') {
+				context.moveTo(left + width, top + height / 2);
+				context.ellipse(left + width / 2, top + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2, false);
+			} else {
+				context.rect(left, top, width, height);
+			}
+		}
+
+		function applyClipMask(context, mask, box, shrink) {
+			if (!mask) return;
+			context.beginPath();
+			if (mask.invert) context.rect(-box.width / 2, -box.height / 2, box.width, box.height);
+			addMaskShape(context, mask, box, shrink === undefined ? 1 : shrink);
+			try {
+				context.clip(mask.invert ? 'evenodd' : 'nonzero');
+			} catch (error) {
+				context.clip();
+			}
+		}
+
+		function applyMaskRing(context, mask, box, outerShrink, innerShrink) {
+			context.beginPath();
+			addMaskShape(context, mask, box, outerShrink);
+			addMaskShape(context, mask, box, innerShrink);
+			try {
+				context.clip('evenodd');
+			} catch (error) {
+				context.clip();
+			}
+		}
+
 		function draftFromClip(clip) {
 			const transform = normalizeTransform(clip.transform);
 			const text = clip.text || {};
@@ -1162,6 +1268,12 @@ window.__ModuleLoader__.load({
 					}
 					context.translate(box.x + box.width / 2, box.y + box.height / 2);
 					if (box.rotation !== 0) context.rotate((box.rotation * Math.PI) / 180);
+					const mask = clipMaskOf(clip);
+					const blendMode = clipBlendMode(clip);
+					if (blendMode !== 'normal' && isFullFrameBlendClip(clip)) {
+						context.globalCompositeOperation = CANVAS_BLEND_MODES[blendMode] || 'source-over';
+					}
+					const drawContent = () => {
 					if (clip.type === 'text') {
 						drawTextClip(context, clip, box);
 					} else if (clip.type === 'caption') {
@@ -1204,6 +1316,26 @@ window.__ModuleLoader__.load({
 								context.drawImage(image, -box.width / 2, -box.height / 2, box.width, box.height);
 							}
 						}
+					}
+					};
+					if (mask && !mask.invert && mask.feather > 0.001) {
+						const bands = 4;
+						context.save();
+						applyClipMask(context, mask, box, 1 - mask.feather);
+						drawContent();
+						context.restore();
+						for (let band = 1; band < bands; band += 1) {
+							const outerShrink = 1 - mask.feather * ((band - 1) / bands);
+							const innerShrink = 1 - mask.feather * (band / bands);
+							context.save();
+							applyMaskRing(context, mask, box, outerShrink, innerShrink);
+							context.globalAlpha = opacity * (band / bands);
+							drawContent();
+							context.restore();
+						}
+					} else {
+						if (mask) applyClipMask(context, mask, box, 1);
+						drawContent();
 					}
 					try {
 						context.filter = 'none';
@@ -1445,7 +1577,7 @@ window.__ModuleLoader__.load({
 .ots-ruler-tick{border-left:.5px solid var(--dsw-alias-border-l2);bottom:0;position:absolute;top:9px}
 .ots-ruler-tick[data-major="true"]{border-color:var(--dsw-alias-border-l1);top:4px}
 .ots-ruler-label{color:var(--dsw-alias-label-secondary);font-size:9.5px;left:3px;position:absolute;top:1px;white-space:nowrap;font-variant-numeric:tabular-nums}
-.ots-track{display:flex;height:52px;border-bottom:.5px solid var(--dsw-alias-border-l2)}
+.ots-track{display:flex;height:58px;border-bottom:.5px solid var(--dsw-alias-border-l2)}
 .ots-track:last-child{border-bottom:0}
 .ots-track-head{background:var(--dsw-alias-bg-layer-1);border-right:.5px solid var(--dsw-alias-border-l2);display:flex;flex:0 0 132px;flex-direction:column;justify-content:center;gap:2px;min-width:0;padding:2px 6px;position:sticky;left:0;z-index:3}
 .ots-track-head-row{align-items:center;display:flex;gap:2px;min-width:0}
@@ -1457,6 +1589,13 @@ window.__ModuleLoader__.load({
 .ots-track-icon:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .ots-track-icon[data-active="true"]{background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-brand-primary)}
 .ots-track-icon[data-danger="true"]:hover{color:var(--dsw-alias-state-error-primary)}
+.ots-track-volume{align-items:center;display:flex;gap:3px;min-width:0}
+.ots-track-volume-range{-webkit-appearance:none;appearance:none;background:transparent;cursor:pointer;flex:1 1 auto;height:10px;margin:0;min-width:0;padding:0}
+.ots-track-volume-range::-webkit-slider-runnable-track{background:var(--dsw-alias-bg-layer-2);border-radius:999px;height:3px}
+.ots-track-volume-range::-webkit-slider-thumb{-webkit-appearance:none;background:var(--dsw-alias-brand-primary);border:0;border-radius:50%;height:8px;margin-top:-2.5px;width:8px}
+.ots-track-volume-range:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+.ots-track-volume-label{color:var(--dsw-alias-label-secondary);flex:0 0 auto;font-size:8.5px;font-variant-numeric:tabular-nums;min-width:25px;text-align:right}
+
 .ots-track[data-muted="true"] .ots-track-lane{opacity:.62}
 .ots-track[data-hidden="true"] .ots-track-lane{opacity:.38}
 .ots-track[data-hidden="true"] .ots-track-name-btn{color:var(--dsw-alias-label-secondary);text-decoration:line-through}
@@ -1997,6 +2136,31 @@ window.__ModuleLoader__.load({
 			'export.codecVp9': 'VP9 / WebM (.webm)',
 			'export.extensionHint': 'Output extension: {ext}',
 			'export.proresHint': 'ProRes ignores the CRF value (profile/bitrate based).',
+			'inspector.mask': 'Mask',
+			'inspector.maskReset': 'Reset mask',
+			'inspector.maskShape': 'Shape',
+			'inspector.maskX': 'Mask X',
+			'inspector.maskY': 'Mask Y',
+			'inspector.maskWidth': 'Mask width',
+			'inspector.maskHeight': 'Mask height',
+			'inspector.maskFeather': 'Feather',
+			'inspector.maskInvert': 'Invert mask',
+			'inspector.maskHint': 'Mask is applied inside the transform box after crop/scale, before overlay. Feather is approximated in the canvas preview.',
+			'inspector.blend': 'Blend',
+			'inspector.blendMode': 'Blend mode',
+			'inspector.blendHint': 'Full-frame clips (no transform/crop/mask) blend with the layers below in the preview.',
+			'inspector.blendFallback': 'This clip is transformed/cropped/masked, so the preview falls back to normal overlay; the export may blend when applicable.',
+			'mask.rect': 'Rectangle',
+			'mask.ellipse': 'Ellipse',
+			'blend.normal': 'Normal',
+			'blend.screen': 'Screen',
+			'blend.multiply': 'Multiply',
+			'blend.overlay': 'Overlay',
+			'blend.darken': 'Darken',
+			'blend.lighten': 'Lighten',
+			'blend.add': 'Add',
+			'blend.difference': 'Difference',
+			'timeline.trackVolume': 'Track volume',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -2445,6 +2609,31 @@ window.__ModuleLoader__.load({
 			'export.codecVp9': 'VP9 / WebM（.webm）',
 			'export.extensionHint': '输出扩展名：{ext}',
 			'export.proresHint': 'ProRes 会忽略 CRF 值（基于 profile/码率）。',
+			'inspector.mask': '遮罩',
+			'inspector.maskReset': '重置遮罩',
+			'inspector.maskShape': '形状',
+			'inspector.maskX': '遮罩 X',
+			'inspector.maskY': '遮罩 Y',
+			'inspector.maskWidth': '遮罩宽度',
+			'inspector.maskHeight': '遮罩高度',
+			'inspector.maskFeather': '羽化',
+			'inspector.maskInvert': '反转遮罩',
+			'inspector.maskHint': '遮罩在裁剪/缩放之后、叠加之前应用于变换框内部。画布预览中的羽化为近似效果。',
+			'inspector.blend': '混合',
+			'inspector.blendMode': '混合模式',
+			'inspector.blendHint': '全帧片段（无变换/裁剪/遮罩）会在预览中与下方图层混合。',
+			'inspector.blendFallback': '该片段存在变换/裁剪/遮罩，预览回退为普通叠加；导出在适用时会尝试真实混合。',
+			'mask.rect': '矩形',
+			'mask.ellipse': '椭圆',
+			'blend.normal': '正常',
+			'blend.screen': '滤色',
+			'blend.multiply': '正片叠底',
+			'blend.overlay': '叠加',
+			'blend.darken': '变暗',
+			'blend.lighten': '变亮',
+			'blend.add': '相加',
+			'blend.difference': '差值',
+			'timeline.trackVolume': '轨道音量',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -5047,6 +5236,134 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		function MaskEditor(props) {
+			const { t, clip, onSetMask } = props;
+			const signature = JSON.stringify(clip.mask || null);
+			const [draft, setDraft] = React.useState(() => maskDraftFromClip(clip));
+			const syncKey = `${clip.id}:${signature}`;
+			React.useEffect(() => {
+				setDraft(maskDraftFromClip(clip));
+			}, [syncKey]);
+			const update = (patch) => setDraft((previous) => Object.assign({}, previous, patch));
+			const commit = () => onSetMask(normalizeMaskDraft(draft));
+			const updateAndCommit = (patch) => {
+				const next = Object.assign({}, draft, patch);
+				setDraft(next);
+				onSetMask(normalizeMaskDraft(next));
+			};
+			const reset = () => {
+				setDraft(maskDraftFromClip({ mask: null }));
+				onSetMask(null);
+			};
+			const activeMask = clipMaskOf(clip);
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'mask' },
+				h(
+					'div',
+					{ className: 'ots-subhead' },
+					h('h3', { className: 'ots-section-title' }, t('inspector.mask')),
+					h(Btn, { variant: 'ghost', onClick: reset, disabled: !activeMask }, t('inspector.maskReset')),
+				),
+				h(
+					'div',
+					{ className: 'ots-field-grid' },
+					h(SelectField, {
+						label: t('inspector.maskShape'),
+						value: draft.shape,
+						onChange: (value) => updateAndCommit({ shape: value }),
+						options: [
+							{ value: 'rect', label: t('mask.rect') },
+							{ value: 'ellipse', label: t('mask.ellipse') },
+						],
+					}),
+					h(NumberField, {
+						label: t('inspector.maskX'),
+						value: draft.x,
+						min: 0,
+						max: 1,
+						onChange: (value) => update({ x: value }),
+						onBlur: commit,
+					}),
+					h(NumberField, {
+						label: t('inspector.maskY'),
+						value: draft.y,
+						min: 0,
+						max: 1,
+						onChange: (value) => update({ y: value }),
+						onBlur: commit,
+					}),
+					h(NumberField, {
+						label: t('inspector.maskWidth'),
+						value: draft.width,
+						min: 0.01,
+						max: 1,
+						onChange: (value) => update({ width: value }),
+						onBlur: commit,
+					}),
+					h(NumberField, {
+						label: t('inspector.maskHeight'),
+						value: draft.height,
+						min: 0.01,
+						max: 1,
+						onChange: (value) => update({ height: value }),
+						onBlur: commit,
+					}),
+				),
+				h(RangeField, {
+					label: t('inspector.maskFeather'),
+					value: draft.feather,
+					onChange: (value) => update({ feather: value }),
+					onCommit: commit,
+				}),
+				h(
+					'label',
+					{ className: 'ots-check' },
+					h('input', {
+						type: 'checkbox',
+						checked: draft.invert === true,
+						'aria-label': t('inspector.maskInvert'),
+						onChange: (event) => updateAndCommit({ invert: event.target.checked }),
+					}),
+					t('inspector.maskInvert'),
+				),
+				h('p', { className: 'ots-field-hint' }, t('inspector.maskHint')),
+			);
+		}
+
+		function BlendEditor(props) {
+			const { t, clip, onSetBlendMode } = props;
+			const mode = clipBlendMode(clip);
+			const fullFrame = isFullFrameBlendClip(clip);
+			return h(
+				'div',
+				{ className: 'ots-section', key: 'blend' },
+				h('h3', { className: 'ots-section-title' }, t('inspector.blend')),
+				h(
+					'label',
+					{ className: 'ots-field' },
+					h('span', { className: 'ots-field-label' }, t('inspector.blendMode')),
+					h(
+						'select',
+						{
+							className: 'ots-select',
+							value: mode,
+							'aria-label': t('inspector.blendMode'),
+							onChange: (event) => onSetBlendMode(event.target.value),
+						},
+						BLEND_MODES.map((value) =>
+							h('option', { key: value, value }, t(`blend.${value}`)),
+						),
+					),
+				),
+				h(
+					'p',
+					{ className: 'ots-field-hint' },
+					mode !== 'normal' && !fullFrame ? t('inspector.blendFallback') : t('inspector.blendHint'),
+				),
+			);
+		}
+
 		function Inspector(props) {
 			const {
 				t,
@@ -5062,6 +5379,8 @@ window.__ModuleLoader__.load({
 				onTextChange,
 				onTextCommit,
 				onSetCrop,
+				onSetMask,
+				onSetBlendMode,
 				onAddText,
 				onSpeedChange,
 				onFadeChange,
@@ -5353,6 +5672,8 @@ window.__ModuleLoader__.load({
 						),
 					);
 					body.push(h(CropEditor, { t, clip, onSetCrop }));
+					body.push(h(MaskEditor, { t, clip, onSetMask }));
+					body.push(h(BlendEditor, { t, clip, onSetBlendMode }));
 				}
 				if (isText) {
 					const text = draft || draftFromClip(clip);
@@ -5497,6 +5818,35 @@ window.__ModuleLoader__.load({
 		// -------------------------------------------------------------------
 		// Timeline
 		// -------------------------------------------------------------------
+
+		function TrackVolumeControl(props) {
+			const { t, track, onUpdateTrack } = props;
+			const [value, setValue] = React.useState(() => clamp(finiteNumber(track.volume, 1), 0, 2));
+			const signature = String(clamp(finiteNumber(track.volume, 1), 0, 2));
+			React.useEffect(() => {
+				setValue(clamp(finiteNumber(track.volume, 1), 0, 2));
+			}, [track.id, signature]);
+			const commit = () => onUpdateTrack(track.id, { volume: clamp(finiteNumber(value, 1), 0, 2) });
+			return h(
+				'div',
+				{ className: 'ots-track-volume' },
+				h('input', {
+					className: 'ots-track-volume-range',
+					type: 'range',
+					min: 0,
+					max: 2,
+					step: 0.01,
+					value,
+					'aria-label': t('timeline.trackVolume'),
+					title: t('timeline.trackVolume'),
+					onChange: (event) => setValue(Number(event.target.value)),
+					onPointerUp: commit,
+					onKeyUp: commit,
+					onBlur: commit,
+				}),
+				h('span', { className: 'ots-track-volume-label' }, `${Math.round(finiteNumber(value, 1) * 100)}%`),
+			);
+		}
 
 		function Timeline(props) {
 			const {
@@ -5954,6 +6304,7 @@ window.__ModuleLoader__.load({
 						{ className: 'ots-track-kind', title: `${typeLabel} · ${t('timeline.clipCount', { count: track.clips.length })}${stateSuffix ? ` · ${stateSuffix}` : ''}` },
 						`${typeLabel} · ${t('timeline.clipCount', { count: track.clips.length })}${stateSuffix ? ` · ${stateSuffix}` : ''}`,
 					),
+					h(TrackVolumeControl, { t, track, onUpdateTrack }),
 					confirmTrackId === track.id
 						? h(
 								'div',
@@ -6839,7 +7190,7 @@ window.__ModuleLoader__.load({
 					if (!media) continue;
 					const muted = Boolean(row.track && row.track.muted);
 					if (!muted && (clip.type === 'audio' || (clip.type === 'video' && media.hasAudio))) {
-						if (!audioByMedia.has(media.id)) audioByMedia.set(media.id, clip);
+						if (!audioByMedia.has(media.id)) audioByMedia.set(media.id, { clip, track: row.track });
 					}
 					if (clip.type === 'video' && !videoByMedia.has(media.id)) videoByMedia.set(media.id, clip);
 				}
@@ -6847,16 +7198,19 @@ window.__ModuleLoader__.load({
 				for (const media of currentProject.media) {
 					const elements = mediaElements.current[media.id];
 					if (!elements) continue;
-					const audioClip = audioByMedia.get(media.id);
+					const audioEntry = audioByMedia.get(media.id);
 					if (elements.audio) {
 						const audio = elements.audio;
-						if (audioClip) {
+						if (audioEntry) {
+							const audioClip = audioEntry.clip;
+							const trackVolume = clamp(finiteNumber(audioEntry.track && audioEntry.track.volume, 1), 0, 2);
 							const desired = clipSourceSeconds(audioClip, frame, rate);
 							const audioSpeed = clipSpeedOf(audioClip);
 							const audioVolume = clamp01(
 								clipPropertyAt(audioClip, 'volume', clipRelativeFrame(audioClip, frame), finiteNumber(audioClip.volume, 1)) *
 									clipFadeFactor(audioClip, frame) *
-									monitorVolumeRef.current,
+									monitorVolumeRef.current *
+									trackVolume,
 							);
 							audio.volume = audioVolume;
 							try {
@@ -7252,6 +7606,16 @@ window.__ModuleLoader__.load({
 				const clipId = primaryClipIdRef.current;
 				if (!clipId) return;
 				void runEdit([{ type: 'set-crop', clipId, crop }]);
+			};
+			const handleSetMask = (mask) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'set-mask', clipId, mask }]);
+			};
+			const handleSetBlendMode = (blendMode) => {
+				const clipId = primaryClipIdRef.current;
+				if (!clipId) return;
+				void runEdit([{ type: 'set-blend-mode', clipId, blendMode }]);
 			};
 			const handleSetKeyframes = (property, keyframes) => {
 				const clipId = primaryClipIdRef.current;
@@ -7836,6 +8200,8 @@ window.__ModuleLoader__.load({
 										onSpeedChange: handleSetSpeed,
 										onFadeChange: handleSetFades,
 										onSetCrop: handleSetCrop,
+										onSetMask: handleSetMask,
+										onSetBlendMode: handleSetBlendMode,
 										onSetKeyframes: handleSetKeyframes,
 										onAddEffect: handleAddEffect,
 										onUpdateEffect: handleUpdateEffect,
