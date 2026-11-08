@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v14.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v15.node');
 }
 
 function loadAddon() {
@@ -239,6 +239,11 @@ export function apply(ctx) {
       case 'import_media': {
         const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
         return importMedia(paths);
+      }
+      case 'relink_media': {
+        const mediaRef = typeof args.mediaRef === 'string' ? args.mediaRef : '';
+        const newPath = typeof args.newPath === 'string' ? args.newPath : '';
+        return JSON.parse(state.engine.relinkMedia(mediaRef, newPath));
       }
       case 'generate_thumbnail': {
         const mediaRef = typeof args.mediaRef === 'string' ? args.mediaRef : '';
@@ -557,6 +562,21 @@ export function apply(ctx) {
       const value = JSON.parse(
         ensureEngine().exportVideo(args.outPath, args.codec ?? 'h264', args.quality ?? '1080p'),
       );
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_relink_media',
+    'Relink an existing media asset to a new absolute path, keeping its asset id.',
+    {
+      type: 'object',
+      properties: { mediaRef: { type: 'string' }, newPath: { type: 'string' } },
+      required: ['mediaRef', 'newPath'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().relinkMedia(args.mediaRef, args.newPath));
       return { text: JSON.stringify(value), data: value };
     },
   );

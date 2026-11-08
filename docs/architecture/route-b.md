@@ -25,6 +25,8 @@ by the DSH Host through N-API.
   existing React UI command payloads are accepted unchanged.
 - DSH plugin serves the built React app and injects a Tauri shim
   (`invoke`, events, `convertFileSrc`, file-dialog prototype).
+- Media relink keeps the asset id and updates the source path (verified via
+  Host tool).
 - Verified in DSH: full home/editor render, new project writes a real
   `.opentake` bundle, media import returns ffprobe metadata, double-click adds
   video+linked-audio clips, inspector loads, and the direct video preview plays.

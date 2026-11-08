@@ -56,6 +56,22 @@ fn lottie_probe(path: &std::path::Path) -> Option<ProbedMedia> {
     })
 }
 
+fn probe_to_probed(path: &std::path::Path) -> Option<ProbedMedia> {
+    let extension = path.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
+    if extension.as_deref() == Some("json") {
+        return lottie_probe(path);
+    }
+    let probe = opentake_media::probe(path).ok()?;
+    Some(ProbedMedia {
+        duration_secs: probe.duration_secs,
+        width: probe.width.map(|width| width as i32),
+        height: probe.height.map(|height| height as i32),
+        fps: probe.fps,
+        has_audio: probe.has_audio,
+        color: probe.color,
+    })
+}
+
 fn media_list_json(core: &opentake_core::AppCore) -> serde_json::Value {
     let manifest = core.media();
     let project_dir = core.project_dir();
@@ -687,30 +703,11 @@ impl Engine {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("media")
                 .to_string();
-            let extension = path.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
-            let probed = if extension.as_deref() == Some("json") {
-                match lottie_probe(&path) {
-                    Some(probe) => probe,
-                    None => {
-                        skipped.push(raw);
-                        continue;
-                    }
-                }
-            } else {
-                let probe = match opentake_media::probe(&path) {
-                    Ok(probe) => probe,
-                    Err(_) => {
-                        skipped.push(raw);
-                        continue;
-                    }
-                };
-                ProbedMedia {
-                    duration_secs: probe.duration_secs,
-                    width: probe.width.map(|width| width as i32),
-                    height: probe.height.map(|height| height as i32),
-                    fps: probe.fps,
-                    has_audio: probe.has_audio,
-                    color: probe.color,
+            let probed = match probe_to_probed(&path) {
+                Some(probe) => probe,
+                None => {
+                    skipped.push(raw);
+                    continue;
                 }
             };
             if self.core.import_media_file(&path, name, &probed).is_err() {
@@ -722,6 +719,19 @@ impl Engine {
             value["skipped"] = serde_json::json!(skipped);
         }
         json(&value)
+    }
+
+    /// Relink an existing asset to a new source path, keeping its id; returns
+    /// the updated media catalog JSON.
+    #[napi]
+    pub fn relink_media(&self, media_id: String, new_path: String) -> Result<String> {
+        let path = std::path::PathBuf::from(&new_path);
+        let probed = probe_to_probed(&path)
+            .ok_or_else(|| Error::from_reason(format!("cannot probe media: {new_path}")))?;
+        self.core
+            .relink_media_file(&media_id, &path, &probed)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&media_list_json(&self.core))
     }
 
     /// Generate a single-frame poster PNG for one imported asset and return
