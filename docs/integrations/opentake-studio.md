@@ -132,7 +132,7 @@ Client 每 1000 ms 轮询一次 `state`（导出中改为 600 ms），页面隐�
 
 | 项目 | 结果 |
 |---|---|
-| Node 测试 | **358/358 通过**（36 suites；含 Phase 1–13 模型/导出/字幕/媒体库/转写/生成/视觉索引/遮罩/ducking/代理/relink/alpha/10-bit/Host 测试）；文档编写时用 `node --test test/` 复跑确认 |
+| Node 测试 | **382/382 通过**（38 suites；含 Phase 1–15 模型/导出/字幕/媒体库/转写/生成/视觉索引/遮罩/ducking/代理/relink/alpha/10-bit/Lottie/Host 测试）；文档编写时用 `node --test test/` 复跑确认 |
 | Bundle 安装 | `@opentake/studio` 已作为本地链接安装、启用并 active |
 | Client Slots | `main`、`sidebar.panellist` 均暴露 `opentake-studio`；左栏编辑器面板已截图验收 |
 | 预览 | 真实视频帧渲染成功；媒体路由返回 HTTP **Range 206** |

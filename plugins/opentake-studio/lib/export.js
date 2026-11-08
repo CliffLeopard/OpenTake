@@ -64,6 +64,12 @@
  *     keyed by that voice bus (asplit into one copy per ducking track plus one
  *     for the final mix). Without a voice/ducking pair the legacy flat amix is
  *     preserved exactly.
+ *   - lottie: browser-rendered PNG frame sequences are read from
+ *     `<projectRoot>/lottie/<clipId>/%05d.png` (`-framerate <project fps>
+ *     -start_number 0`). The sequence must cover every clip frame; missing
+ *     frames throw an ExportError with code `lottie-unrendered`. The layer
+ *     keeps RGBA alpha (transparent ProRes 4444 output preserves it); lottie
+ *     clips never use blend modes or true xfade and carry no audio.
  *   - rotation: static `transform.rotation` is applied with `rotate` on an
  *     expanded transparent canvas and then fitted back inside the transform
  *     box (letterboxed, centered). Rotation keyframes are NOT supported in
@@ -95,7 +101,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -560,6 +566,8 @@ function maskFilterFor(mask, box, rotation) {
 function blendModeForClip(clip, { rotation, cropFilter, maskFilter }) {
   const mode = blendFilterMode(clip.blendMode);
   if (mode === null) return null;
+  // Lottie sequences carry alpha; blend converts to yuv and would flatten them.
+  if (clip.type === 'lottie') return null;
   if (rotation !== null || cropFilter !== null || maskFilter !== null) return null;
   if (!transformIsFullFrame(clip.transform)) return null;
   if (clipHasVisualKeyframes(clip)) return null;
@@ -1283,6 +1291,67 @@ function cropFilterFor(crop) {
 }
 
 /**
+ * Resolve the browser-rendered PNG sequence for a lottie clip.
+ *
+ * Host writes one PNG per clip-local frame at
+ * `<projectRoot>/lottie/<clipId>/<index padded to 5>.png`. The sequence must
+ * cover frames 0..durationFrames-1; a missing directory/first frame/gap is a
+ * clear `lottie-unrendered` error instead of a partially wrong export.
+ */
+function lottieSequencePattern(projectRoot, clip) {
+  const clipId = typeof clip?.id === 'string' ? clip.id : '';
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(clipId)) {
+    throw new ExportError('Lottie clip id is not a safe frame-directory name', 'invalid-input');
+  }
+  const duration = clipDurationFrames(clip);
+  if (duration > 100_000) {
+    throw new ExportError(
+      `Lottie clip ${clipId} duration ${duration} exceeds the supported frame-sequence limit (100000)`,
+      'invalid-input',
+    );
+  }
+  const directory = path.join(projectRoot, 'lottie', clipId);
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    throw new ExportError(
+      `Lottie clip ${clipId} has no rendered frames at ${directory}; render the Lottie clip before exporting`,
+      'lottie-unrendered',
+      { cause: error },
+    );
+  }
+
+  const present = new Set();
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const match = /^(\d+)\.png$/i.exec(entry.name);
+    if (match !== null) present.add(Number(match[1]));
+  }
+  if (!present.has(0)) {
+    throw new ExportError(
+      `Lottie clip ${clipId} is missing its first rendered frame (00000.png) in ${directory}; ` +
+      'render the Lottie clip before exporting',
+      'lottie-unrendered',
+    );
+  }
+  const missing = [];
+  for (let index = 0; index < duration; index += 1) {
+    if (!present.has(index)) missing.push(index);
+  }
+  if (missing.length > 0) {
+    const sample = missing.slice(0, 5).map((index) => String(index).padStart(5, '0') + '.png');
+    const suffix = missing.length > 5 ? ', …' : '';
+    throw new ExportError(
+      `Lottie clip ${clipId} is missing rendered frame(s) ${sample.join(', ')}${suffix} ` +
+      `(expected ${duration} frames in ${directory}); render the Lottie clip before exporting`,
+      'lottie-unrendered',
+    );
+  }
+  return path.join(directory, '%05d.png');
+}
+
+/**
  * Rotation geometry for one visual clip. Rotates on an expanded transparent
  * canvas (so nothing is clipped) and then fits the result inside the transform
  * box, centered. Returns null for an unrotated clip.
@@ -1474,7 +1543,7 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     if (group !== null) group.labels.push(label);
   };
 
-  const addVisualOverlay = (clip, index, speed) => {
+  const addVisualOverlay = (clip, index, speed, { forceAlpha = false } = {}) => {
     const startSeconds = framesToSeconds(clip.startFrame ?? 0, fps);
     const clipSeconds = framesToSeconds(clipDurationFrames(clip), fps);
     const endSeconds = startSeconds + clipSeconds;
@@ -1497,6 +1566,13 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     parts.push(`scale=${box.width}:${box.height}`, 'setsar=1', `fps=${formatScalar(fps)}`);
     parts.push(...effects.parts);
     let hasAlpha = effects.hasAlpha;
+
+    if (forceAlpha && !hasAlpha) {
+      // Lottie PNG sequences carry per-pixel alpha; keep an RGBA layer so the
+      // overlay (and transparent ProRes output) preserves it.
+      parts.push('format=rgba');
+      hasAlpha = true;
+    }
 
     if (rotation !== null) {
       if (!hasAlpha) {
@@ -1878,6 +1954,24 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
 
       if (clip.type === 'caption') {
         if (!trackHidden) addCaptionClip(clip);
+        continue;
+      }
+
+      if (clip.type === 'lottie') {
+        if (trackHidden) continue;
+        const media = findMedia(project, clip.mediaId);
+        if (media === null || media.kind !== 'lottie') continue;
+        const pattern = lottieSequencePattern(root, clip);
+        const durationFramesForClip = clipDurationFrames(clip);
+        const index = addInput(
+          [
+            '-framerate', formatScalar(fps),
+            '-start_number', '0',
+            '-t', formatSeconds(framesToSeconds(durationFramesForClip, fps)),
+          ],
+          pattern,
+        );
+        addVisualOverlay(clip, index, 1, { forceAlpha: true });
         continue;
       }
 

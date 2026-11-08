@@ -171,6 +171,10 @@ Importing only fills the media library; it does not add clips to the timeline.
   ProRes, transparent ProRes 4444 and optional color tags.
 - **Frame stepping**: −1/+1 buttons and ArrowLeft/ArrowRight step exactly one
   frame (pauses playback), with the frame counter visible.
+- **Lottie**: import bodymovin `.json` animations, preview them in the editor,
+  and export them by rendering per-frame PNGs in the browser and compositing
+  them through ffmpeg. The vendored lottie-web player is MIT-licensed. `.lottie`
+  ZIP containers are not supported yet.
 - **Crop**: normalized per-clip crop applied before transform/effects, with
   preview and export support.
 - **Masks**: rect/ellipse clip masks with feather and invert, preview and export;
@@ -420,8 +424,9 @@ gaps:
   endpoints and keys. There is no bundled Whisper/CLIP model; visual search is a
   provider-generated description index, not CLIP/SigLIP embeddings.
 - **Still missing from the Rust/Tauri app:** multicam, nested sequences/groups,
-  Lottie/Motion documents, CLIP/SigLIP visual search, HDR/proxy management,
-  per-track ducking amount UI, account/updater surfaces, and full 1:1 UI parity.
+  Motion Studio document authoring, CLIP/SigLIP embedding search, true HDR
+  tone-mapping/playback, per-track ducking amount UI, account/updater surfaces,
+  and full 1:1 UI parity.
 - **Preview is approximate.** The canvas composite is for interaction, not a
   frame-accurate reference. Export is authoritative. Browser codec support can
   differ from ffmpeg.
@@ -507,7 +512,7 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **358/358 tests pass**, 36 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **382/382 tests pass**, 36 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |
@@ -518,6 +523,7 @@ this document; the Client/UI/export rows are the verification run's results.
 | Library/AI | Global library import/list/favorite/add-to-project/folders ran live; transcription, image/speech/video generation and visual indexing were verified against local OpenAI/fal-compatible fixture servers. |
 | Masks/blend/ducking | Rect/ellipse masks and screen blend were pixel-verified in exported frames; track-volume attenuation measured, and ducking argv/real-audio verification is covered by tests. |
 | Alpha/10-bit | Transparent ProRes 4444 alphaextract (255/0) and 10-bit H.265 (`yuv420p10le`) were real-export verified. |
+| Lottie | A vendored lottie-web sample rendered in the editor preview/card; UI export pre-rendered 20 PNG frames and produced a 640×360 H.264 clip (0.667 s), verified with ffprobe. |
 
 Not verified / not claimed:
 

@@ -4843,3 +4843,437 @@ describe('relink-media', () => {
     assert.equal(findMedia(first, 'm-video').durationFrames, 320);
   });
 });
+
+// ===========================================================================
+// Phase 14: Lottie media kind + clip type (video-track visual, a JSON asset).
+// ===========================================================================
+
+function lottieFixture() {
+  let project = fixture();
+  project = applyOperation(project, {
+    type: 'add-media',
+    media: media({
+      id: 'm-lottie',
+      kind: 'lottie',
+      durationFrames: 120,
+      width: 800,
+      height: 600,
+    }),
+  });
+  return project;
+}
+
+function rawLottieProject() {
+  return {
+    version: 1,
+    name: 'lottie',
+    fps: 30,
+    media: [
+      {
+        id: 'ml',
+        kind: 'lottie',
+        fileName: 'anim.json',
+        durationFrames: 120,
+        width: 800,
+        height: 600,
+      },
+    ],
+    tracks: [
+      {
+        id: 'tv',
+        type: 'video',
+        clips: [{ id: 'cl', type: 'lottie', mediaId: 'ml', startFrame: 0, durationFrames: 60 }],
+      },
+    ],
+  };
+}
+
+describe('lottie media', () => {
+  it('adds lottie media with visual metadata and forces hasAudio false', () => {
+    const project = lottieFixture();
+    const lottie = findMedia(project, 'm-lottie');
+    assert.equal(lottie.kind, 'lottie');
+    assert.equal(lottie.durationFrames, 120);
+    assert.equal(lottie.width, 800);
+    assert.equal(lottie.height, 600);
+    assert.equal(lottie.hasAudio, false);
+  });
+
+  it('allows null duration for unknown-length animations and derives one from sourceDurationSeconds', () => {
+    let project = fixture();
+    project = applyOperation(project, {
+      type: 'add-media',
+      media: media({
+        id: 'm-lottie-null',
+        kind: 'lottie',
+        durationFrames: null,
+        sourceDurationSeconds: null,
+      }),
+    });
+    assert.equal(findMedia(project, 'm-lottie-null').durationFrames, null);
+
+    project = applyOperation(project, {
+      type: 'add-media',
+      media: media({ id: 'm-lottie-derived', kind: 'lottie', durationSeconds: 2 }),
+    });
+    assert.equal(findMedia(project, 'm-lottie-derived').durationFrames, 60);
+  });
+
+  it('rejects invalid lottie media kinds and malformed media entries', () => {
+    expectModelError(
+      () =>
+        applyOperation(fixture(), {
+          type: 'add-media',
+          media: { id: 'x', kind: 'Lottie', fileName: 'x.json', durationFrames: 60 },
+        }),
+      'invalid-media',
+    );
+    expectModelError(() => normalizeProject({ media: [null] }), 'invalid-media');
+    expectModelError(
+      () => normalizeProject({ media: ['lottie'] }),
+      'invalid-media',
+    );
+  });
+});
+
+describe('lottie clips', () => {
+  it('adds a lottie clip on a video track with media-date defaults', () => {
+    let project = lottieFixture();
+    project = addClip(project, { clipId: 'l1', mediaId: 'm-lottie', startFrame: 0 });
+    let clip = clipById(project, 'l1');
+    assert.equal(clip.type, 'lottie');
+    assert.equal(clip.mediaId, 'm-lottie');
+    assert.equal(clip.startFrame, 0);
+    assert.equal(clip.durationFrames, 120);
+    assert.equal(clip.trimStartFrame, 0);
+    assert.equal(clip.speed, 1);
+    assert.equal(clip.crop, null);
+
+    project = addClip(project, {
+      clipId: 'l2',
+      mediaId: 'm-lottie',
+      trackId: 't-video2',
+      startFrame: 50,
+      durationFrames: 60,
+    });
+    clip = clipById(project, 'l2');
+    assert.equal(clip.startFrame, 50);
+    assert.equal(clip.durationFrames, 60);
+  });
+
+  it('uses a default/arbitrary duration when the animation length is unknown', () => {
+    let project = fixture();
+    project = applyOperation(project, {
+      type: 'add-media',
+      media: media({
+        id: 'm-lottie-null',
+        kind: 'lottie',
+        durationFrames: null,
+        sourceDurationSeconds: null,
+      }),
+    });
+    project = addClip(project, { clipId: 'l1', mediaId: 'm-lottie-null', startFrame: 0 });
+    assert.equal(clipById(project, 'l1').durationFrames, 150);
+    project = addClip(project, {
+      clipId: 'l2',
+      mediaId: 'm-lottie-null',
+      startFrame: 400,
+      durationFrames: 500,
+    });
+    assert.equal(clipById(project, 'l2').durationFrames, 500);
+  });
+
+  it('enforces trimStart 0, media duration bounds and video-track placement', () => {
+    let project = lottieFixture();
+    expectModelError(
+      () =>
+        addClip(project, { clipId: 'l1', mediaId: 'm-lottie', startFrame: 0, trimStartFrame: 10 }),
+      'invalid-input',
+    );
+    expectModelError(
+      () =>
+        addClip(project, {
+          clipId: 'l1',
+          mediaId: 'm-lottie',
+          startFrame: 0,
+          durationFrames: 121,
+        }),
+      'out-of-bounds',
+    );
+    expectModelError(
+      () =>
+        addClip(project, {
+          clipId: 'l1',
+          mediaId: 'm-lottie',
+          trackId: 't-audio',
+          startFrame: 0,
+        }),
+      'incompatible-track-type',
+    );
+
+    project = addClip(project, { clipId: 'l1', mediaId: 'm-lottie', startFrame: 0, durationFrames: 120 });
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'move-clip',
+          clipId: 'l1',
+          trackId: 't-audio',
+          startFrame: 0,
+        }),
+      'incompatible-track-type',
+    );
+    project = applyOperation(project, { type: 'move-clip', clipId: 'l1', trackId: 't-video2', startFrame: 40 });
+    assert.equal(findClip(project, 'l1').track.id, 't-video2');
+    assert.equal(clipById(project, 'l1').startFrame, 40);
+  });
+
+  it('requires clip type to equal media kind', () => {
+    expectModelError(
+      () =>
+        normalizeProject({
+          media: [{ id: 'mv', kind: 'video', fileName: 'v.mp4', durationFrames: 300 }],
+          tracks: [
+            {
+              id: 'tv',
+              type: 'video',
+              clips: [{ id: 'l1', type: 'lottie', mediaId: 'mv', startFrame: 0, durationFrames: 60 }],
+            },
+          ],
+        }),
+      'invalid-clip',
+    );
+    expectModelError(
+      () =>
+        normalizeProject({
+          media: [{ id: 'ml', kind: 'lottie', fileName: 'a.json', durationFrames: 120 }],
+          tracks: [
+            {
+              id: 'tv',
+              type: 'video',
+              clips: [{ id: 'v1', type: 'video', mediaId: 'ml', startFrame: 0, durationFrames: 60 }],
+            },
+          ],
+        }),
+      'invalid-clip',
+    );
+  });
+
+  it('forces speed 1 and trimStart 0, and rejects out-of-bounds durations', () => {
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.media.push({ id: 'ml', kind: 'lottie', fileName: 'a.json', durationFrames: 120 });
+            value.tracks[0].clips[0] = {
+              id: 'l1',
+              type: 'lottie',
+              mediaId: 'ml',
+              startFrame: 0,
+              durationFrames: 60,
+              speed: 0.5,
+            };
+          }),
+        ),
+      'invalid-clip',
+    );
+    expectModelError(
+      () =>
+        normalizeProject(
+          mutatedRaw((value) => {
+            value.media.push({ id: 'ml', kind: 'lottie', fileName: 'a.json', durationFrames: 120 });
+            value.tracks[0].clips[0] = {
+              id: 'l1',
+              type: 'lottie',
+              mediaId: 'ml',
+              startFrame: 0,
+              durationFrames: 60,
+              trimStartFrame: 10,
+            };
+          }),
+        ),
+      'invalid-clip',
+    );
+    expectModelError(
+      () =>
+        normalizeProject({
+          media: [{ id: 'ml', kind: 'lottie', fileName: 'a.json', durationFrames: 120 }],
+          tracks: [
+            {
+              id: 'tv',
+              type: 'video',
+              clips: [{ id: 'l1', type: 'lottie', mediaId: 'ml', startFrame: 0, durationFrames: 121 }],
+            },
+          ],
+        }),
+      'out-of-bounds',
+    );
+    // Unknown animation length allows arbitrary clip durations.
+    const unknown = normalizeProject({
+      media: [{ id: 'ml', kind: 'lottie', fileName: 'a.json', durationFrames: null }],
+      tracks: [
+        {
+          id: 'tv',
+          type: 'video',
+          clips: [{ id: 'l1', type: 'lottie', mediaId: 'ml', startFrame: 0, durationFrames: 5000 }],
+        },
+      ],
+    });
+    assert.equal(unknown.tracks[0].clips[0].durationFrames, 5000);
+  });
+
+  it('normalizes a raw lottie project idempotently', () => {
+    const project = normalizeProject(rawLottieProject());
+    const clip = project.tracks[0].clips[0];
+    assert.equal(clip.type, 'lottie');
+    assert.equal(clip.speed, 1);
+    assert.equal(clip.trimStartFrame, 0);
+    assert.deepEqual(normalizeProject(project), project);
+  });
+
+  it('rejects speed changes on lottie clips', () => {
+    let project = lottieFixture();
+    project = addClip(project, { clipId: 'l1', mediaId: 'm-lottie', startFrame: 0 });
+    expectModelError(
+      () => applyOperation(project, { type: 'set-speed', clipId: 'l1', speed: 2 }),
+      'invalid-input',
+    );
+  });
+
+  it('trims within the animation and enforces bounds', () => {
+    let project = lottieFixture();
+    project = addClip(project, { clipId: 'l1', mediaId: 'm-lottie', startFrame: 0 });
+    project = applyOperation(project, { type: 'trim-clip', clipId: 'l1', durationFrames: 60 });
+    assert.equal(clipById(project, 'l1').durationFrames, 60);
+    expectModelError(
+      () => applyOperation(project, { type: 'trim-clip', clipId: 'l1', durationFrames: 200 }),
+      'out-of-bounds',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'trim-clip', clipId: 'l1', trimStartFrame: 10 }),
+      'invalid-input',
+    );
+  });
+
+  it('splits lottie clips keeping type, trimStart 0 and visual properties', () => {
+    let project = lottieFixture();
+    project = addClip(project, { clipId: 'l1', mediaId: 'm-lottie', startFrame: 0, durationFrames: 100 });
+    project = applyOperation(project, {
+      type: 'set-crop',
+      clipId: 'l1',
+      crop: { x: 0, y: 0, width: 0.5, height: 0.5 },
+    });
+    project = applyOperation(project, { type: 'set-blend-mode', clipId: 'l1', blendMode: 'screen' });
+    project = applyOperation(project, {
+      type: 'set-mask',
+      clipId: 'l1',
+      mask: { shape: 'ellipse' },
+    });
+    project = applyOperation(project, {
+      type: 'split-clip',
+      clipId: 'l1',
+      atFrame: 40,
+      leftClipId: 'L',
+      rightClipId: 'R',
+    });
+    for (const clipId of ['L', 'R']) {
+      const clip = clipById(project, clipId);
+      assert.equal(clip.type, 'lottie');
+      assert.equal(clip.trimStartFrame, 0);
+      assert.equal(clip.blendMode, 'screen');
+      assert.equal(clip.mask.shape, 'ellipse');
+      assert.deepEqual(clip.crop, { x: 0, y: 0, width: 0.5, height: 0.5 });
+    }
+    assert.equal(clipById(project, 'L').durationFrames, 40);
+    assert.equal(clipById(project, 'R').durationFrames, 60);
+  });
+
+  it('cannot participate in transitions yet', () => {
+    let project = lottieFixture();
+    project = addClip(project, { clipId: 'a', mediaId: 'm-lottie', startFrame: 0, durationFrames: 60 });
+    project = addClip(project, { clipId: 'b', mediaId: 'm-lottie', startFrame: 60, durationFrames: 60 });
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'add-transition',
+          transition: {
+            id: 'tr',
+            trackId: 't-video',
+            fromClipId: 'a',
+            toClipId: 'b',
+            type: 'dissolve',
+            durationFrames: 20,
+          },
+        }),
+      'invalid-transition',
+    );
+  });
+
+  it('relinks to and from lottie kinds with compatibility checks', () => {
+    let project = lottieFixture();
+    // No clips: video media can become lottie (unknown duration allowed).
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-video2',
+      fileName: 'anim.json',
+      kind: 'lottie',
+      durationFrames: null,
+    });
+    let media = findMedia(project, 'm-video2');
+    assert.equal(media.kind, 'lottie');
+    assert.equal(media.durationFrames, null);
+    assert.equal(media.hasAudio, false);
+
+    // Lottie media can become video when no clips reference it.
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-video2',
+      fileName: 'movie.mp4',
+      kind: 'video',
+      durationFrames: 300,
+    });
+    assert.equal(findMedia(project, 'm-video2').kind, 'video');
+
+    // A referenced lottie asset keeps its kind-compatible clips.
+    project = addClip(project, { clipId: 'l1', mediaId: 'm-lottie', startFrame: 0 });
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-lottie',
+      fileName: 'anim-v2.json',
+      kind: 'lottie',
+      durationFrames: 240,
+    });
+    assert.equal(findMedia(project, 'm-lottie').durationFrames, 240);
+    assert.equal(clipById(project, 'l1').mediaId, 'm-lottie');
+    assert.equal(clipById(project, 'l1').type, 'lottie');
+
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'relink-media',
+          mediaId: 'm-lottie',
+          fileName: 'anim.mp4',
+          kind: 'video',
+          durationFrames: 240,
+        }),
+      'invalid-input',
+    );
+  });
+
+  it('is normalizable and pure across edits', () => {
+    let project = lottieFixture();
+    project = addClip(project, { clipId: 'l1', mediaId: 'm-lottie', startFrame: 0 });
+    const before = JSON.stringify(project);
+    const operation = {
+      type: 'move-clip',
+      clipId: 'l1',
+      trackId: 't-video2',
+      startFrame: 100,
+    };
+    const operationBefore = JSON.stringify(operation);
+    const next = applyOperation(project, operation);
+    assert.equal(JSON.stringify(project), before);
+    assert.equal(JSON.stringify(operation), operationBefore);
+    assert.deepEqual(normalizeProject(next), next);
+    assert.equal(findClip(next, 'l1').track.id, 't-video2');
+  });
+});

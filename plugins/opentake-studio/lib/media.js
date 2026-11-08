@@ -10,7 +10,7 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { accessSync, constants as fsConstants, statSync } from 'node:fs';
-import { copyFile, link, mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, link, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -28,6 +28,10 @@ const IMAGE_EXTENSIONS = new Set([
   'jpg', 'jpeg', 'jpe', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'heic', 'heif',
   'avif', 'jxl', 'ico', 'tga', 'pnm', 'pbm', 'pgm', 'ppm', 'exr', 'dpx',
 ]);
+
+/** Lottie animations: plain bodymovin JSON, or the (unsupported) .lottie ZIP. */
+const LOTTIE_EXTENSIONS = new Set(['json', 'lottie']);
+const MAX_LOTTIE_JSON_BYTES = 64 * 1024 * 1024;
 
 const MIME_TYPES = new Map([
   ['mp4', 'video/mp4'],
@@ -79,6 +83,8 @@ const MIME_TYPES = new Map([
   ['heif', 'image/heif'],
   ['avif', 'image/avif'],
   ['jxl', 'image/jxl'],
+  ['json', 'application/json'],
+  ['lottie', 'application/zip'],
   ['ico', 'image/x-icon'],
   ['svg', 'image/svg+xml'],
 ]);
@@ -196,6 +202,7 @@ function extensionOf(fileName) {
 export function mediaKindForFile(fileName) {
   const extension = extensionOf(fileName);
   if (extension.length === 0) return null;
+  if (LOTTIE_EXTENSIONS.has(extension)) return 'lottie';
   if (VIDEO_EXTENSIONS.has(extension)) return 'video';
   if (AUDIO_EXTENSIONS.has(extension)) return 'audio';
   if (IMAGE_EXTENSIONS.has(extension)) return 'image';
@@ -204,7 +211,7 @@ export function mediaKindForFile(fileName) {
 
 /** Every extension this module treats as importable media (dotless, sorted). */
 export function mediaExtensions() {
-  return [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS, ...IMAGE_EXTENSIONS].sort();
+  return [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS, ...IMAGE_EXTENSIONS, ...LOTTIE_EXTENSIONS].sort();
 }
 
 /** True when the file name has a known video, audio or image extension. */
@@ -498,19 +505,101 @@ function positiveNumber(value) {
 }
 
 /**
- * Probe a media file with ffprobe.
+ * Validate a bodymovin/Lottie animation document and derive its timing.
+ * Requires the standard markers (`v`, numeric `fr`/`ip`/`op`/`w`/`h` and a
+ * `layers` array); throws `unsupported-media` otherwise.
+ */
+function lottieMetadata(data) {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    throw new MediaError('JSON file is not a Lottie animation (expected an object)', 'unsupported-media');
+  }
+  const hasVersion = data.v !== undefined && (typeof data.v === 'string' || typeof data.v === 'number');
+  if (!hasVersion) {
+    throw new MediaError('JSON file is missing the Lottie bodymovin version marker "v"', 'unsupported-media');
+  }
+  const frameRate = Number(data.fr);
+  const inPoint = Number(data.ip);
+  const outPoint = Number(data.op);
+  const widthValue = Number(data.w);
+  const heightValue = Number(data.h);
+  if (!Number.isFinite(frameRate) || frameRate <= 0) {
+    throw new MediaError('Lottie animation has an invalid frame rate (fr must be > 0)', 'unsupported-media');
+  }
+  if (!Number.isFinite(inPoint) || inPoint < 0) {
+    throw new MediaError('Lottie animation has an invalid in point (ip must be >= 0)', 'unsupported-media');
+  }
+  if (!Number.isFinite(outPoint) || outPoint <= inPoint) {
+    throw new MediaError('Lottie animation has an invalid out point (op must be > ip)', 'unsupported-media');
+  }
+  if (!Number.isFinite(widthValue) || widthValue <= 0 || !Number.isFinite(heightValue) || heightValue <= 0) {
+    throw new MediaError('Lottie animation has invalid dimensions (w/h must be > 0)', 'unsupported-media');
+  }
+  if (!Array.isArray(data.layers)) {
+    throw new MediaError('Lottie animation is missing its layers array', 'unsupported-media');
+  }
+  return {
+    width: Math.round(widthValue),
+    height: Math.round(heightValue),
+    fps: frameRate,
+    durationSeconds: (outPoint - inPoint) / frameRate,
+  };
+}
+
+async function probeLottieMedia(filePath, info) {
+  const extension = extensionOf(filePath);
+  if (extension === 'lottie') {
+    throw new MediaError(
+      "'.lottie' containers are not supported yet; export the animation as bodymovin JSON (.json) instead",
+      'unsupported-media',
+    );
+  }
+  if (info.size > MAX_LOTTIE_JSON_BYTES) {
+    throw new MediaError(
+      `Lottie JSON is too large to probe (${info.size} bytes; limit ${MAX_LOTTIE_JSON_BYTES})`,
+      'unsupported-media',
+    );
+  }
+
+  let text;
+  try {
+    text = await readFile(filePath, 'utf8');
+  } catch (error) {
+    throw new MediaError(`Could not read Lottie JSON: ${filePath}`, 'io-error', { cause: error });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new MediaError(`Invalid JSON in Lottie file: ${filePath}`, 'probe-failed', { cause: error });
+  }
+
+  const metadata = lottieMetadata(parsed);
+  return {
+    kind: 'lottie',
+    durationSeconds: metadata.durationSeconds,
+    width: metadata.width,
+    height: metadata.height,
+    fps: metadata.fps,
+    hasAudio: false,
+    sizeBytes: info.size,
+  };
+}
+
+/**
+ * Probe a media file.
  *
- * @returns {Promise<{ kind: 'video'|'audio'|'image', durationSeconds: number|null,
+ * Lottie `.json` files are validated by reading/parsing JSON only (no ffprobe);
+ * `.lottie` ZIP containers are reported as unsupported. Everything else goes
+ * through ffprobe.
+ *
+ * @returns {Promise<{ kind: 'video'|'audio'|'image'|'lottie', durationSeconds: number|null,
  *   width: number|null, height: number|null, fps: number|null, hasAudio: boolean,
  *   sizeBytes: number }>}
  */
 export async function probeMedia(filePath) {
   if (typeof filePath !== 'string' || filePath.length === 0) {
     throw new MediaError('probeMedia requires a file path', 'invalid-input');
-  }
-  const tools = resolveTools();
-  if (tools.ffprobe === null) {
-    throw new MediaError('ffprobe is not available (set OPENTAKE_STUDIO_FFPROBE or install ffprobe)', 'ffprobe-unavailable');
   }
 
   let info;
@@ -521,6 +610,16 @@ export async function probeMedia(filePath) {
   }
   if (!info.isFile()) {
     throw new MediaError(`Media path is not a regular file: ${filePath}`, 'io-error');
+  }
+
+  const extensionKind = mediaKindForFile(filePath);
+  if (extensionKind === 'lottie') {
+    return probeLottieMedia(filePath, info);
+  }
+
+  const tools = resolveTools();
+  if (tools.ffprobe === null) {
+    throw new MediaError('ffprobe is not available (set OPENTAKE_STUDIO_FFPROBE or install ffprobe)', 'ffprobe-unavailable');
   }
 
   let stdout;
@@ -547,7 +646,6 @@ export async function probeMedia(filePath) {
   ) ?? streams.find((stream) => stream?.codec_type === 'video');
   const audioStream = streams.find((stream) => stream?.codec_type === 'audio');
 
-  const extensionKind = mediaKindForFile(filePath);
   let kind = null;
   if (extensionKind === 'image') kind = 'image';
   else if (videoStream !== undefined) kind = 'video';
@@ -863,7 +961,8 @@ function thumbnailTimeSeconds(media, atFrame) {
  * Return a cached JPEG thumbnail at `<root>/thumbnails/<mediaId>.jpg`,
  * generating it with ffmpeg when missing. Video frames are taken at
  * `min(1s, duration/2)` (or `atFrame` when supplied); images are scaled
- * directly; audio gets a neutral placeholder card.
+ * directly; audio and Lottie get a neutral placeholder card (the client
+ * renders Lottie itself).
  *
  * @returns {Promise<string>} absolute thumbnail path
  */
@@ -888,8 +987,11 @@ export async function ensureThumbnail({ projectRoot, media, atFrame } = {}) {
 
   // Validate the source path before checking tools: an escaping media entry is
   // a caller error regardless of whether ffmpeg happens to be installed.
+  // Audio and Lottie cannot be decoded by ffmpeg from their original file here
+  // (Lottie is rendered by the client), so they get a neutral placeholder.
   const isAudio = media.kind === 'audio';
-  const source = isAudio ? null : mediaFilePath(root, media);
+  const needsPlaceholder = isAudio || media.kind === 'lottie';
+  const source = needsPlaceholder ? null : mediaFilePath(root, media);
 
   const tools = resolveTools();
   if (tools.ffmpeg === null) {
@@ -897,7 +999,7 @@ export async function ensureThumbnail({ projectRoot, media, atFrame } = {}) {
   }
 
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-an'];
-  if (isAudio) {
+  if (needsPlaceholder) {
     const height = Math.round((THUMBNAIL_WIDTH * 9) / 16);
     args.push(
       '-f', 'lavfi',

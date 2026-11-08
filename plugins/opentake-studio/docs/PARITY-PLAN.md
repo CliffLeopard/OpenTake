@@ -1,6 +1,6 @@
 # OpenTake Studio：完整功能复刻差距与路线
 
-状态：Phase 1–13 已实现，剩余项见 §3 · 2026-11-08 · 分支 `feat/dsh-native-studio`
+状态：Phase 1–15 已实现，剩余项见 §3 · 2026-11-08 · 分支 `feat/dsh-native-studio`
 
 当前 `plugins/opentake-studio` 是**纯 DSH 原生编辑器 MVP**（工程、媒体、时间线、预览、文本、基础导出、15 个 Agent 工具），
 不是 Rust/Tauri 版 OpenTake 的完整功能复刻。本文是“完整功能”的验收清单与路线，避免把 MVP 当成完成。
@@ -30,7 +30,7 @@ Rust/Tauri 版包含：
 | 检查器 | 音量、不透明度、位置/大小/旋转、文本样式 |
 | 导出 | H.264/AAC MP4、异步进度/取消、文本由浏览器 PNG 叠加、单工程单导出 |
 | Agent | 41 个原生工具，与 UI 共用服务 |
-| 测试 | 358 项（model/project/media/export/captions/library/transcribe/generate/vision/host） |
+| 测试 | 382 项（model/project/media/export/captions/library/transcribe/generate/vision/lottie/host） |
 | Phase 2 | 真 dissolve/wipe（静态不透明同轨）、静态旋转导出、H.265/ProRes/VP9 预设、轨道静音/隐藏/重命名/删除 |
 | Phase 3 | 全局媒体库（搜索/收藏/分类/标签/加入工程） |
 | Phase 4–5 | Whisper 兼容转写 + 字幕生成 + 工程检索；OpenAI 兼容图片/语音生成 |
@@ -40,6 +40,7 @@ Rust/Tauri 版包含：
 | Phase 9 | 轨道角色/ducking（voice 总线 + sidechaincompress）；fal 视频生成；视觉描述索引 |
 | Phase 10–12 | UI（文件夹/角色/视频/视觉/代理/relink）；360p 代理；媒体重链接 |
 | Phase 13 | ProRes 4444 alpha/透明底、10-bit H.265/VP9、色彩标签；逐帧步进 |
+| Phase 14–15 | Lottie JSON 导入/探测、客户端 lottie-web 预览、逐帧 PNG 预渲染 + ffmpeg 合成导出；vended MIT 播放器 |
 
 ## 3. 未完成清单（按验收域；Phase 1 项已划掉）
 
@@ -57,7 +58,7 @@ Rust/Tauri 版包含：
 - ✅ 轨道静音/隐藏/重命名/删除 UI
 - ❌ 音频 ducking/增益自动化、独立轨道音量、5.1/采样率策略
 - ✅ 代理媒体（预览代理；导出用原片）
-- ❌ 帧精确播放/丢帧策略/HDR/色彩管理
+- ❌ 帧精确播放/丢帧策略/true HDR/色彩管理
 - ✅ SRT/VTT 导入导出、字幕片段编辑（Phase 1）
 - ❌ 字幕组批量同步、逐词时间轴
 - ❌ 嵌套序列、多工程、分组、滚动编辑

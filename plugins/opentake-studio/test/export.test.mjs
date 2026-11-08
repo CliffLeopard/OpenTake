@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, it } from 'node:test';
@@ -2857,5 +2857,219 @@ it(
     const videoStream = streams.streams.find((stream) => stream.codec_type === 'video');
     assert.equal(videoStream.codec_name, 'hevc');
     assert.equal(videoStream.pix_fmt, 'yuv420p10le');
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Phase 15: Lottie PNG-sequence export
+// ---------------------------------------------------------------------------
+
+function lottieMediaEntry(overrides = {}) {
+  return mediaEntry({
+    id: 'media-lottie',
+    name: 'anim.json',
+    kind: 'lottie',
+    fileName: 'anim.json',
+    durationFrames: 90,
+    sourceDurationSeconds: 3,
+    width: 320,
+    height: 180,
+    hasAudio: false,
+    ...overrides,
+  });
+}
+
+async function writeLottieFrames(projectRoot, clipId, count) {
+  const directory = path.join(projectRoot, 'lottie', clipId);
+  await mkdir(directory, { recursive: true });
+  for (let index = 0; index < count; index += 1) {
+    await writeFile(path.join(directory, `${String(index).padStart(5, '0')}.png`), 'fake png for argv assertions');
+  }
+  return directory;
+}
+
+function makeLottieProject({ clipId = 'lottie-clip', durationFrames = 30, startFrame = 15, media, clipOverrides = {} } = {}) {
+  return makeProject({
+    media: [media ?? lottieMediaEntry()],
+    clips: [
+      makeClip({
+        id: clipId,
+        type: 'lottie',
+        mediaId: (media ?? lottieMediaEntry()).id,
+        startFrame,
+        durationFrames,
+        ...clipOverrides,
+      }),
+    ],
+  });
+}
+
+it('uses a lottie PNG sequence with framerate, timing and RGBA alpha', async () => {
+  const clipId = 'lottie-argv';
+  await writeLottieFrames(phaseRoot, clipId, 30);
+  const project = makeLottieProject({ clipId, durationFrames: 30, startFrame: 15 });
+  const built = buildExportArgs({
+    project,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'lottie.mp4'),
+  });
+  const filter = filterOf(built);
+  const pattern = path.join(phaseRoot, 'lottie', clipId, '%05d.png');
+
+  assert.ok(inputsOf(built.args).includes(pattern), built.args.join(' '));
+  assert.ok(hasPair(built.args, '-framerate', '30'));
+  assert.ok(hasPair(built.args, '-start_number', '0'));
+  assert.ok(hasPair(built.args, '-t', '1'));
+  assert.match(filter, /format=rgba/);
+  assert.match(filter, /overlay=x=0:y=0:enable='between\(t,0\.5,1\.5\)'/);
+  assert.equal(built.durationFrames, 45);
+  assert.ok(built.args.includes('-an'), 'lottie clips carry no audio');
+  assert.ok(!filter.includes('amix'));
+});
+
+it('applies crop, mask and rotation to rendered lottie frames', async () => {
+  const clipId = 'lottie-rich';
+  await writeLottieFrames(phaseRoot, clipId, 30);
+  const project = makeLottieProject({
+    clipId,
+    startFrame: 0,
+    clipOverrides: {
+      crop: { x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+      mask: { shape: 'rect', x: 0, y: 0, width: 0.5, height: 1, feather: 0, invert: false },
+      transform: { x: 0, y: 0, width: 1, height: 1, rotation: 30 },
+    },
+  });
+  const filter = filterOf(buildExportArgs({
+    project,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'lottie-rich.mp4'),
+  }));
+  const cropIndex = filter.indexOf('crop=w=iw*0.8');
+  const scaleIndex = filter.indexOf('scale=320:180');
+  const rotateIndex = filter.indexOf('rotate=');
+  const maskIndex = filter.indexOf('geq=');
+  assert.ok(cropIndex >= 0 && cropIndex < scaleIndex, filter);
+  assert.ok(rotateIndex > scaleIndex, filter);
+  assert.ok(maskIndex > rotateIndex, filter);
+});
+
+it('uses alpha overlay rather than blend for lottie clips', async () => {
+  const clipId = 'lottie-blend';
+  await writeLottieFrames(phaseRoot, clipId, 30);
+  const project = makeLottieProject({
+    clipId,
+    startFrame: 0,
+    clipOverrides: { blendMode: 'screen' },
+  });
+  const filter = filterOf(buildExportArgs({
+    project,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'lottie-blend.mp4'),
+  }));
+  assert.ok(!filter.includes('blend='), 'lottie alpha cannot survive yuv blend');
+  assert.ok(filter.includes('overlay='));
+});
+
+it('throws lottie-unrendered for missing or incomplete frame sequences', async () => {
+  const missingProject = makeLottieProject({ clipId: 'lottie-missing', startFrame: 0 });
+  assert.throws(
+    () => buildExportArgs({
+      project: missingProject,
+      projectRoot: phaseRoot,
+      outputPath: path.join(phaseRoot, 'lottie-missing.mp4'),
+    }),
+    (error) => error instanceof ExportError &&
+      error.code === 'lottie-unrendered' && /no rendered frames/.test(error.message),
+  );
+
+  const incompleteClipId = 'lottie-incomplete';
+  const directory = await writeLottieFrames(phaseRoot, incompleteClipId, 29);
+  const incompleteProject = makeLottieProject({ clipId: incompleteClipId, startFrame: 0 });
+  assert.throws(
+    () => buildExportArgs({
+      project: incompleteProject,
+      projectRoot: phaseRoot,
+      outputPath: path.join(phaseRoot, 'lottie-incomplete.mp4'),
+    }),
+    (error) => error instanceof ExportError &&
+      error.code === 'lottie-unrendered' && /00029\.png/.test(error.message),
+  );
+  assert.ok(directory.endsWith(incompleteClipId));
+
+  const hidden = makeLottieProject({ clipId: 'lottie-hidden', startFrame: 0 });
+  hidden.tracks[0].hidden = true;
+  const hiddenBuilt = buildExportArgs({
+    project: hidden,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'lottie-hidden.mp4'),
+  });
+  assert.ok(!inputsOf(hiddenBuilt.args).some((input) => input.includes('/lottie/')));
+  assert.ok(hiddenBuilt.args.includes('-an'));
+});
+
+it(
+  'exports a rendered Lottie sequence with transparent ProRes alpha',
+  {
+    skip: toolSkip
+      ? toolSkip
+      : (!hasProresEncoder ? 'prores_ks encoder is not available' : false),
+  },
+  async () => {
+    const clipId = 'lottie-real';
+    const directory = path.join(exportProjectRoot, 'lottie', clipId);
+    await mkdir(directory, { recursive: true });
+    const framePath = path.join(exportTemp, 'lottie-frame.png');
+    // Transparent 320x180 frame with an opaque green box at (32,32)-(112,112).
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'color=c=black@0.0:s=320x180:d=1,format=rgba',
+      '-f', 'lavfi', '-i', 'color=c=green:s=80x80:d=1,format=rgba',
+      '-filter_complex', '[0:v][1:v]overlay=x=32:y=32:format=auto[out]',
+      '-map', '[out]', '-frames:v', '1', framePath,
+    ]);
+    for (let index = 0; index < 3; index += 1) {
+      await copyFile(framePath, path.join(directory, `${String(index).padStart(5, '0')}.png`));
+    }
+
+    const project = makeProject({
+      media: [lottieMediaEntry({ durationFrames: 3, sourceDurationSeconds: 0.1 })],
+      clips: [
+        makeClip({
+          id: clipId, type: 'lottie', mediaId: 'media-lottie',
+          startFrame: 0, durationFrames: 3,
+        }),
+      ],
+    });
+    const outputPath = path.join(exportTemp, 'lottie-real.mov');
+    const result = await runExport({
+      project,
+      projectRoot: exportProjectRoot,
+      outputPath,
+      options: { codec: 'prores4444', transparent: true },
+    });
+    assert.equal(result.durationFrames, 3);
+    assert.equal(result.codec, 'prores4444');
+    assert.equal(result.container, 'mov');
+    assert.equal(result.transparent, true);
+
+    const probe = await probeMedia(outputPath);
+    assert.equal(probe.kind, 'video');
+    assert.equal(probe.width, 320);
+    assert.equal(probe.height, 180);
+    assert.ok(probe.durationSeconds > 0.05 && probe.durationSeconds < 0.3);
+
+    const streams = JSON.parse(await runFfprobe([
+      '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+    ]));
+    const videoStream = streams.streams.find((stream) => stream.codec_type === 'video');
+    assert.equal(videoStream.codec_name, 'prores');
+    assert.ok(videoStream.pix_fmt.startsWith('yuva444p'));
+
+    const insideAlpha = await sampleAlpha(outputPath, 0.05, 60, 60);
+    const outsideAlpha = await sampleAlpha(outputPath, 0.05, 250, 150);
+    assert.ok(insideAlpha > 200, `expected opaque lottie pixels, alpha ${insideAlpha}`);
+    assert.ok(outsideAlpha < 20, `expected transparent lottie background, alpha ${outsideAlpha}`);
+    const green = await samplePixel(outputPath, 0.05, 60, 60);
+    assert.ok(green.g > 90 && green.r < 40 && green.b < 40, JSON.stringify(green));
   },
 );

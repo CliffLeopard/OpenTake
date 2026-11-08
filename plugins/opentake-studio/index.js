@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { copyFile, link as linkFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   ModelError,
@@ -57,6 +58,9 @@ import {
 } from './lib/transcribe.js';
 import { generateImage, generateSpeech, generateVideo, generationProviders } from './lib/generate.js';
 import { indexMediaVision, readVisionIndex } from './lib/vision.js';
+
+const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
+const VENDOR_DIR = path.join(PLUGIN_DIR, 'vendor');
 
 export const name = 'opentake-studio';
 export const inject = ['tools', 'webServer', 'connection'];
@@ -740,6 +744,12 @@ export function apply(ctx) {
       sendJson(res, 404, { error: { code: 'media-not-found', message: 'Unknown media' } });
       return;
     }
+    if (media.kind === 'lottie') {
+      res.statusCode = 404;
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ error: { code: 'thumbnail-unavailable', message: 'Lottie thumbnails are rendered by the client' } }));
+      return;
+    }
     let thumbnail;
     try {
       thumbnail = await ensureThumbnail({ projectRoot: state.paths.root, media });
@@ -885,6 +895,41 @@ export function apply(ctx) {
     const response = await applyOperations(normalized);
     const split = normalized.find((candidate) => candidate.type === 'split-clip');
     return { leftClipId: split.leftClipId, rightClipId: split.rightClipId, state: response };
+  }
+
+  async function writeLottieFrame(input) {
+    const project = ensureProject();
+    const clipId = typeof input.clipId === 'string' ? input.clipId : '';
+    if (!/^[A-Za-z0-9._-]{1,128}$/.test(clipId)) {
+      throw new RouteError('clipId is not a safe file identifier', 'invalid-input');
+    }
+    const found = findClip(project, clipId);
+    if (found === null) throw new RouteError('Unknown clip id', 'invalid-input');
+    const index = Number(input.index);
+    if (!Number.isInteger(index) || index < 0 || index > 100000) {
+      throw new RouteError('index must be a non-negative integer', 'invalid-input');
+    }
+    const dataUrl = typeof input.dataUrl === 'string' ? input.dataUrl : '';
+    const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+    if (match === null) throw new RouteError('dataUrl must be a base64 PNG data URL', 'invalid-input');
+    const bytes = Buffer.from(match[1], 'base64');
+    if (bytes.length === 0 || bytes.length > 16 * 1024 * 1024) {
+      throw new RouteError('The Lottie frame is empty or too large', 'invalid-input', 413);
+    }
+    const dir = path.join(state.paths.root, 'lottie', clipId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, `${String(index).padStart(5, '0')}.png`), bytes);
+    return { clipId, index, bytes: bytes.length };
+  }
+
+  async function clearLottieFrames(input) {
+    const project = ensureProject();
+    const clipId = typeof input.clipId === 'string' ? input.clipId : '';
+    if (!/^[A-Za-z0-9._-]{1,128}$/.test(clipId) || findClip(project, clipId) === null) {
+      throw new RouteError('Unknown clip id', 'invalid-input');
+    }
+    await rm(path.join(state.paths.root, 'lottie', clipId), { recursive: true, force: true }).catch(() => {});
+    return { clipId };
   }
 
   async function renderTextAsset(input) {
@@ -1438,6 +1483,27 @@ export function apply(ctx) {
         const format = sub.endsWith('.vtt') ? 'vtt' : sub.endsWith('.srt') ? 'srt' : (url.searchParams.get('format') === 'vtt' ? 'vtt' : 'srt');
         const exported = exportCaptions(format);
         sendText(res, 200, exported.text, 'text/plain; charset=utf-8', `captions.${exported.format}`);
+        return;
+      }
+      if (sub === '/vendor/lottie.min.js' && req.method === 'GET') {
+        try {
+          const bytes = await readFile(path.join(VENDOR_DIR, 'lottie.min.js'));
+          res.statusCode = 200;
+          res.setHeader('content-type', 'text/javascript; charset=utf-8');
+          res.setHeader('cache-control', 'public, max-age=86400');
+          res.end(bytes);
+        } catch {
+          throw new RouteError('Bundled Lottie player is missing', 'not-found', 404);
+        }
+        return;
+      }
+      if (sub === '/lottie/frame' && req.method === 'POST') {
+        const body = await readBoundedJson(req, 24 * 1024 * 1024);
+        sendJson(res, 200, await writeLottieFrame(body));
+        return;
+      }
+      if (sub === '/lottie/clear' && req.method === 'POST') {
+        sendJson(res, 200, await clearLottieFrames(await readBoundedJson(req)));
         return;
       }
       if (sub === '/text/render' && req.method === 'POST') {

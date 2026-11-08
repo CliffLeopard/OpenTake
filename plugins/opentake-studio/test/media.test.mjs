@@ -36,6 +36,11 @@ let videoPath = null;
 let audioPath = null;
 let imagePath = null;
 let weirdNamePath = null;
+let lottieSourceDir = null;
+let lottieJsonPath = null;
+let invalidJsonPath = null;
+let nonLottieJsonPath = null;
+let lottieZipPath = null;
 
 function relativeName(root, absolute) {
   return path.relative(root, absolute).split(path.sep).join('/');
@@ -52,6 +57,30 @@ before(async () => {
   tempRoot = await mkdtemp(path.join(os.tmpdir(), 'ots-media-test-'));
   sourceDir = path.join(tempRoot, 'source');
   await mkdir(sourceDir, { recursive: true });
+
+  // Lottie fixtures are created with plain Node so their probes never depend
+  // on ffmpeg/ffprobe.
+  lottieSourceDir = path.join(tempRoot, 'lottie-source');
+  await mkdir(lottieSourceDir, { recursive: true });
+  lottieJsonPath = path.join(lottieSourceDir, 'demo.json');
+  await writeFile(lottieJsonPath, JSON.stringify({
+    v: '5.7.4',
+    fr: 30,
+    ip: 0,
+    op: 60,
+    w: 320,
+    h: 180,
+    nm: 'Demo animation',
+    layers: [{ ty: 4, nm: 'shape layer', ip: 0, op: 60, st: 0 }],
+  }));
+  invalidJsonPath = path.join(lottieSourceDir, 'broken.json');
+  await writeFile(invalidJsonPath, '{ this is not valid json');
+  nonLottieJsonPath = path.join(lottieSourceDir, 'not-lottie.json');
+  await writeFile(nonLottieJsonPath, JSON.stringify({ hello: 'world', layers: [] }));
+  lottieZipPath = path.join(lottieSourceDir, 'pack.lottie');
+  await writeFile(lottieZipPath, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]));
+  await writeFile(path.join(lottieSourceDir, 'notes.txt'), 'not media');
+
   if (!initialTools.available) return;
 
   videoPath = path.join(sourceDir, 'clip.mp4');
@@ -195,6 +224,12 @@ it('reports missing tools instead of pretending to work', async () => {
       probeMedia(videoPath ?? path.join(tempRoot, 'missing.mp4')),
       (error) => error instanceof MediaError && error.code === 'ffprobe-unavailable',
     );
+
+    // Lottie JSON probing must not require ffprobe at all.
+    const lottie = await probeMedia(lottieJsonPath);
+    assert.equal(lottie.kind, 'lottie');
+    assert.equal(lottie.width, 320);
+    assert.equal(lottie.height, 180);
   } finally {
     if (saved.path === undefined) delete process.env.PATH;
     else process.env.PATH = saved.path;
@@ -218,12 +253,16 @@ it('classifies media kinds from file names', () => {
   assert.equal(mediaKindForFile('voice.FLAC'), 'audio');
   assert.equal(mediaKindForFile('card.png'), 'image');
   assert.equal(mediaKindForFile('photo.JPEG'), 'image');
+  assert.equal(mediaKindForFile('animation.json'), 'lottie');
+  assert.equal(mediaKindForFile('animation.LOTTIE'), 'lottie');
   assert.equal(mediaKindForFile('notes.txt'), null);
   assert.equal(mediaKindForFile('archive.zip'), null);
   assert.equal(mediaKindForFile('no-extension'), null);
   assert.equal(mediaKindForFile(''), null);
 
   assert.equal(isMediaFile('clip.mp4'), true);
+  assert.equal(isMediaFile('animation.json'), true);
+  assert.equal(isMediaFile('animation.lottie'), true);
   assert.equal(isMediaFile('notes.txt'), false);
   assert.equal(isMediaFile(''), false);
 
@@ -231,6 +270,8 @@ it('classifies media kinds from file names', () => {
   assert.ok(extensions.includes('mp4'));
   assert.ok(extensions.includes('m4a'));
   assert.ok(extensions.includes('png'));
+  assert.ok(extensions.includes('json'));
+  assert.ok(extensions.includes('lottie'));
   assert.equal(new Set(extensions).size, extensions.length);
 });
 
@@ -239,6 +280,8 @@ it('maps media MIME types', () => {
   assert.equal(mediaMimeType('clip.mov'), 'video/quicktime');
   assert.equal(mediaMimeType('sound.m4a'), 'audio/mp4');
   assert.equal(mediaMimeType('card.jpg'), 'image/jpeg');
+  assert.equal(mediaMimeType('animation.json'), 'application/json');
+  assert.equal(mediaMimeType('animation.lottie'), 'application/zip');
   assert.equal(mediaMimeType('unknown.bin'), 'application/octet-stream');
   assert.equal(mediaMimeType(''), 'application/octet-stream');
 });
@@ -545,4 +588,110 @@ it('generates and caches a 360p preview proxy', { skip: toolSkip }, async () => 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Lottie probing / import (Phase 14)
+// ---------------------------------------------------------------------------
+
+it('probes a Lottie JSON animation without ffprobe', async () => {
+  const info = await stat(lottieJsonPath);
+  const probe = await probeMedia(lottieJsonPath);
+
+  assert.deepEqual(probe, {
+    kind: 'lottie',
+    durationSeconds: 2,
+    width: 320,
+    height: 180,
+    fps: 30,
+    hasAudio: false,
+    sizeBytes: info.size,
+  });
+});
+
+it('rejects invalid JSON, non-Lottie JSON and .lottie containers clearly', async () => {
+  await assert.rejects(
+    probeMedia(invalidJsonPath),
+    (error) => error instanceof MediaError && error.code === 'probe-failed',
+  );
+
+  await assert.rejects(
+    probeMedia(nonLottieJsonPath),
+    (error) => error instanceof MediaError &&
+      error.code === 'unsupported-media' && /version marker/.test(error.message),
+  );
+
+  const missingLayers = path.join(tempRoot, 'no-layers.json');
+  await writeFile(missingLayers, JSON.stringify({ v: '5.7.4', fr: 30, ip: 0, op: 30, w: 100, h: 100 }));
+  await assert.rejects(
+    probeMedia(missingLayers),
+    (error) => error instanceof MediaError &&
+      error.code === 'unsupported-media' && /layers/.test(error.message),
+  );
+
+  await assert.rejects(
+    probeMedia(lottieZipPath),
+    (error) => error instanceof MediaError &&
+      error.code === 'unsupported-media' && /\.lottie/.test(error.message),
+  );
+});
+
+it('scans and imports Lottie while skipping invalid candidates', async () => {
+  const listed = await scanMediaFolder(lottieSourceDir);
+  const names = listed.map((file) => path.basename(file));
+  assert.ok(names.includes('demo.json'));
+  assert.ok(names.includes('broken.json'));
+  assert.ok(names.includes('not-lottie.json'));
+  assert.ok(names.includes('pack.lottie'));
+
+  const projectRoot = path.join(tempRoot, 'project-lottie');
+  const result = await importToProject({
+    projectRoot,
+    folderPath: lottieSourceDir,
+    project: { fps: 30, media: [] },
+  });
+
+  assert.equal(result.media.length, 1);
+  assert.equal(result.imported.length, 1);
+  assert.ok(result.imported[0].endsWith('demo.json'));
+  assert.equal(result.skipped.length, 4);
+  for (const skippedName of ['broken.json', 'not-lottie.json', 'pack.lottie', 'notes.txt']) {
+    assert.ok(
+      result.skipped.some((file) => file.endsWith(skippedName)),
+      `expected ${skippedName} in skipped: ${result.skipped.join(', ')}`,
+    );
+  }
+
+  const media = result.media[0];
+  assert.equal(media.kind, 'lottie');
+  assert.equal(media.name, 'demo.json');
+  assert.equal(media.durationFrames, 60);
+  assert.equal(media.sourceDurationSeconds, 2);
+  assert.equal(media.width, 320);
+  assert.equal(media.height, 180);
+  assert.equal(media.hasAudio, false);
+  assert.match(media.fileName, /^[0-9a-f-]{36}-demo\.json$/);
+  const destination = path.join(projectRoot, 'media', media.fileName);
+  const destinationInfo = await stat(destination);
+  assert.equal(destinationInfo.size, (await stat(lottieJsonPath)).size);
+});
+
+it('generates a cached placeholder thumbnail for Lottie media', { skip: toolSkip }, async () => {
+  const projectRoot = path.join(tempRoot, 'project-lottie-thumb');
+  const imported = await importToProject({
+    projectRoot,
+    folderPath: lottieSourceDir,
+    project: { fps: 30, media: [] },
+  });
+  const media = imported.media[0];
+
+  const thumbnail = await ensureThumbnail({ projectRoot, media });
+  assert.ok(path.isAbsolute(thumbnail));
+  assert.equal(path.extname(thumbnail), '.jpg');
+  await expectJpeg(thumbnail);
+
+  const firstInfo = await stat(thumbnail);
+  const cached = await ensureThumbnail({ projectRoot, media });
+  assert.equal(cached, thumbnail);
+  assert.equal((await stat(thumbnail)).mtimeMs, firstInfo.mtimeMs);
 });

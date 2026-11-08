@@ -140,6 +140,218 @@ window.__ModuleLoader__.load({
 			return Boolean(media && media.missing === true);
 		}
 
+		const lottiePreviewCache = new Map();
+		const lottieThumbCache = new Map();
+		let lottiePlayerPromise = null;
+
+		function lottieGlobalApi() {
+			try {
+				if (typeof window !== 'undefined' && (window.lottie || window.bodymovin)) return window.lottie || window.bodymovin;
+				if (typeof globalThis !== 'undefined' && globalThis.lottie) return globalThis.lottie;
+			} catch (error) {
+				/* ignore */
+			}
+			return null;
+		}
+
+		function loadLottiePlayer() {
+			const existing = lottieGlobalApi();
+			if (existing) return Promise.resolve(existing);
+			if (lottiePlayerPromise !== null) return lottiePlayerPromise;
+			lottiePlayerPromise = new Promise((resolve, reject) => {
+				if (typeof document === 'undefined' || !document.head || typeof document.createElement !== 'function') {
+					reject(new Error('lottie-player-unavailable'));
+					return;
+				}
+				const script = document.createElement('script');
+				script.src = `${ROUTE}/vendor/lottie.min.js`;
+				script.async = true;
+				script.onload = () => {
+					const api = lottieGlobalApi();
+					if (api) resolve(api);
+					else reject(new Error('lottie-player-missing'));
+				};
+				script.onerror = () => reject(new Error('lottie-player-load-failed'));
+				document.head.appendChild(script);
+			}).catch((error) => {
+				lottiePlayerPromise = null;
+				throw error;
+			});
+			return lottiePlayerPromise;
+		}
+
+		function getLottieCanvas(animation) {
+			if (!animation) return null;
+			try {
+				if (animation.renderer && animation.renderer.canvas) return animation.renderer.canvas;
+				if (animation.renderer && animation.renderer.canvasContext && animation.renderer.canvasContext.canvas) {
+					return animation.renderer.canvasContext.canvas;
+				}
+				if (animation.rendererContext && animation.rendererContext.canvas) return animation.rendererContext.canvas;
+			} catch (error) {
+				/* fall through */
+			}
+			return null;
+		}
+
+		function waitForLottieReady(animation) {
+			if (!animation || typeof animation.addEventListener !== 'function') return Promise.resolve(animation);
+			if (animation.isLoaded === true) return Promise.resolve(animation);
+			return new Promise((resolve, reject) => {
+				let settled = false;
+				const finish = (error) => {
+					if (settled) return;
+					settled = true;
+					if (error) reject(error);
+					else resolve(animation);
+				};
+				try {
+					animation.addEventListener('DOMLoaded', () => finish());
+					animation.addEventListener('data_failed', () => finish(new Error('lottie-data-failed')));
+				} catch (error) {
+					finish(error);
+				}
+				setTimeout(() => finish(new Error('lottie-load-timeout')), 15000);
+			});
+		}
+
+		async function fetchLottieJson(media) {
+			const response = await fetch(mediaFileUrl(media.id));
+			if (!response.ok) throw new Error(`lottie-json-${response.status}`);
+			return response.json();
+		}
+
+		function ensureLottiePreview(media) {
+			const key = `${media.id}:${media.fileName || ''}`;
+			const existing = lottiePreviewCache.get(media.id);
+			if (existing && existing.key === key && existing.status === 'ready') return Promise.resolve(existing);
+			if (existing && existing.key === key && existing.status === 'loading') return existing.promise;
+			if (existing && existing.animation) {
+				try {
+					existing.animation.destroy();
+				} catch (error) {
+					/* ignore */
+				}
+			}
+			const entry = { key, status: 'loading', animation: null, error: null, promise: null, container: null };
+			lottiePreviewCache.set(media.id, entry);
+			entry.promise = (async () => {
+				const api = await loadLottiePlayer();
+				const json = await fetchLottieJson(media);
+				const container = document.createElement('div');
+				container.style.cssText =
+					'position:fixed;left:-10000px;top:0;pointer-events:none;opacity:0;' +
+					`width:${Math.max(1, Math.round(finiteNumber(json.w, 320)))}px;` +
+					`height:${Math.max(1, Math.round(finiteNumber(json.h, 180)))}px;`;
+				document.body.appendChild(container);
+				entry.container = container;
+				const animation = api.loadAnimation({
+					container,
+					renderer: 'canvas',
+					loop: false,
+					autoplay: false,
+					animationData: json,
+					rendererSettings: { preserveAspectRatio: 'xMidYMid meet' },
+				});
+				try {
+					// The canvas renderer does not reliably emit DOMLoaded while
+					// paused, so wait for its backing canvas and force frame 0.
+					const deadline = Date.now() + 15000;
+					let canvas = null;
+					while (Date.now() < deadline) {
+						canvas = getLottieCanvas(animation);
+						if (canvas && canvas.width > 0 && canvas.height > 0 && animation.isLoaded === true) break;
+						await new Promise((resolve) => setTimeout(resolve, 50));
+					}
+					if (!canvas || canvas.width < 1 || canvas.height < 1) {
+						throw new Error('lottie-canvas-unavailable');
+					}
+					animation.goToAndStop(0, true);
+					await new Promise((resolve) => setTimeout(resolve, 60));
+					entry.animation = animation;
+					entry.status = 'ready';
+					return entry;
+				} catch (error) {
+					try {
+						animation.destroy();
+					} catch (destroyError) {
+						/* ignore */
+					}
+					container.remove();
+					entry.container = null;
+					throw error;
+				}
+			})().catch((error) => {
+				entry.status = 'error';
+				entry.error = error;
+				throw error;
+			});
+			return entry.promise;
+		}
+
+		function disposeLottiePreview(mediaId) {
+			const entry = lottiePreviewCache.get(mediaId);
+			if (!entry) return;
+			if (entry.animation) {
+				try {
+					entry.animation.destroy();
+				} catch (error) {
+					/* ignore */
+				}
+			}
+			if (entry.container && entry.container.parentNode) entry.container.parentNode.removeChild(entry.container);
+			lottiePreviewCache.delete(mediaId);
+			lottieThumbCache.delete(mediaId);
+		}
+
+		function disposeLottiePreviewsExcept(activeIds) {
+			for (const mediaId of Array.from(lottiePreviewCache.keys())) {
+				if (!activeIds.has(mediaId)) disposeLottiePreview(mediaId);
+			}
+		}
+
+		function disposeAllLottiePreviews() {
+			for (const mediaId of Array.from(lottiePreviewCache.keys())) disposeLottiePreview(mediaId);
+		}
+
+		function renderLottieThumb(media) {
+			const key = `${media.id}:${media.fileName || ''}`;
+			const cached = lottieThumbCache.get(media.id);
+			if (cached && cached.key === key) return cached.promise;
+			const entry = { key, promise: null };
+			entry.promise = (async () => {
+				const asset = await ensureLottiePreview(media);
+				const animation = asset.animation;
+				animation.goToAndStop(0, true);
+				const canvas = getLottieCanvas(animation);
+				if (!canvas || typeof canvas.toDataURL !== 'function') throw new Error('lottie-canvas-unavailable');
+				return canvas.toDataURL('image/png');
+			})().catch((error) => {
+				lottieThumbCache.delete(media.id);
+				throw error;
+			});
+			lottieThumbCache.set(media.id, entry);
+			return entry.promise;
+		}
+
+		function renderLottieFrameDataUrl(animation, clip, project, index) {
+			const canvas = document.createElement('canvas');
+			canvas.width = Math.max(2, Math.round(project.width));
+			canvas.height = Math.max(2, Math.round(project.height));
+			const context = canvas.getContext('2d');
+			if (!context) throw new Error('lottie-canvas-unavailable');
+			context.clearRect(0, 0, canvas.width, canvas.height);
+			const source = getLottieCanvas(animation);
+			if (!source) throw new Error('lottie-canvas-unavailable');
+			const fps = Math.max(1, Number(project.fps) || 30);
+			const seconds = (finiteNumber(clip.trimStartFrame, 0) + index * clipSpeedOf(clip)) / fps;
+			animation.goToAndStop(Math.max(0, seconds), true);
+			context.drawImage(source, 0, 0, canvas.width, canvas.height);
+			if (typeof canvas.toDataURL !== 'function') throw new Error('lottie-canvas-unavailable');
+			return canvas.toDataURL('image/png');
+		}
+
+
 		const PROXY_PREVIEW_KEY = 'opentake-studio.proxy-preview';
 
 		function readProxyPreviewPreference() {
@@ -1267,6 +1479,10 @@ window.__ModuleLoader__.load({
 			return collectClipsOfType(project, 'caption');
 		}
 
+		function collectLottieClips(project) {
+			return collectClipsOfType(project, 'lottie');
+		}
+
 		function collectClipsOfType(project, type) {
 			const seen = new Set();
 			const rows = [];
@@ -1289,10 +1505,11 @@ window.__ModuleLoader__.load({
 					if (segment && typeof segment.text === 'string' && segment.text.length > 0) count += 1;
 				}
 			}
+			for (const clip of collectLottieClips(project)) count += Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1)));
 			return count;
 		}
 
-		async function prepareExportRenders(project) {
+		async function prepareExportRenders(project, onProgress) {
 			for (const clip of collectTextClips(project)) {
 				const dataUrl = renderTextClipToDataUrl(clip, project);
 				await hostRequest('text/render', { method: 'POST', body: { clipId: clip.id, dataUrl } });
@@ -1307,6 +1524,23 @@ window.__ModuleLoader__.load({
 					await hostRequest('text/render', {
 						method: 'POST',
 						body: { clipId: clip.id, segmentIndex: index, dataUrl },
+					});
+				}
+			}
+			for (const clip of collectLottieClips(project)) {
+				const media = findMedia(project, clip.mediaId);
+				if (!media) throw new Error('Lottie media is missing; relink it before exporting');
+				const asset = await ensureLottiePreview(media);
+				const total = Math.max(1, Math.round(finiteNumber(clip.durationFrames, 1)));
+				await hostRequest('lottie/clear', { method: 'POST', body: { clipId: clip.id } });
+				for (let index = 0; index < total; index += 1) {
+					if (typeof onProgress === 'function') {
+						onProgress(media.name || clip.id, index + 1, total);
+					}
+					const dataUrl = renderLottieFrameDataUrl(asset.animation, clip, project, index);
+					await hostRequest('lottie/frame', {
+						method: 'POST',
+						body: { clipId: clip.id, index, dataUrl },
 					});
 				}
 			}
@@ -1413,6 +1647,36 @@ window.__ModuleLoader__.load({
 								);
 							} else {
 								context.drawImage(image, -box.width / 2, -box.height / 2, box.width, box.height);
+							}
+						}
+					} else if (clip.type === 'lottie') {
+						const asset = lottiePreviewCache.get(clip.mediaId);
+						const source = asset && asset.status === 'ready' ? getLottieCanvas(asset.animation) : null;
+						if (source) {
+							const sourceWidth = Math.max(1, Number(source.width) || box.width);
+							const sourceHeight = Math.max(1, Number(source.height) || box.height);
+							try {
+								asset.animation.goToAndStop(
+									clipSourceSeconds(clip, frame, Math.max(1, Number(project.fps) || 30)),
+									true,
+								);
+							} catch (error) {
+								/* keep the previous lottie frame */
+							}
+							if (crop) {
+								context.drawImage(
+									source,
+									crop.x * sourceWidth,
+									crop.y * sourceHeight,
+									Math.max(1, crop.width * sourceWidth),
+									Math.max(1, crop.height * sourceHeight),
+									-box.width / 2,
+									-box.height / 2,
+									box.width,
+									box.height,
+								);
+							} else {
+								context.drawImage(source, -box.width / 2, -box.height / 2, box.width, box.height);
 							}
 						}
 					}
@@ -1593,6 +1857,8 @@ window.__ModuleLoader__.load({
 .ots-library-category{color:var(--dsw-alias-label-secondary);display:inline-block;max-width:74px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ots-library-card .ots-library-actions-row .ots-mini{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ots-modal-fixed{position:fixed}
+.ots-lottie-thumb{display:block;height:100%;object-fit:cover;width:100%}
+.ots-lottie-fallback{align-items:center;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);display:flex;font-size:9px;height:100%;justify-content:center;line-height:1.3;padding:4px;text-align:center;width:100%}
 .ots-media-actions{display:flex;gap:3px;padding:0 6px 6px;flex-wrap:wrap}
 .ots-media-actions .ots-mini{font-size:9.5px;height:18px;max-width:100%;overflow:hidden;padding:0 4px;text-overflow:ellipsis;white-space:nowrap}
 .ots-media-note{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;color:var(--dsw-alias-label-secondary);font-size:10.5px;line-height:1.45;margin:0 0 6px;padding:6px 7px}
@@ -2394,6 +2660,11 @@ window.__ModuleLoader__.load({
 			'preview.stepBack': 'Step back one frame',
 			'preview.stepForward': 'Step forward one frame',
 			'inspector.shortcutStep': '← / → — step one frame',
+			'media.lottie': 'Lottie',
+			'lottie.loading': 'Loading Lottie…',
+			'lottie.unavailable': 'Lottie unavailable',
+			'status.preparingLottie': 'Rendering Lottie frame {index}/{total} for {name}…',
+			'inspector.kindLottie': 'Lottie clip',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -2964,6 +3235,11 @@ window.__ModuleLoader__.load({
 			'preview.stepBack': '后退一帧',
 			'preview.stepForward': '前进一帧',
 			'inspector.shortcutStep': '← / → — 单帧步进',
+			'media.lottie': 'Lottie',
+			'lottie.loading': '正在加载 Lottie…',
+			'lottie.unavailable': 'Lottie 不可用',
+			'status.preparingLottie': '正在为 {name} 渲染 Lottie 帧 {index}/{total}…',
+			'inspector.kindLottie': 'Lottie 片段',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -3135,9 +3411,38 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		function LottieThumb(props) {
+			const { media, t } = props;
+			const [dataUrl, setDataUrl] = React.useState(null);
+			const [failed, setFailed] = React.useState(false);
+			React.useEffect(() => {
+				let active = true;
+				renderLottieThumb(media)
+					.then((url) => {
+						if (active) setDataUrl(url);
+					})
+					.catch(() => {
+						if (active) setFailed(true);
+					});
+				return () => {
+					active = false;
+				};
+			}, [media.id, media.fileName]);
+			if (failed) {
+				return h('span', { className: 'ots-lottie-fallback', title: t('lottie.unavailable') }, t('lottie.unavailable'));
+			}
+			if (dataUrl) {
+				return h('img', { className: 'ots-lottie-thumb', src: dataUrl, alt: '', draggable: false });
+			}
+			return h('span', { className: 'ots-lottie-fallback', title: t('lottie.loading') }, t('lottie.loading'));
+		}
+
 		function MediaThumb(props) {
 			const [failed, setFailed] = React.useState(false);
 			const media = props.media;
+			if (media.kind === 'lottie') {
+				return h(LottieThumb, { media, t: props.t });
+			}
 			if (media.kind === 'audio' || failed) {
 				const glyph = media.kind === 'audio' ? 'media.glyphAudio' : media.kind === 'image' ? 'media.glyphImage' : 'media.glyphVideo';
 				return h('span', { className: 'ots-media-glyph', 'aria-hidden': 'true' }, props.t(glyph));
@@ -8161,6 +8466,7 @@ window.__ModuleLoader__.load({
 			const [proxyPreview, setProxyPreview] = React.useState(() => readProxyPreviewPreference());
 			const [proxyFailedIds, setProxyFailedIds] = React.useState(() => new Set());
 			const [missingMediaIds, setMissingMediaIds] = React.useState(() => new Set());
+			const [lottieReadyTick, setLottieReadyTick] = React.useState(0);
 			const [selectedClipIds, setSelectedClipIds] = React.useState([]);
 			const [snapping, setSnapping] = React.useState(true);
 			const [currentFrame, setCurrentFrame] = React.useState(0);
@@ -8212,6 +8518,33 @@ window.__ModuleLoader__.load({
 			monitorVolumeRef.current = monitorVolume;
 			zoomRef.current = zoom;
 			const project = snapshot ? snapshot.project : null;
+			const lottieMediaKey = project
+				? project.media
+						.filter((media) => media.kind === 'lottie')
+						.map((media) => `${media.id}:${media.fileName || ''}`)
+						.join('|')
+				: '';
+			React.useEffect(() => {
+				const lottieMedia = project ? project.media.filter((media) => media.kind === 'lottie') : [];
+				const activeIds = new Set(lottieMedia.map((media) => media.id));
+				disposeLottiePreviewsExcept(activeIds);
+				let cancelled = false;
+				for (const media of lottieMedia) {
+					ensureLottiePreview(media)
+						.then(() => {
+							if (!cancelled) setLottieReadyTick((value) => value + 1);
+						})
+						.catch(() => {
+							if (!cancelled) setLottieReadyTick((value) => value + 1);
+						});
+				}
+				return () => {
+					cancelled = true;
+				};
+			}, [lottieMediaKey]);
+			React.useEffect(() => {
+				return () => disposeAllLottiePreviews();
+			}, []);
 			projectRef.current = project;
 
 			const fps = project ? project.fps : 30;
@@ -8569,7 +8902,7 @@ window.__ModuleLoader__.load({
 				if (!playing) {
 					applyFrame(currentFrameRef.current);
 				}
-			}, [snapshot && snapshot.project, currentFrame, playing]);
+			}, [snapshot && snapshot.project, currentFrame, playing, lottieReadyTick]);
 
 			React.useEffect(() => {
 				if (!playing) return undefined;
@@ -9275,7 +9608,13 @@ window.__ModuleLoader__.load({
 						const exportProject = projectRef.current;
 						if (countExportRenders(exportProject) > 0) {
 							setDialog(Object.assign({}, workingDialog, { status: t('status.preparingText') }));
-							await prepareExportRenders(exportProject);
+							await prepareExportRenders(exportProject, (name, index, total) => {
+								setDialog(
+									Object.assign({}, workingDialog, {
+										status: t('status.preparingLottie', { name, index, total }),
+									}),
+								);
+							});
 							setDialog(Object.assign({}, workingDialog, { status: t('dialog.preparingText') }));
 						}
 						const exportBody = {

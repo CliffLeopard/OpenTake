@@ -24,8 +24,8 @@ const DEFAULT_PROJECT_NAME = 'Untitled';
 /** Timeline frames used when an `add-clip` for an image omits `durationFrames`. */
 const IMAGE_DEFAULT_DURATION_SECONDS = 5;
 
-const CLIP_TYPES = ['video', 'image', 'audio', 'text', 'caption'];
-const MEDIA_KINDS = ['video', 'audio', 'image'];
+const CLIP_TYPES = ['video', 'image', 'audio', 'text', 'caption', 'lottie'];
+const MEDIA_KINDS = ['video', 'audio', 'image', 'lottie'];
 const TRACK_TYPES = ['video', 'audio'];
 const FONT_WEIGHTS = ['400', '600', '700'];
 const TEXT_ALIGNS = ['left', 'center', 'right'];
@@ -235,7 +235,8 @@ function clipTypeAllowedOnTrack(trackType, clipType) {
       clipType === 'video' ||
       clipType === 'image' ||
       clipType === 'text' ||
-      clipType === 'caption'
+      clipType === 'caption' ||
+      clipType === 'lottie'
     );
   }
   return clipType === 'audio';
@@ -641,7 +642,10 @@ function normalizeTransition(value, code = 'invalid-transition') {
   return { id, trackId, fromClipId, toClipId, type: value.type, durationFrames };
 }
 
-/** Text-like clips cannot participate in transitions (DESIGN §11.1). */
+/**
+ * Clips that may participate in transitions (DESIGN §11.1). Text-like and
+ * Lottie clips are excluded until export can handle them.
+ */
 function isTransitionableClip(clip) {
   return clip.type === 'video' || clip.type === 'image';
 }
@@ -717,6 +721,7 @@ function pruneTransitions(project) {
 
 function normalizeMedia(value, projectFps) {
   const code = 'invalid-media';
+  assertObject(value, code, 'media');
   const id = requireId(value.id, code, 'media.id');
   if (!MEDIA_KINDS.includes(value.kind)) {
     fail(code, `media.kind must be one of ${MEDIA_KINDS.join('/')}`);
@@ -740,6 +745,19 @@ function normalizeMedia(value, projectFps) {
     if (value.durationFrames !== undefined && value.durationFrames !== null) {
       fail(code, 'image media must have durationFrames: null');
     }
+  } else if (kind === 'lottie') {
+    // An explicit null means "unknown animation length" and stays null; only a
+    // completely absent field is derived from sourceDurationSeconds.
+    if (value.durationFrames === null) {
+      durationFrames = null;
+    } else if (value.durationFrames === undefined) {
+      durationFrames =
+        sourceDurationSeconds === null
+          ? null
+          : Math.max(1, Math.round(sourceDurationSeconds * projectFps));
+    } else {
+      durationFrames = requirePositiveInteger(value.durationFrames, code, 'media.durationFrames');
+    }
   } else if (value.durationFrames === undefined || value.durationFrames === null) {
     if (sourceDurationSeconds === null) {
       fail(code, 'media.durationFrames is required for video/audio (or sourceDurationSeconds)');
@@ -759,7 +777,9 @@ function normalizeMedia(value, projectFps) {
   }
 
   const hasAudio =
-    kind === 'image' ? false : optionalBoolean(value.hasAudio, false, code, 'media.hasAudio');
+    kind === 'image' || kind === 'lottie'
+      ? false
+      : optionalBoolean(value.hasAudio, false, code, 'media.hasAudio');
   const sizeBytes =
     value.sizeBytes === undefined ? 0 : requireInteger(value.sizeBytes, code, 'media.sizeBytes', 0);
   const importedAt = value.importedAt === undefined ? Date.now() : requireFiniteNumber(value.importedAt, code, 'media.importedAt');
@@ -812,7 +832,7 @@ function normalizeClip(value) {
     value.trimStartFrame === undefined
       ? 0
       : requireNonNegativeInteger(value.trimStartFrame, code, 'clip.trimStartFrame');
-  if (isTextLikeClip(type) && trimStartFrame !== 0) {
+  if ((isTextLikeClip(type) || type === 'lottie') && trimStartFrame !== 0) {
     fail(code, `${type} clip must have trimStartFrame: 0`);
   }
 
@@ -820,7 +840,10 @@ function normalizeClip(value) {
   if (!isFiniteNumber(speed) || speed < SPEED_MIN || speed > SPEED_MAX) {
     fail(code, `clip.speed must be a number in [${SPEED_MIN},${SPEED_MAX}]`);
   }
-  if ((type === 'image' || type === 'text' || type === 'caption') && speed !== 1) {
+  if (
+    (type === 'image' || type === 'text' || type === 'caption' || type === 'lottie') &&
+    speed !== 1
+  ) {
     fail(code, `${type} clips must keep speed 1`);
   }
 
@@ -982,7 +1005,14 @@ function validateProject(project) {
             `clip ${clip.id} has type ${clip.type} but media ${media.id} is ${media.kind}`,
           );
         }
-        if (clip.type !== 'image') {
+        if (clip.type === 'lottie') {
+          if (media.durationFrames !== null && clip.durationFrames > media.durationFrames) {
+            fail(
+              'out-of-bounds',
+              `lottie clip ${clip.id} duration ${clip.durationFrames} exceeds media ${media.id} (${media.durationFrames})`,
+            );
+          }
+        } else if (clip.type !== 'image') {
           const sourceEnd = clip.trimStartFrame + sourceFramesConsumed(clip.durationFrames, clip.speed);
           if (sourceEnd > media.durationFrames) {
             fail(
@@ -1423,7 +1453,7 @@ function scaleClipKeyframes(clip, oldDuration, newDuration) {
 
 /** Source trim offset for the right half when the left half is removed. */
 function rebaseTrimStartForHeadRemoval(clip, newDuration) {
-  if (isTextLikeClip(clip.type)) return 0;
+  if (isTextLikeClip(clip.type) || clip.type === 'lottie') return 0;
   const sourceEnd = clip.trimStartFrame + sourceFramesConsumed(clip.durationFrames, clip.speed);
   return Math.max(0, sourceEnd - sourceFramesConsumed(newDuration, clip.speed));
 }
@@ -1724,8 +1754,8 @@ function relinkMediaOperation(project, operation) {
   let durationFrames = current.durationFrames;
   if (operation.durationFrames !== undefined) {
     if (operation.durationFrames === null) {
-      if (kind !== 'image') {
-        fail('invalid-input', 'durationFrames can be null only for image media');
+      if (kind !== 'image' && kind !== 'lottie') {
+        fail('invalid-input', 'durationFrames can be null only for image/lottie media');
       }
       durationFrames = null;
     } else {
@@ -1740,6 +1770,11 @@ function relinkMediaOperation(project, operation) {
     }
   } else if (kind === 'image') {
     durationFrames = null;
+  } else if (kind === 'lottie' && durationFrames === null) {
+    durationFrames =
+      sourceDurationSeconds === null
+        ? null
+        : Math.max(1, Math.round(sourceDurationSeconds * project.fps));
   } else if (durationFrames === null) {
     if (sourceDurationSeconds === null) {
       fail('invalid-input', 'durationFrames is required for video/audio media');
@@ -1827,6 +1862,27 @@ function addClipOperation(project, operation) {
       operation.durationFrames === undefined
         ? Math.max(1, Math.round(project.fps * IMAGE_DEFAULT_DURATION_SECONDS))
         : requirePositiveInteger(operation.durationFrames, 'invalid-input', 'durationFrames');
+  } else if (media.kind === 'lottie') {
+    if (trimStartFrame !== 0) {
+      fail('invalid-input', 'lottie clips must have trimStartFrame: 0');
+    }
+    if (media.durationFrames === null) {
+      durationFrames =
+        operation.durationFrames === undefined
+          ? Math.max(1, Math.round(project.fps * IMAGE_DEFAULT_DURATION_SECONDS))
+          : requirePositiveInteger(operation.durationFrames, 'invalid-input', 'durationFrames');
+    } else {
+      durationFrames =
+        operation.durationFrames === undefined
+          ? media.durationFrames
+          : requirePositiveInteger(operation.durationFrames, 'invalid-input', 'durationFrames');
+      if (durationFrames > media.durationFrames) {
+        fail(
+          'out-of-bounds',
+          `lottie clip duration ${durationFrames} exceeds media ${media.id} (${media.durationFrames})`,
+        );
+      }
+    }
   } else {
     const remaining = media.durationFrames - trimStartFrame;
     if (remaining < 1) {
@@ -1911,7 +1967,7 @@ function trimClipOperation(project, operation) {
     ? requirePositiveInteger(operation.durationFrames, 'invalid-input', 'durationFrames')
     : oldDuration;
 
-  if (isTextLikeClip(clip.type) && trimStartFrame !== 0) {
+  if ((isTextLikeClip(clip.type) || clip.type === 'lottie') && trimStartFrame !== 0) {
     fail('invalid-input', `${clip.type} clips cannot have a non-zero trimStartFrame`);
   }
 
@@ -1937,6 +1993,15 @@ function trimClipOperation(project, operation) {
       fail(
         'out-of-bounds',
         `source window ${trimStartFrame}+${consumed} exceeds media ${media.id} (${media.durationFrames})`,
+      );
+    }
+  } else if (clip.type === 'lottie') {
+    const media = findMedia(project, clip.mediaId);
+    if (!media) fail('media-not-found', `media not found: ${String(clip.mediaId)}`);
+    if (media.durationFrames !== null && durationFrames > media.durationFrames) {
+      fail(
+        'out-of-bounds',
+        `lottie clip duration ${durationFrames} exceeds media ${media.id} (${media.durationFrames})`,
       );
     }
   }
@@ -2195,7 +2260,12 @@ function setSpeedOperation(project, operation) {
   if (speed < SPEED_MIN || speed > SPEED_MAX) {
     fail('invalid-input', `speed must be in [${SPEED_MIN},${SPEED_MAX}]`);
   }
-  if (clip.type === 'image' || clip.type === 'text' || clip.type === 'caption') {
+  if (
+    clip.type === 'image' ||
+    clip.type === 'text' ||
+    clip.type === 'caption' ||
+    clip.type === 'lottie'
+  ) {
     fail('invalid-input', `${clip.type} clips must keep speed 1`);
   }
 
