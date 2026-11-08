@@ -29,7 +29,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v27.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v28.node');
 }
 
 function loadAddon() {
@@ -650,6 +650,105 @@ export function apply(ctx) {
     };
   }
 
+  const IMPORTABLE_EXTENSIONS = new Set([
+    'mp4', 'mov', 'm4v', 'mp3', 'wav', 'aac', 'm4a', 'png', 'jpg', 'jpeg',
+    'tiff', 'heic', 'webp', 'json', 'lottie',
+  ]);
+
+  function scanImportFolder(directory, recursive) {
+    const files = [];
+    const walk = (current, depth) => {
+      let entries;
+      try { entries = readdirSync(current, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const absolute = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          if (recursive && depth < 12) walk(absolute, depth + 1);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        const extension = path.extname(entry.name).slice(1).toLowerCase();
+        if (IMPORTABLE_EXTENSIONS.has(extension)) files.push(absolute);
+      }
+    };
+    walk(directory, 0);
+    files.sort();
+    return files;
+  }
+
+  function importFolder(directory, recursive) {
+    if (typeof directory !== 'string' || !existsSync(directory) || !statSync(directory).isDirectory()) {
+      throw new Error('import_folder requires an existing directory path');
+    }
+    const files = scanImportFolder(directory, recursive === true);
+    if (files.length === 0) return JSON.parse(state.engine.mediaList());
+    return JSON.parse(state.engine.importMedia(files));
+  }
+
+  async function timelineSprite(mediaRef, requestedFrames) {
+    const items = JSON.parse(state.engine.mediaList()).items;
+    const item = items.find((entry) => entry.id === mediaRef);
+    if (!item) throw new Error(`media not found: ${mediaRef}`);
+    const thumbnail = item.thumbnail ?? (state.engine.thumbnail(mediaRef) || null);
+    if (thumbnail) state.thumbnails.set(mediaRef, thumbnail);
+    if (item.type === 'image') {
+      return {
+        status: 'cached',
+        thumbnail: {
+          mediaRef,
+          type: 'image',
+          thumbnailPath: thumbnail,
+          spritePath: thumbnail,
+          tileWidth: item.width ?? null,
+          tileHeight: item.height ?? null,
+          columns: 1,
+          times: [0],
+        },
+      };
+    }
+    if (item.type !== 'video') {
+      return { status: 'failed', thumbnail: null };
+    }
+    const count = Math.max(4, Math.min(64, Number.isFinite(requestedFrames) ? Math.round(requestedFrames) : 24));
+    const duration = Math.max(0.1, Number(item.duration) || 1);
+    const width = Math.max(2, Number(item.width) || 320);
+    const height = Math.max(2, Number(item.height) || 180);
+    const tileWidth = 160;
+    const tileHeight = Math.max(2, Math.round((tileWidth * height) / width));
+    const columns = Math.max(1, Math.ceil(Math.sqrt(count)));
+    const rows = Math.max(1, Math.ceil(count / columns));
+    const directory = path.join(CACHE_ROOT, 'sprites');
+    await mkdir(directory, { recursive: true });
+    const file = path.join(directory, `${mediaRef}-${count}.jpg`);
+    if (!existsSync(file)) {
+      const fps = Math.min(30, Math.max(1, count / duration));
+      try {
+        await execFileAsync('ffmpeg', [
+          '-hide_banner', '-loglevel', 'error', '-y', '-i', item.path,
+          '-vf', `fps=${fps.toFixed(4)},scale=${tileWidth}:${tileHeight},tile=${columns}x${rows}`,
+          '-frames:v', '1', '-q:v', '5', file,
+        ], { timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+      } catch {
+        return { status: 'failed', thumbnail: null };
+      }
+    }
+    if (!existsSync(file)) return { status: 'failed', thumbnail: null };
+    return {
+      status: 'cached',
+      thumbnail: {
+        mediaRef,
+        type: 'video',
+        thumbnailPath: thumbnail,
+        spritePath: file,
+        tileWidth,
+        tileHeight,
+        columns,
+        times: Array.from({ length: count }, (_, index) => (duration * index) / count),
+      },
+    };
+  }
+
   function invokeCore(cmd, args) {
     if (state.engine === null) throw new Error(state.loadError ?? 'OpenTake Rust engine is unavailable');
     switch (cmd) {
@@ -696,6 +795,8 @@ export function apply(ctx) {
         return typeof args.path === 'string' && existsSync(args.path);
       case 'get_media':
         return mediaWithThumbnails();
+      case 'import_folder':
+        return importFolder(args.path, args.recursive === true);
       case 'import_media': {
         const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
         return importMedia(paths);
@@ -1226,6 +1327,14 @@ export function apply(ctx) {
         try {
           const cmd = typeof body.cmd === 'string' ? body.cmd : '';
           const args = body.args !== null && typeof body.args === 'object' ? body.args : {};
+          if (cmd === 'request_timeline_sprite') {
+            try {
+              sendJson(res, 200, await timelineSprite(String(args.mediaRef ?? ''), args.maxFrames));
+            } catch (error) {
+              sendJson(res, 200, { status: 'failed', thumbnail: null });
+            }
+            return;
+          }
           if (cmd === 'motion_add') {
             try {
               sendJson(res, 200, await motionAdd(args.request ?? {}));
@@ -1676,6 +1785,21 @@ export function apply(ctx) {
     },
     async (args) => {
       const value = JSON.parse(ensureEngine().exportAudio(args.outPath, args.format ?? 'm4a'));
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_import_folder',
+    'Recursively import supported media files from a folder into the project.',
+    {
+      type: 'object',
+      properties: { path: { type: 'string' }, recursive: { type: 'boolean' } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = importFolder(args.path, args.recursive === true);
       return { text: JSON.stringify(value), data: value };
     },
   );

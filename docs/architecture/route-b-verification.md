@@ -66,8 +66,8 @@ CDP-driven run against `http://127.0.0.1:56474` with the OpenTake (Rust) panel:
   route resolves to WebKit; the Host native endpoint was exercised separately
 - screenshots: `/tmp/verify-ui2-editor.png`, `/tmp/verify-ui-export.png`
 
-Known UI gap: `request_timeline_sprite` returns 400, so the timeline filmstrip
-request logs warnings. The editor still renders.
+Timeline sprite requests now return a cached ffmpeg tile grid; the editor no
+longer falls back to the warning path.
 
 ## 5. Package and installation without a local OpenTake app
 
