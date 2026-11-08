@@ -594,3 +594,41 @@ test('caption/keyframe helpers tolerate empty and interpolate scalar tracks', ()
   assert.equal(evaluateScalarTrack(track, 20), 1);
   assert.equal(evaluateScalarTrack({ keyframes: [] }, 0), null);
 });
+
+test('advanced inspector uses color grade/LUT/chroma/text and remove commands', async () => {
+  const { fetchImpl, calls } = makeFetch();
+  const store = createNativeEditorStore({
+    client: createEngineClient({ fetchImpl }),
+    setIntervalImpl: () => 1,
+    clearIntervalImpl: () => {},
+  });
+  await store.initialize();
+  const grade = {
+    exposure: 0.5, temperature: 0.1, tint: -0.1, contrast: 0.2, saturation: 1.2,
+    liftGammaGain: { lift: { r: 0, g: 0, b: 0 }, gamma: { r: 1, g: 1, b: 1 }, gain: { r: 1, g: 1, b: 1 } },
+    hslSecondary: null,
+  };
+  await store.setColorGrade('clip-1', grade);
+  let call = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(call.init.body), { command: { type: 'setColorGrade', clipIds: ['clip-1'], grade } });
+
+  const lut = { id: 'a'.repeat(64), name: 'Test LUT', intensity: 0.8 };
+  await store.setLut('clip-1', lut);
+  call = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(call.init.body), { command: { type: 'setLut', clipIds: ['clip-1'], lut } });
+
+  const chroma = { keyColor: { r: 0, g: 1, b: 0 }, similarity: 0.2, smoothness: 0.3, spill: 0.5 };
+  await store.setChromaKey('clip-1', chroma);
+  call = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(call.init.body), { command: { type: 'setChromaKey', clipIds: ['clip-1'], chromaKey: chroma } });
+
+  const textStyle = { fontName: 'Helvetica-Bold', fontSize: 42, fontScale: 1, alignment: 'center' };
+  await store.setTextStyle('clip-1', textStyle);
+  call = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(call.init.body), { command: { type: 'setClipProperties', clipIds: ['clip-1'], properties: { textStyle } } });
+
+  store.selectClip('clip-1');
+  await store.removeSelected();
+  call = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(call.init.body), { command: { type: 'removeClips', clipIds: ['clip-1'] } });
+});

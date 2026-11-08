@@ -447,6 +447,8 @@ pub struct TransformedLinearLayer<'a> {
     pub frame: &'a LinearFrame,
     pub opacity: f32,
     pub transform: LayerTransform,
+    /// Source UV sub-rect applied before affine placement: `(u0, v0, u1, v1)`.
+    pub crop_uv: (f64, f64, f64, f64),
     /// All masks are intersected (coverage multiplied), matching the domain
     /// render plan's multiple-mask semantics.
     pub masks: Vec<LayerMask>,
@@ -514,6 +516,7 @@ impl LinearCompositor {
                 frame: layer.frame,
                 opacity: layer.opacity,
                 transform: LayerTransform::default(),
+                crop_uv: (0.0, 0.0, 1.0, 1.0),
                 masks: Vec::new(),
             })
             .collect();
@@ -569,10 +572,13 @@ impl LinearCompositor {
                     if !(0.0..=1.0).contains(&lx) || !(0.0..=1.0).contains(&ly) {
                         continue;
                     }
+                    let (u0, v0, u1, v1) = layer.crop_uv;
+                    let sx = u0 + lx * (u1 - u0);
+                    let sy = v0 + ly * (v1 - v0);
                     let src = sample_linear(
                         layer.frame,
-                        (lx * frame_width - 0.5).clamp(0.0, frame_width - 1.0),
-                        (ly * frame_height - 0.5).clamp(0.0, frame_height - 1.0),
+                        (sx * frame_width - 0.5).clamp(0.0, frame_width - 1.0),
+                        (sy * frame_height - 0.5).clamp(0.0, frame_height - 1.0),
                     );
                     let mut mask_coverage = 1.0_f64;
                     if !layer.masks.is_empty() {
@@ -1274,6 +1280,7 @@ mod tests {
                         flip_horizontal: false,
                         flip_vertical: false,
                     },
+                    crop_uv: (0.0, 0.0, 1.0, 1.0),
                     masks: Vec::new(),
                 }],
             )
@@ -1294,6 +1301,7 @@ mod tests {
                         center_y: 0.5,
                         ..LayerTransform::default()
                     },
+                    crop_uv: (0.0, 0.0, 1.0, 1.0),
                     masks: Vec::new(),
                 }],
             )
@@ -1311,6 +1319,7 @@ mod tests {
                         rotation_degrees: 90.0,
                         ..LayerTransform::default()
                     },
+                    crop_uv: (0.0, 0.0, 1.0, 1.0),
                     masks: Vec::new(),
                 }],
             )
@@ -1395,6 +1404,39 @@ mod tests {
             );
             previous = value;
         }
+    }
+
+    #[test]
+    fn crop_uv_samples_a_source_subrect() {
+        // 4x1 source: red, green, blue, white.
+        let source = LinearFrame::from_f32(
+            4,
+            1,
+            &[
+                1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+            ],
+            LinearPrimaries::Bt2020,
+            LinearTransfer::Linear,
+        )
+        .unwrap();
+        let compositor = LinearCompositor::new(4, 1).unwrap();
+        let out = compositor
+            .composite_transformed(
+                [0.0, 0.0, 0.0, 1.0],
+                &[TransformedLinearLayer {
+                    frame: &source,
+                    opacity: 1.0,
+                    transform: LayerTransform::default(),
+                    // Keep only the middle half (green/blue).
+                    crop_uv: (0.25, 0.0, 0.75, 1.0),
+                    masks: Vec::new(),
+                }],
+            )
+            .unwrap();
+        let left = out.pixel(0, 0).unwrap();
+        let right = out.pixel(3, 0).unwrap();
+        assert!(left[1] > left[0], "left={left:?}");
+        assert!(right[2] > right[1], "right={right:?}");
     }
 
     #[test]

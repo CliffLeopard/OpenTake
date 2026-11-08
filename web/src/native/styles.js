@@ -211,7 +211,14 @@ export const NATIVE_EDITOR_CSS = `
 .otn-frame-readout { color: var(--otn-muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
 .otn-media-import { display: flex; gap: 6px; padding: 8px; border-block-end: 1px solid var(--otn-border); }
 .otn-media-import .otn-input { flex: 1 1 auto; min-inline-size: 0; min-block-size: 28px; }
-.otn-effect-card { display: grid; gap: 6px; padding: 7px; border: 1px solid var(--otn-border); border-radius: 7px; background: var(--otn-panel-2); }
+.otn-file-picker { max-inline-size: 100%; color: var(--otn-muted); font-size: 10px; }
+.otn-file-picker::file-selector-button { margin-inline-end: 6px; border: 1px solid var(--otn-border); border-radius: 5px; background: var(--otn-panel-2); color: var(--otn-text); font-size: 10px; padding: 3px 6px; }
+.otn-effect-card, .otn-advanced-card { display: grid; gap: 6px; padding: 7px; border: 1px solid var(--otn-border); border-radius: 7px; background: var(--otn-panel-2); }
+.otn-advanced-card .otn-field__row { flex-wrap: wrap; }
+.otn-mask-advanced { display: grid; gap: 4px; padding-block-start: 4px; }
+.otn-shortcut-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.otn-shortcut-list li { display: flex; gap: 8px; color: var(--otn-muted); }
+.otn-shortcut-list li span:last-child { color: var(--otn-text); }
 .otn-keyframe-track { display: grid; gap: 4px; padding-block-start: 6px; border-block-start: 1px solid var(--otn-border); }
 .otn-keyframe-track:first-of-type { border-block-start: 0; padding-block-start: 0; }
 .otn-keyframe-list { display: grid; gap: 3px; }
@@ -230,6 +237,10 @@ export const NATIVE_EDITOR_CSS = `
 }
 .otn-inspector .otn-panel-title { border-block-end: 1px solid var(--otn-border); }
 .otn-inspector__body { display: grid; gap: 12px; padding: 10px 12px; }
+.otn-inspector__tabs { display: flex; flex-wrap: wrap; gap: 4px; padding-block-end: 4px; border-block-end: 1px solid var(--otn-border); }
+.otn-inspector__tab { appearance: none; border: 1px solid var(--otn-border); border-radius: 999px; background: transparent; color: var(--otn-muted); font: inherit; font-size: 10px; padding: 3px 7px; cursor: pointer; }
+.otn-inspector__tab--active { border-color: var(--otn-accent); background: var(--otn-accent-soft); color: var(--otn-text); }
+.otn-inspector__tab:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }
 .otn-field { display: grid; gap: 4px; }
 .otn-field__label { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 .otn-field__input {

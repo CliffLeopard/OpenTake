@@ -62,7 +62,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			_owner: S.current
 		};
 	}
-	function w(e, n) {
+	function ne(e, n) {
 		return {
 			$$typeof: t,
 			type: e.type,
@@ -72,10 +72,10 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			_owner: e._owner
 		};
 	}
-	function T(e) {
+	function re(e) {
 		return typeof e == "object" && !!e && e.$$typeof === t;
 	}
-	function ne(e) {
+	function w(e) {
 		var t = {
 			"=": "=0",
 			":": "=2"
@@ -84,11 +84,11 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			return t[e];
 		});
 	}
-	var E = /\/+/g;
-	function re(e, t) {
-		return typeof e == "object" && e && e.key != null ? ne("" + e.key) : t.toString(36);
+	var T = /\/+/g;
+	function ie(e, t) {
+		return typeof e == "object" && e && e.key != null ? w("" + e.key) : t.toString(36);
 	}
-	function ie(e, r, i, a, o) {
+	function ae(e, r, i, a, o) {
 		var s = typeof e;
 		(s === "undefined" || s === "boolean") && (e = null);
 		var c = !1;
@@ -103,26 +103,26 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 				case n: c = !0;
 			}
 		}
-		if (c) return c = e, o = o(c), e = a === "" ? "." + re(c, 0) : a, x(o) ? (i = "", e != null && (i = e.replace(E, "$&/") + "/"), ie(o, r, i, "", function(e) {
+		if (c) return c = e, o = o(c), e = a === "" ? "." + ie(c, 0) : a, x(o) ? (i = "", e != null && (i = e.replace(T, "$&/") + "/"), ae(o, r, i, "", function(e) {
 			return e;
-		})) : o != null && (T(o) && (o = w(o, i + (!o.key || c && c.key === o.key ? "" : ("" + o.key).replace(E, "$&/") + "/") + e)), r.push(o)), 1;
+		})) : o != null && (re(o) && (o = ne(o, i + (!o.key || c && c.key === o.key ? "" : ("" + o.key).replace(T, "$&/") + "/") + e)), r.push(o)), 1;
 		if (c = 0, a = a === "" ? "." : a + ":", x(e)) for (var l = 0; l < e.length; l++) {
 			s = e[l];
-			var u = a + re(s, l);
-			c += ie(s, r, i, u, o);
+			var u = a + ie(s, l);
+			c += ae(s, r, i, u, o);
 		}
-		else if (u = p(e), typeof u == "function") for (e = u.call(e), l = 0; !(s = e.next()).done;) s = s.value, u = a + re(s, l++), c += ie(s, r, i, u, o);
+		else if (u = p(e), typeof u == "function") for (e = u.call(e), l = 0; !(s = e.next()).done;) s = s.value, u = a + ie(s, l++), c += ae(s, r, i, u, o);
 		else if (s === "object") throw r = String(e), Error("Objects are not valid as a React child (found: " + (r === "[object Object]" ? "object with keys {" + Object.keys(e).join(", ") + "}" : r) + "). If you meant to render a collection of children, use an array instead.");
 		return c;
 	}
-	function ae(e, t, n) {
+	function oe(e, t, n) {
 		if (e == null) return e;
 		var r = [], i = 0;
-		return ie(e, r, "", "", function(e) {
+		return ae(e, r, "", "", function(e) {
 			return t.call(n, e, i++);
 		}), r;
 	}
-	function oe(e) {
+	function se(e) {
 		if (e._status === -1) {
 			var t = e._result;
 			t = t(), t.then(function(t) {
@@ -134,37 +134,37 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		if (e._status === 1) return e._result.default;
 		throw e._result;
 	}
-	var D = { current: null }, O = { transition: null }, se = {
-		ReactCurrentDispatcher: D,
-		ReactCurrentBatchConfig: O,
+	var E = { current: null }, D = { transition: null }, ce = {
+		ReactCurrentDispatcher: E,
+		ReactCurrentBatchConfig: D,
 		ReactCurrentOwner: S
 	};
-	function k() {
+	function O() {
 		throw Error("act(...) is not supported in production builds of React.");
 	}
 	e.Children = {
-		map: ae,
+		map: oe,
 		forEach: function(e, t, n) {
-			ae(e, function() {
+			oe(e, function() {
 				t.apply(this, arguments);
 			}, n);
 		},
 		count: function(e) {
 			var t = 0;
-			return ae(e, function() {
+			return oe(e, function() {
 				t++;
 			}), t;
 		},
 		toArray: function(e) {
-			return ae(e, function(e) {
+			return oe(e, function(e) {
 				return e;
 			}) || [];
 		},
 		only: function(e) {
-			if (!T(e)) throw Error("React.Children.only expected to receive a single React element child.");
+			if (!re(e)) throw Error("React.Children.only expected to receive a single React element child.");
 			return e;
 		}
-	}, e.Component = _, e.Fragment = r, e.Profiler = a, e.PureComponent = y, e.StrictMode = i, e.Suspense = l, e.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED = se, e.act = k, e.cloneElement = function(e, n, r) {
+	}, e.Component = _, e.Fragment = r, e.Profiler = a, e.PureComponent = y, e.StrictMode = i, e.Suspense = l, e.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED = ce, e.act = O, e.cloneElement = function(e, n, r) {
 		if (e == null) throw Error("React.cloneElement(...): The argument must be a React element, but you passed " + e + ".");
 		var i = h({}, e.props), a = e.key, o = e.ref, s = e._owner;
 		if (n != null) {
@@ -210,14 +210,14 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			$$typeof: c,
 			render: e
 		};
-	}, e.isValidElement = T, e.lazy = function(e) {
+	}, e.isValidElement = re, e.lazy = function(e) {
 		return {
 			$$typeof: d,
 			_payload: {
 				_status: -1,
 				_result: e
 			},
-			_init: oe
+			_init: se
 		};
 	}, e.memo = function(e, t) {
 		return {
@@ -226,41 +226,41 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			compare: t === void 0 ? null : t
 		};
 	}, e.startTransition = function(e) {
-		var t = O.transition;
-		O.transition = {};
+		var t = D.transition;
+		D.transition = {};
 		try {
 			e();
 		} finally {
-			O.transition = t;
+			D.transition = t;
 		}
-	}, e.unstable_act = k, e.useCallback = function(e, t) {
-		return D.current.useCallback(e, t);
+	}, e.unstable_act = O, e.useCallback = function(e, t) {
+		return E.current.useCallback(e, t);
 	}, e.useContext = function(e) {
-		return D.current.useContext(e);
+		return E.current.useContext(e);
 	}, e.useDebugValue = function() {}, e.useDeferredValue = function(e) {
-		return D.current.useDeferredValue(e);
+		return E.current.useDeferredValue(e);
 	}, e.useEffect = function(e, t) {
-		return D.current.useEffect(e, t);
+		return E.current.useEffect(e, t);
 	}, e.useId = function() {
-		return D.current.useId();
+		return E.current.useId();
 	}, e.useImperativeHandle = function(e, t, n) {
-		return D.current.useImperativeHandle(e, t, n);
+		return E.current.useImperativeHandle(e, t, n);
 	}, e.useInsertionEffect = function(e, t) {
-		return D.current.useInsertionEffect(e, t);
+		return E.current.useInsertionEffect(e, t);
 	}, e.useLayoutEffect = function(e, t) {
-		return D.current.useLayoutEffect(e, t);
+		return E.current.useLayoutEffect(e, t);
 	}, e.useMemo = function(e, t) {
-		return D.current.useMemo(e, t);
+		return E.current.useMemo(e, t);
 	}, e.useReducer = function(e, t, n) {
-		return D.current.useReducer(e, t, n);
+		return E.current.useReducer(e, t, n);
 	}, e.useRef = function(e) {
-		return D.current.useRef(e);
+		return E.current.useRef(e);
 	}, e.useState = function(e) {
-		return D.current.useState(e);
+		return E.current.useState(e);
 	}, e.useSyncExternalStore = function(e, t, n) {
-		return D.current.useSyncExternalStore(e, t, n);
+		return E.current.useSyncExternalStore(e, t, n);
 	}, e.useTransition = function() {
-		return D.current.useTransition();
+		return E.current.useTransition();
 	}, e.version = "18.3.1";
 })), u = /* @__PURE__ */ o(((e, t) => {
 	t.exports = l();
@@ -317,17 +317,17 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		}
 	}
 	function b(e) {
-		if (h = !1, y(e), !m) if (n(c) !== null) m = !0, ae(x);
+		if (h = !1, y(e), !m) if (n(c) !== null) m = !0, oe(x);
 		else {
 			var t = n(l);
-			t !== null && oe(b, t.startTime - e);
+			t !== null && se(b, t.startTime - e);
 		}
 	}
 	function x(t, i) {
 		m = !1, h && (h = !1, _(te), te = -1), p = !0;
 		var a = f;
 		try {
-			for (y(i), d = n(c); d !== null && (!(d.expirationTime > i) || t && !T());) {
+			for (y(i), d = n(c); d !== null && (!(d.expirationTime > i) || t && !re());) {
 				var o = d.callback;
 				if (typeof o == "function") {
 					d.callback = null, f = d.priorityLevel;
@@ -339,45 +339,45 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			if (d !== null) var u = !0;
 			else {
 				var g = n(l);
-				g !== null && oe(b, g.startTime - i), u = !1;
+				g !== null && se(b, g.startTime - i), u = !1;
 			}
 			return u;
 		} finally {
 			d = null, f = a, p = !1;
 		}
 	}
-	var ee = !1, S = null, te = -1, C = 5, w = -1;
-	function T() {
-		return !(e.unstable_now() - w < C);
+	var ee = !1, S = null, te = -1, C = 5, ne = -1;
+	function re() {
+		return !(e.unstable_now() - ne < C);
 	}
-	function ne() {
+	function w() {
 		if (S !== null) {
 			var t = e.unstable_now();
-			w = t;
+			ne = t;
 			var n = !0;
 			try {
 				n = S(!0, t);
 			} finally {
-				n ? E() : (ee = !1, S = null);
+				n ? T() : (ee = !1, S = null);
 			}
 		} else ee = !1;
 	}
-	var E;
-	if (typeof v == "function") E = function() {
-		v(ne);
+	var T;
+	if (typeof v == "function") T = function() {
+		v(w);
 	};
 	else if (typeof MessageChannel < "u") {
-		var re = new MessageChannel(), ie = re.port2;
-		re.port1.onmessage = ne, E = function() {
-			ie.postMessage(null);
+		var ie = new MessageChannel(), ae = ie.port2;
+		ie.port1.onmessage = w, T = function() {
+			ae.postMessage(null);
 		};
-	} else E = function() {
-		g(ne, 0);
+	} else T = function() {
+		g(w, 0);
 	};
-	function ae(e) {
-		S = e, ee || (ee = !0, E());
+	function oe(e) {
+		S = e, ee || (ee = !0, T());
 	}
-	function oe(t, n) {
+	function se(t, n) {
 		te = g(function() {
 			t(e.unstable_now());
 		}, n);
@@ -385,7 +385,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	e.unstable_IdlePriority = 5, e.unstable_ImmediatePriority = 1, e.unstable_LowPriority = 4, e.unstable_NormalPriority = 3, e.unstable_Profiling = null, e.unstable_UserBlockingPriority = 2, e.unstable_cancelCallback = function(e) {
 		e.callback = null;
 	}, e.unstable_continueExecution = function() {
-		m || p || (m = !0, ae(x));
+		m || p || (m = !0, oe(x));
 	}, e.unstable_forceFrameRate = function(e) {
 		0 > e || 125 < e ? console.error("forceFrameRate takes a positive int between 0 and 125, forcing frame rates higher than 125 fps is not supported") : C = 0 < e ? Math.floor(1e3 / e) : 5;
 	}, e.unstable_getCurrentPriorityLevel = function() {
@@ -448,8 +448,8 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			startTime: a,
 			expirationTime: s,
 			sortIndex: -1
-		}, a > o ? (r.sortIndex = a, t(l, r), n(c) === null && r === n(l) && (h ? (_(te), te = -1) : h = !0, oe(b, a - o))) : (r.sortIndex = s, t(c, r), m || p || (m = !0, ae(x))), r;
-	}, e.unstable_shouldYield = T, e.unstable_wrapCallback = function(e) {
+		}, a > o ? (r.sortIndex = a, t(l, r), n(c) === null && r === n(l) && (h ? (_(te), te = -1) : h = !0, se(b, a - o))) : (r.sortIndex = s, t(c, r), m || p || (m = !0, oe(x))), r;
+	}, e.unstable_shouldYield = re, e.unstable_wrapCallback = function(e) {
 		var t = f;
 		return function() {
 			var n = f;
@@ -580,24 +580,24 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		var i = y.hasOwnProperty(t) ? y[t] : null;
 		(i === null ? r || !(2 < t.length) || t[0] !== "o" && t[0] !== "O" || t[1] !== "n" && t[1] !== "N" : i.type !== 0) && (_(t, n, i, r) && (n = null), r || i === null ? h(t) && (n === null ? e.removeAttribute(t) : e.setAttribute(t, "" + n)) : i.mustUseProperty ? e[i.propertyName] = n === null ? i.type === 3 ? !1 : "" : n : (t = i.attributeName, r = i.attributeNamespace, n === null ? e.removeAttribute(t) : (i = i.type, n = i === 3 || i === 4 && !0 === n ? "" : "" + n, r ? e.setAttributeNS(r, t, n) : e.setAttribute(t, n))));
 	}
-	var S = t.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED, te = Symbol.for("react.element"), C = Symbol.for("react.portal"), w = Symbol.for("react.fragment"), T = Symbol.for("react.strict_mode"), ne = Symbol.for("react.profiler"), E = Symbol.for("react.provider"), re = Symbol.for("react.context"), ie = Symbol.for("react.forward_ref"), ae = Symbol.for("react.suspense"), oe = Symbol.for("react.suspense_list"), D = Symbol.for("react.memo"), O = Symbol.for("react.lazy"), se = Symbol.for("react.offscreen"), k = Symbol.iterator;
-	function ce(e) {
-		return typeof e != "object" || !e ? null : (e = k && e[k] || e["@@iterator"], typeof e == "function" ? e : null);
+	var S = t.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED, te = Symbol.for("react.element"), C = Symbol.for("react.portal"), ne = Symbol.for("react.fragment"), re = Symbol.for("react.strict_mode"), w = Symbol.for("react.profiler"), T = Symbol.for("react.provider"), ie = Symbol.for("react.context"), ae = Symbol.for("react.forward_ref"), oe = Symbol.for("react.suspense"), se = Symbol.for("react.suspense_list"), E = Symbol.for("react.memo"), D = Symbol.for("react.lazy"), ce = Symbol.for("react.offscreen"), O = Symbol.iterator;
+	function le(e) {
+		return typeof e != "object" || !e ? null : (e = O && e[O] || e["@@iterator"], typeof e == "function" ? e : null);
 	}
-	var A = Object.assign, le;
-	function ue(e) {
-		if (le === void 0) try {
+	var k = Object.assign, ue;
+	function de(e) {
+		if (ue === void 0) try {
 			throw Error();
 		} catch (e) {
 			var t = e.stack.trim().match(/\n( *(at )?)/);
-			le = t && t[1] || "";
+			ue = t && t[1] || "";
 		}
-		return "\n" + le + e;
+		return "\n" + ue + e;
 	}
-	var de = !1;
-	function fe(e, t) {
-		if (!e || de) return "";
-		de = !0;
+	var fe = !1;
+	function pe(e, t) {
+		if (!e || fe) return "";
+		fe = !0;
 		var n = Error.prepareStackTrace;
 		Error.prepareStackTrace = void 0;
 		try {
@@ -642,52 +642,52 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 				}
 			}
 		} finally {
-			de = !1, Error.prepareStackTrace = n;
+			fe = !1, Error.prepareStackTrace = n;
 		}
-		return (e = e ? e.displayName || e.name : "") ? ue(e) : "";
+		return (e = e ? e.displayName || e.name : "") ? de(e) : "";
 	}
-	function pe(e) {
+	function me(e) {
 		switch (e.tag) {
-			case 5: return ue(e.type);
-			case 16: return ue("Lazy");
-			case 13: return ue("Suspense");
-			case 19: return ue("SuspenseList");
+			case 5: return de(e.type);
+			case 16: return de("Lazy");
+			case 13: return de("Suspense");
+			case 19: return de("SuspenseList");
 			case 0:
 			case 2:
-			case 15: return e = fe(e.type, !1), e;
-			case 11: return e = fe(e.type.render, !1), e;
-			case 1: return e = fe(e.type, !0), e;
+			case 15: return e = pe(e.type, !1), e;
+			case 11: return e = pe(e.type.render, !1), e;
+			case 1: return e = pe(e.type, !0), e;
 			default: return "";
 		}
 	}
-	function me(e) {
+	function he(e) {
 		if (e == null) return null;
 		if (typeof e == "function") return e.displayName || e.name || null;
 		if (typeof e == "string") return e;
 		switch (e) {
-			case w: return "Fragment";
+			case ne: return "Fragment";
 			case C: return "Portal";
-			case ne: return "Profiler";
-			case T: return "StrictMode";
-			case ae: return "Suspense";
-			case oe: return "SuspenseList";
+			case w: return "Profiler";
+			case re: return "StrictMode";
+			case oe: return "Suspense";
+			case se: return "SuspenseList";
 		}
 		if (typeof e == "object") switch (e.$$typeof) {
-			case re: return (e.displayName || "Context") + ".Consumer";
-			case E: return (e._context.displayName || "Context") + ".Provider";
-			case ie:
+			case ie: return (e.displayName || "Context") + ".Consumer";
+			case T: return (e._context.displayName || "Context") + ".Provider";
+			case ae:
 				var t = e.render;
 				return e = e.displayName, e ||= (e = t.displayName || t.name || "", e === "" ? "ForwardRef" : "ForwardRef(" + e + ")"), e;
-			case D: return t = e.displayName || null, t === null ? me(e.type) || "Memo" : t;
-			case O:
+			case E: return t = e.displayName || null, t === null ? he(e.type) || "Memo" : t;
+			case D:
 				t = e._payload, e = e._init;
 				try {
-					return me(e(t));
+					return he(e(t));
 				} catch {}
 		}
 		return null;
 	}
-	function he(e) {
+	function ge(e) {
 		var t = e.type;
 		switch (e.tag) {
 			case 24: return "Cache";
@@ -700,8 +700,8 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			case 4: return "Portal";
 			case 3: return "Root";
 			case 6: return "Text";
-			case 16: return me(t);
-			case 8: return t === T ? "StrictMode" : "Mode";
+			case 16: return he(t);
+			case 8: return t === re ? "StrictMode" : "Mode";
 			case 22: return "Offscreen";
 			case 12: return "Profiler";
 			case 21: return "Scope";
@@ -719,7 +719,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		}
 		return null;
 	}
-	function j(e) {
+	function A(e) {
 		switch (typeof e) {
 			case "boolean":
 			case "number":
@@ -729,12 +729,12 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			default: return "";
 		}
 	}
-	function ge(e) {
+	function _e(e) {
 		var t = e.type;
 		return (e = e.nodeName) && e.toLowerCase() === "input" && (t === "checkbox" || t === "radio");
 	}
-	function _e(e) {
-		var t = ge(e) ? "checked" : "value", n = Object.getOwnPropertyDescriptor(e.constructor.prototype, t), r = "" + e[t];
+	function ve(e) {
+		var t = _e(e) ? "checked" : "value", n = Object.getOwnPropertyDescriptor(e.constructor.prototype, t), r = "" + e[t];
 		if (!e.hasOwnProperty(t) && n !== void 0 && typeof n.get == "function" && typeof n.set == "function") {
 			var i = n.get, a = n.set;
 			return Object.defineProperty(e, t, {
@@ -758,15 +758,15 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			};
 		}
 	}
-	function ve(e) {
-		e._valueTracker ||= _e(e);
-	}
 	function ye(e) {
+		e._valueTracker ||= ve(e);
+	}
+	function j(e) {
 		if (!e) return !1;
 		var t = e._valueTracker;
 		if (!t) return !0;
 		var n = t.getValue(), r = "";
-		return e && (r = ge(e) ? e.checked ? "true" : "false" : e.value), e = r, e === n ? !1 : (t.setValue(e), !0);
+		return e && (r = _e(e) ? e.checked ? "true" : "false" : e.value), e = r, e === n ? !1 : (t.setValue(e), !0);
 	}
 	function be(e) {
 		if (e ||= typeof document < "u" ? document : void 0, e === void 0) return null;
@@ -778,7 +778,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	}
 	function xe(e, t) {
 		var n = t.checked;
-		return A({}, t, {
+		return k({}, t, {
 			defaultChecked: void 0,
 			defaultValue: void 0,
 			value: void 0,
@@ -787,7 +787,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	}
 	function Se(e, t) {
 		var n = t.defaultValue == null ? "" : t.defaultValue, r = t.checked == null ? t.defaultChecked : t.checked;
-		n = j(t.value == null ? n : t.value), e._wrapperState = {
+		n = A(t.value == null ? n : t.value), e._wrapperState = {
 			initialChecked: r,
 			initialValue: n,
 			controlled: t.type === "checkbox" || t.type === "radio" ? t.checked != null : t.value != null
@@ -798,13 +798,13 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	}
 	function we(e, t) {
 		Ce(e, t);
-		var n = j(t.value), r = t.type;
+		var n = A(t.value), r = t.type;
 		if (n != null) r === "number" ? (n === 0 && e.value === "" || e.value != n) && (e.value = "" + n) : e.value !== "" + n && (e.value = "" + n);
 		else if (r === "submit" || r === "reset") {
 			e.removeAttribute("value");
 			return;
 		}
-		t.hasOwnProperty("value") ? Ee(e, t.type, n) : t.hasOwnProperty("defaultValue") && Ee(e, t.type, j(t.defaultValue)), t.checked == null && t.defaultChecked != null && (e.defaultChecked = !!t.defaultChecked);
+		t.hasOwnProperty("value") ? Ee(e, t.type, n) : t.hasOwnProperty("defaultValue") && Ee(e, t.type, A(t.defaultValue)), t.checked == null && t.defaultChecked != null && (e.defaultChecked = !!t.defaultChecked);
 	}
 	function Te(e, t, n) {
 		if (t.hasOwnProperty("value") || t.hasOwnProperty("defaultValue")) {
@@ -824,7 +824,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			for (var i = 0; i < n.length; i++) t["$" + n[i]] = !0;
 			for (n = 0; n < e.length; n++) i = t.hasOwnProperty("$" + e[n].value), e[n].selected !== i && (e[n].selected = i), i && r && (e[n].defaultSelected = !0);
 		} else {
-			for (n = "" + j(n), t = null, i = 0; i < e.length; i++) {
+			for (n = "" + A(n), t = null, i = 0; i < e.length; i++) {
 				if (e[i].value === n) {
 					e[i].selected = !0, r && (e[i].defaultSelected = !0);
 					return;
@@ -836,7 +836,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	}
 	function ke(e, t) {
 		if (t.dangerouslySetInnerHTML != null) throw Error(r(91));
-		return A({}, t, {
+		return k({}, t, {
 			value: void 0,
 			defaultValue: void 0,
 			children: "" + e._wrapperState.initialValue
@@ -855,10 +855,10 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			}
 			t ??= "", n = t;
 		}
-		e._wrapperState = { initialValue: j(n) };
+		e._wrapperState = { initialValue: A(n) };
 	}
 	function je(e, t) {
-		var n = j(t.value), r = j(t.defaultValue);
+		var n = A(t.value), r = A(t.defaultValue);
 		n != null && (n = "" + n, n !== e.value && (e.value = n), t.defaultValue == null && e.defaultValue !== n && (e.defaultValue = n)), r != null && (e.defaultValue = "" + r);
 	}
 	function Me(e) {
@@ -962,7 +962,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			n === "float" && (n = "cssFloat"), r ? e.setProperty(n, i) : e[n] = i;
 		}
 	}
-	var He = A({ menuitem: !0 }, {
+	var He = k({ menuitem: !0 }, {
 		area: !0,
 		base: !0,
 		br: !0,
@@ -1576,7 +1576,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			for (var o in this._reactName = t, this._targetInst = r, this.type = n, this.nativeEvent = i, this.target = a, this.currentTarget = null, e) e.hasOwnProperty(o) && (t = e[o], this[o] = t ? t(i) : i[o]);
 			return this.isDefaultPrevented = (i.defaultPrevented == null ? !1 === i.returnValue : i.defaultPrevented) ? Nn : Pn, this.isPropagationStopped = Pn, this;
 		}
-		return A(t.prototype, {
+		return k(t.prototype, {
 			preventDefault: function() {
 				this.defaultPrevented = !0;
 				var e = this.nativeEvent;
@@ -1599,10 +1599,10 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		},
 		defaultPrevented: 0,
 		isTrusted: 0
-	}, Ln = Fn(In), Rn = A({}, In, {
+	}, Ln = Fn(In), Rn = k({}, In, {
 		view: 0,
 		detail: 0
-	}), zn = Fn(Rn), Bn, Vn, Hn, Un = A({}, Rn, {
+	}), zn = Fn(Rn), Bn, Vn, Hn, Un = k({}, Rn, {
 		screenX: 0,
 		screenY: 0,
 		clientX: 0,
@@ -1625,13 +1625,13 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		movementY: function(e) {
 			return "movementY" in e ? e.movementY : Vn;
 		}
-	}), Wn = Fn(Un), Gn = Fn(A({}, Un, { dataTransfer: 0 })), Kn = Fn(A({}, Rn, { relatedTarget: 0 })), qn = Fn(A({}, In, {
+	}), Wn = Fn(Un), Gn = Fn(k({}, Un, { dataTransfer: 0 })), Kn = Fn(k({}, Rn, { relatedTarget: 0 })), qn = Fn(k({}, In, {
 		animationName: 0,
 		elapsedTime: 0,
 		pseudoElement: 0
-	})), Jn = Fn(A({}, In, { clipboardData: function(e) {
+	})), Jn = Fn(k({}, In, { clipboardData: function(e) {
 		return "clipboardData" in e ? e.clipboardData : window.clipboardData;
-	} })), Yn = Fn(A({}, In, { data: 0 })), Xn = {
+	} })), Yn = Fn(k({}, In, { data: 0 })), Xn = {
 		Esc: "Escape",
 		Spacebar: " ",
 		Left: "ArrowLeft",
@@ -1694,7 +1694,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	function er() {
 		return $n;
 	}
-	var tr = Fn(A({}, Rn, {
+	var tr = Fn(k({}, Rn, {
 		key: function(e) {
 			if (e.key) {
 				var t = Xn[e.key] || e.key;
@@ -1720,7 +1720,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		which: function(e) {
 			return e.type === "keypress" ? Mn(e) : e.type === "keydown" || e.type === "keyup" ? e.keyCode : 0;
 		}
-	})), nr = Fn(A({}, Un, {
+	})), nr = Fn(k({}, Un, {
 		pointerId: 0,
 		width: 0,
 		height: 0,
@@ -1731,7 +1731,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		twist: 0,
 		pointerType: 0,
 		isPrimary: 0
-	})), rr = Fn(A({}, Rn, {
+	})), rr = Fn(k({}, Rn, {
 		touches: 0,
 		targetTouches: 0,
 		changedTouches: 0,
@@ -1740,11 +1740,11 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		ctrlKey: 0,
 		shiftKey: 0,
 		getModifierState: er
-	})), ir = Fn(A({}, In, {
+	})), ir = Fn(k({}, In, {
 		propertyName: 0,
 		elapsedTime: 0,
 		pseudoElement: 0
-	})), ar = Fn(A({}, Un, {
+	})), ar = Fn(k({}, Un, {
 		deltaX: function(e) {
 			return "deltaX" in e ? e.deltaX : "wheelDeltaX" in e ? -e.wheelDeltaX : 0;
 		},
@@ -1829,7 +1829,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		mi(e, 0);
 	}
 	function wr(e) {
-		if (ye(Yi(e))) return e;
+		if (j(Yi(e))) return e;
 	}
 	function Tr(e, t) {
 		if (e === "change") return t;
@@ -2405,8 +2405,8 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	function sa(e, t, n) {
 		var i = e.stateNode;
 		if (t = t.childContextTypes, typeof i.getChildContext != "function") return n;
-		for (var a in i = i.getChildContext(), i) if (!(a in t)) throw Error(r(108, he(e) || "Unknown", a));
-		return A({}, n, i);
+		for (var a in i = i.getChildContext(), i) if (!(a in t)) throw Error(r(108, ge(e) || "Unknown", a));
+		return k({}, n, i);
 	}
 	function ca(e) {
 		return e = (e = e.stateNode) && e.__reactInternalMemoizedMergedChildContext || ea, na = L.current, I(L, e), I(ta, ta.current), !0;
@@ -2608,7 +2608,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		}
 		function l(e, t, n, r) {
 			var i = n.type;
-			return i === w ? d(e, t, n.props.children, r, n.key) : t !== null && (t.elementType === i || typeof i == "object" && i && i.$$typeof === O && Wa(i) === t.type) ? (r = a(t, n.props), r.ref = Ha(e, t, n), r.return = e, r) : (r = Xl(n.type, n.key, n.props, null, e.mode, r), r.ref = Ha(e, t, n), r.return = e, r);
+			return i === ne ? d(e, t, n.props.children, r, n.key) : t !== null && (t.elementType === i || typeof i == "object" && i && i.$$typeof === D && Wa(i) === t.type) ? (r = a(t, n.props), r.ref = Ha(e, t, n), r.return = e, r) : (r = Xl(n.type, n.key, n.props, null, e.mode, r), r.ref = Ha(e, t, n), r.return = e, r);
 		}
 		function u(e, t, n, r) {
 			return t === null || t.tag !== 4 || t.stateNode.containerInfo !== n.containerInfo || t.stateNode.implementation !== n.implementation ? (t = eu(n, e.mode, r), t.return = e, t) : (t = a(t, n.children || []), t.return = e, t);
@@ -2622,11 +2622,11 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 				switch (t.$$typeof) {
 					case te: return n = Xl(t.type, t.key, t.props, null, e.mode, n), n.ref = Ha(e, null, t), n.return = e, n;
 					case C: return t = eu(t, e.mode, n), t.return = e, t;
-					case O:
+					case D:
 						var r = t._init;
 						return f(e, r(t._payload), n);
 				}
-				if (De(t) || ce(t)) return t = Zl(t, e.mode, n, null), t.return = e, t;
+				if (De(t) || le(t)) return t = Zl(t, e.mode, n, null), t.return = e, t;
 				Ua(e, t);
 			}
 			return null;
@@ -2638,9 +2638,9 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 				switch (n.$$typeof) {
 					case te: return n.key === i ? l(e, t, n, r) : null;
 					case C: return n.key === i ? u(e, t, n, r) : null;
-					case O: return i = n._init, p(e, t, i(n._payload), r);
+					case D: return i = n._init, p(e, t, i(n._payload), r);
 				}
-				if (De(n) || ce(n)) return i === null ? d(e, t, n, r, null) : null;
+				if (De(n) || le(n)) return i === null ? d(e, t, n, r, null) : null;
 				Ua(e, n);
 			}
 			return null;
@@ -2651,11 +2651,11 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 				switch (r.$$typeof) {
 					case te: return e = e.get(r.key === null ? n : r.key) || null, l(t, e, r, i);
 					case C: return e = e.get(r.key === null ? n : r.key) || null, u(t, e, r, i);
-					case O:
+					case D:
 						var a = r._init;
 						return m(e, t, n, a(r._payload), i);
 				}
-				if (De(r) || ce(r)) return e = e.get(n) || null, d(t, e, r, i, null);
+				if (De(r) || le(r)) return e = e.get(n) || null, d(t, e, r, i, null);
 				Ua(t, r);
 			}
 			return null;
@@ -2681,7 +2681,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			}), R && Ta(r, h), l;
 		}
 		function g(a, s, c, l) {
-			var u = ce(c);
+			var u = le(c);
 			if (typeof u != "function") throw Error(r(150));
 			if (c = u.call(c), c == null) throw Error(r(151));
 			for (var d = u = null, h = s, g = s = 0, _ = null, v = c.next(); h !== null && !v.done; g++, v = c.next()) {
@@ -2704,18 +2704,18 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 			}), R && Ta(a, g), u;
 		}
 		function _(e, r, i, o) {
-			if (typeof i == "object" && i && i.type === w && i.key === null && (i = i.props.children), typeof i == "object" && i) {
+			if (typeof i == "object" && i && i.type === ne && i.key === null && (i = i.props.children), typeof i == "object" && i) {
 				switch (i.$$typeof) {
 					case te:
 						a: {
 							for (var c = i.key, l = r; l !== null;) {
 								if (l.key === c) {
-									if (c = i.type, c === w) {
+									if (c = i.type, c === ne) {
 										if (l.tag === 7) {
 											n(e, l.sibling), r = a(l, i.props.children), r.return = e, e = r;
 											break a;
 										}
-									} else if (l.elementType === c || typeof c == "object" && c && c.$$typeof === O && Wa(c) === l.type) {
+									} else if (l.elementType === c || typeof c == "object" && c && c.$$typeof === D && Wa(c) === l.type) {
 										n(e, l.sibling), r = a(l, i.props), r.ref = Ha(e, l, i), r.return = e, e = r;
 										break a;
 									}
@@ -2724,7 +2724,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 								} else t(e, l);
 								l = l.sibling;
 							}
-							i.type === w ? (r = Zl(i.props.children, e.mode, o, i.key), r.return = e, e = r) : (o = Xl(i.type, i.key, i.props, null, e.mode, o), o.ref = Ha(e, r, i), o.return = e, e = o);
+							i.type === ne ? (r = Zl(i.props.children, e.mode, o, i.key), r.return = e, e = r) : (o = Xl(i.type, i.key, i.props, null, e.mode, o), o.ref = Ha(e, r, i), o.return = e, e = o);
 						}
 						return s(e);
 					case C:
@@ -2743,10 +2743,10 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 							r = eu(i, e.mode, o), r.return = e, e = r;
 						}
 						return s(e);
-					case O: return l = i._init, _(e, r, l(i._payload), o);
+					case D: return l = i._init, _(e, r, l(i._payload), o);
 				}
 				if (De(i)) return h(e, r, i, o);
-				if (ce(i)) return g(e, r, i, o);
+				if (le(i)) return g(e, r, i, o);
 				Ua(e, i);
 			}
 			return typeof i == "string" && i !== "" || typeof i == "number" ? (i = "" + i, r !== null && r.tag === 6 ? (n(e, r.sibling), r = a(r, i), r.return = e, e = r) : (n(e, r), r = $l(i, e.mode, o), r.return = e, e = r), s(e)) : n(e, r);
@@ -2915,7 +2915,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 							case 3: m.flags = m.flags & -65537 | 128;
 							case 0:
 								if (m = h.payload, f = typeof m == "function" ? m.call(p, d, f) : m, f == null) break a;
-								d = A({}, d, f);
+								d = k({}, d, f);
 								break a;
 							case 2: so = !0;
 						}
@@ -3451,13 +3451,13 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	};
 	function Cs(e, t) {
 		if (e && e.defaultProps) {
-			for (var n in t = A({}, t), e = e.defaultProps, e) t[n] === void 0 && (t[n] = e[n]);
+			for (var n in t = k({}, t), e = e.defaultProps, e) t[n] === void 0 && (t[n] = e[n]);
 			return t;
 		}
 		return t;
 	}
 	function ws(e, t, n, r) {
-		t = e.memoizedState, n = n(r, t), n = n == null ? t : A({}, t, n), e.memoizedState = n, e.lanes === 0 && (e.updateQueue.baseState = n);
+		t = e.memoizedState, n = n(r, t), n = n == null ? t : k({}, t, n), e.memoizedState = n, e.lanes === 0 && (e.updateQueue.baseState = n);
 	}
 	var Ts = {
 		isMounted: function(e) {
@@ -3499,7 +3499,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		try {
 			var n = "", r = t;
 			do
-				n += pe(r), r = r.return;
+				n += me(r), r = r.return;
 			while (r);
 			var i = n;
 		} catch (e) {
@@ -3899,7 +3899,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 					i = xe(e, i), r = xe(e, r), o = [];
 					break;
 				case "select":
-					i = A({}, i, { value: void 0 }), r = A({}, r, { value: void 0 }), o = [];
+					i = k({}, i, { value: void 0 }), r = k({}, r, { value: void 0 }), o = [];
 					break;
 				case "textarea":
 					i = ke(e, i), r = ke(e, r), o = [];
@@ -4011,10 +4011,10 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 						}
 						switch (n) {
 							case "input":
-								ve(i), Te(i, s, !0);
+								ye(i), Te(i, s, !0);
 								break;
 							case "textarea":
-								ve(i), Me(i);
+								ye(i), Me(i);
 								break;
 							case "select":
 							case "option": break;
@@ -4056,7 +4056,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 									o = i;
 									break;
 								case "select":
-									e._wrapperState = { wasMultiple: !!i.multiple }, o = A({}, i, { value: void 0 }), P("invalid", e);
+									e._wrapperState = { wasMultiple: !!i.multiple }, o = k({}, i, { value: void 0 }), P("invalid", e);
 									break;
 								case "textarea":
 									Ae(e, i), o = ke(e, i), P("invalid", e);
@@ -4069,13 +4069,13 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 							}
 							switch (n) {
 								case "input":
-									ve(e), Te(e, i, !1);
+									ye(e), Te(e, i, !1);
 									break;
 								case "textarea":
-									ve(e), Me(e);
+									ye(e), Me(e);
 									break;
 								case "option":
-									i.value != null && e.setAttribute("value", "" + j(i.value));
+									i.value != null && e.setAttribute("value", "" + A(i.value));
 									break;
 								case "select":
 									e.multiple = !!i.multiple, s = i.value, s == null ? i.defaultValue != null && Oe(e, !!i.multiple, i.defaultValue, !0) : Oe(e, !!i.multiple, s, !1);
@@ -5504,8 +5504,8 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 	function Jl(e) {
 		if (typeof e == "function") return +!!ql(e);
 		if (e != null) {
-			if (e = e.$$typeof, e === ie) return 11;
-			if (e === D) return 14;
+			if (e = e.$$typeof, e === ae) return 11;
+			if (e === E) return 14;
 		}
 		return 2;
 	}
@@ -5521,29 +5521,29 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		if (i = e, typeof e == "function") ql(e) && (s = 1);
 		else if (typeof e == "string") s = 5;
 		else a: switch (e) {
-			case w: return Zl(n.children, a, o, t);
-			case T:
+			case ne: return Zl(n.children, a, o, t);
+			case re:
 				s = 8, a |= 8;
 				break;
-			case ne: return e = Kl(12, n, t, a | 2), e.elementType = ne, e.lanes = o, e;
-			case ae: return e = Kl(13, n, t, a), e.elementType = ae, e.lanes = o, e;
-			case oe: return e = Kl(19, n, t, a), e.elementType = oe, e.lanes = o, e;
-			case se: return Ql(n, a, o, t);
+			case w: return e = Kl(12, n, t, a | 2), e.elementType = w, e.lanes = o, e;
+			case oe: return e = Kl(13, n, t, a), e.elementType = oe, e.lanes = o, e;
+			case se: return e = Kl(19, n, t, a), e.elementType = se, e.lanes = o, e;
+			case ce: return Ql(n, a, o, t);
 			default:
 				if (typeof e == "object" && e) switch (e.$$typeof) {
-					case E:
+					case T:
 						s = 10;
 						break a;
-					case re:
+					case ie:
 						s = 9;
 						break a;
-					case ie:
+					case ae:
 						s = 11;
 						break a;
-					case D:
+					case E:
 						s = 14;
 						break a;
-					case O:
+					case D:
 						s = 16, i = null;
 						break a;
 				}
@@ -5555,7 +5555,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 		return e = Kl(7, e, r, t), e.lanes = n, e;
 	}
 	function Ql(e, t, n, r) {
-		return e = Kl(22, e, r, t), e.elementType = se, e.lanes = n, e.stateNode = { isHidden: !1 }, e;
+		return e = Kl(22, e, r, t), e.elementType = ce, e.lanes = n, e.stateNode = { isHidden: !1 }, e;
 	}
 	function $l(e, t, n) {
 		return e = Kl(6, e, null, t), e.lanes = n, e;
@@ -5766,7 +5766,7 @@ var e = Object.create, t = Object.defineProperty, n = Object.getOwnPropertyDescr
 						if (i !== e && i.form === e.form) {
 							var a = Xi(i);
 							if (!a) throw Error(r(90));
-							ye(i), we(i, a);
+							j(i), we(i, a);
 						}
 					}
 				}
@@ -6034,6 +6034,42 @@ var x = Object.freeze({
 		busy: "Working…",
 		allChanges: "All changes are engine-backed.",
 		prototypeNotice: "Bounded native mount: home, media, timeline and preview. The full editor remains in the iframe fallback.",
+		advanced: "Advanced",
+		colorGrade: "Color grade",
+		exposure: "Exposure",
+		temperature: "Temperature",
+		contrast: "Contrast",
+		saturation: "Saturation",
+		textStyle: "Text style",
+		fontName: "Font",
+		fontSize: "Size",
+		textColor: "Color",
+		chromaKey: "Chroma key",
+		keyColor: "Key color",
+		similarity: "Similarity",
+		spill: "Spill",
+		lut: "LUT",
+		lutId: "LUT id (64 hex)",
+		lutName: "LUT name",
+		lutIntensity: "LUT intensity",
+		noLut: "No LUT applied.",
+		lutInvalid: "LUT id must be 64 hex characters and name must be non-empty.",
+		remove: "Remove",
+		maskTransform: "Mask transform",
+		maskPoints: "Polygon points (JSON)",
+		maskPointsInvalid: "Mask points must be a JSON array of 3+ points.",
+		shortcuts: "Shortcuts",
+		shortcutsHelp: "Keyboard shortcuts",
+		shortcutPlay: "Space — play / pause",
+		shortcutSeek: "Left / Right — seek one frame",
+		shortcutNudge: "Shift + Left / Right — nudge selected clip",
+		shortcutUndo: "Cmd/Ctrl + Z — undo",
+		shortcutRedo: "Cmd/Ctrl + Shift + Z — redo",
+		shortcutDelete: "Delete — remove selected clip",
+		shortcutSave: "Cmd/Ctrl + S — save project",
+		shortcutExport: "Cmd/Ctrl + E — open export",
+		shortcutHelp: "? — toggle this help",
+		filePathUnavailable: "Browser file pickers do not expose an absolute path; type the path above instead.",
 		effects: "Effects",
 		keyframes: "Keyframes",
 		masks: "Masks",
@@ -6174,6 +6210,42 @@ var x = Object.freeze({
 		busy: "处理中…",
 		allChanges: "所有改动均由引擎持久化。",
 		prototypeNotice: "有界的原生挂载：主页、素材、时间线和预览。完整编辑器仍保留在 iframe 回退中。",
+		advanced: "高级",
+		colorGrade: "调色",
+		exposure: "曝光",
+		temperature: "色温",
+		contrast: "对比度",
+		saturation: "饱和度",
+		textStyle: "文字样式",
+		fontName: "字体",
+		fontSize: "字号",
+		textColor: "颜色",
+		chromaKey: "抠像",
+		keyColor: "键控颜色",
+		similarity: "相似度",
+		spill: "溢色抑制",
+		lut: "LUT",
+		lutId: "LUT id（64 位十六进制）",
+		lutName: "LUT 名称",
+		lutIntensity: "LUT 强度",
+		noLut: "未应用 LUT。",
+		lutInvalid: "LUT id 必须为 64 位十六进制，名称不能为空。",
+		remove: "移除",
+		maskTransform: "蒙版变换",
+		maskPoints: "多边形点（JSON）",
+		maskPointsInvalid: "蒙版点必须是包含 3 个以上点的 JSON 数组。",
+		shortcuts: "快捷键",
+		shortcutsHelp: "键盘快捷键",
+		shortcutPlay: "空格 — 播放 / 暂停",
+		shortcutSeek: "左 / 右 — 前后一帧",
+		shortcutNudge: "Shift + 左 / 右 — 移动选中片段",
+		shortcutUndo: "Cmd/Ctrl + Z — 撤销",
+		shortcutRedo: "Cmd/Ctrl + Shift + Z — 重做",
+		shortcutDelete: "Delete — 删除选中片段",
+		shortcutSave: "Cmd/Ctrl + S — 保存项目",
+		shortcutExport: "Cmd/Ctrl + E — 打开导出",
+		shortcutHelp: "? — 显示/隐藏帮助",
+		filePathUnavailable: "浏览器文件选择器不提供绝对路径；请在上方输入路径。",
 		effects: "效果",
 		keyframes: "关键帧",
 		masks: "蒙版",
@@ -6282,10 +6354,10 @@ var te = 30;
 function C(e) {
 	return Array.isArray(e) ? e : [];
 }
-function w(e) {
+function ne(e) {
 	return typeof e != "object" || !e ? [] : C((e.timeline !== null && typeof e.timeline == "object" ? e.timeline : e).tracks);
 }
-function T(e) {
+function re(e) {
 	if (typeof e != "object" || !e) return {
 		fps: te,
 		width: 1920,
@@ -6302,9 +6374,9 @@ function T(e) {
 		version: Number.isFinite(Number(e.version)) ? Number(e.version) : 0
 	};
 }
-function ne(e, t) {
+function w(e, t) {
 	if (typeof t != "string" || t.length === 0) return null;
-	let n = w(e);
+	let n = ne(e);
 	for (let e = 0; e < n.length; e += 1) {
 		let r = n[e], i = C(r?.clips);
 		for (let n = 0; n < i.length; n += 1) if (i[n]?.id === t) return {
@@ -6316,23 +6388,23 @@ function ne(e, t) {
 	}
 	return null;
 }
-function E(e) {
+function T(e) {
 	let t = 0;
-	for (let n of w(e)) for (let e of C(n?.clips)) {
+	for (let n of ne(e)) for (let e of C(n?.clips)) {
 		let n = Number(e?.startFrame) || 0, r = Number(e?.durationFrames) || 0;
 		t = Math.max(t, n + Math.max(0, r));
 	}
 	return Math.max(1, t);
 }
-function re(e) {
-	return w(e).reduce((e, t) => e + C(t?.clips).length, 0);
-}
 function ie(e) {
-	return Array.isArray(e) ? e : typeof e == "object" && e ? C(e.items) : [];
+	return ne(e).reduce((e, t) => e + C(t?.clips).length, 0);
 }
 function ae(e) {
+	return Array.isArray(e) ? e : typeof e == "object" && e ? C(e.items) : [];
+}
+function oe(e) {
 	let t = [];
-	for (let [n, r] of w(e).entries()) for (let [e, i] of C(r?.clips).entries()) typeof i?.captionGroupId == "string" && i.captionGroupId.length > 0 && t.push({
+	for (let [n, r] of ne(e).entries()) for (let [e, i] of C(r?.clips).entries()) typeof i?.captionGroupId == "string" && i.captionGroupId.length > 0 && t.push({
 		trackIndex: n,
 		clipIndex: e,
 		track: r,
@@ -6340,7 +6412,7 @@ function ae(e) {
 	});
 	return t;
 }
-function oe(e, t) {
+function se(e, t) {
 	let n = C(e?.keyframes).filter((e) => Number.isFinite(Number(e?.frame)) && Number.isFinite(Number(e?.value))).map((e) => ({
 		frame: Number(e.frame),
 		value: Number(e.value)
@@ -6359,14 +6431,14 @@ function oe(e, t) {
 	}
 	return n[n.length - 1].value;
 }
-function D(e = "clip") {
+function E(e = "clip") {
 	let t = globalThis.crypto?.randomUUID?.();
 	return t === void 0 ? `${e}-${Date.now()}-${Math.floor(Math.random() * 1e6)}` : `${e}-${t}`;
 }
-function O(e) {
+function D(e) {
 	return e instanceof Error ? e.message : String(e);
 }
-function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImpl: r = globalThis.setInterval, clearIntervalImpl: i = globalThis.clearInterval } = {}) {
+function ce({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImpl: r = globalThis.setInterval, clearIntervalImpl: i = globalThis.clearInterval } = {}) {
 	if (typeof e != "object" || !e) throw TypeError("client is required");
 	if (typeof r != "function" || typeof i != "function") throw TypeError("timer functions must be functions");
 	let a = {
@@ -6439,18 +6511,18 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			e.timeline(),
 			e.media()
 		]), o = [], s = n.status === "fulfilled" ? n.value : null, c = r.status === "fulfilled" ? r.value : null, l = i.status === "fulfilled" ? i.value : null;
-		n.status === "rejected" && o.push(O(n.reason)), r.status === "rejected" && o.push(O(r.reason)), i.status === "rejected" && o.push(O(i.reason));
-		let u = T(c), p = ne(c, a.selectedClipId) !== null;
+		n.status === "rejected" && o.push(D(n.reason)), r.status === "rejected" && o.push(D(r.reason)), i.status === "rejected" && o.push(D(i.reason));
+		let u = re(c), p = w(c, a.selectedClipId) !== null;
 		return d({
 			ready: !0,
 			loading: !1,
 			info: s,
 			timeline: c,
-			media: ie(l),
+			media: ae(l),
 			projectPath: u.projectPath,
-			frame: Math.min(a.frame, Math.max(0, E(c) - 1)),
+			frame: Math.min(a.frame, Math.max(0, T(c) - 1)),
 			selectedClipId: p ? a.selectedClipId : null,
-			selectedMediaId: ie(l).some((e) => e.id === a.selectedMediaId) ? a.selectedMediaId : null,
+			selectedMediaId: ae(l).some((e) => e.id === a.selectedMediaId) ? a.selectedMediaId : null,
 			engine: f(s),
 			error: o.length > 0 ? o[0] : null
 		});
@@ -6476,7 +6548,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 		} catch (e) {
 			return d({
 				busy: !1,
-				error: O(e)
+				error: D(e)
 			}), null;
 		}
 	}
@@ -6492,7 +6564,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			return d({
 				busy: !1,
 				timeline: n,
-				projectPath: T(n).projectPath,
+				projectPath: re(n).projectPath,
 				view: "editor",
 				selectedClipId: null,
 				frame: 0,
@@ -6501,7 +6573,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 		} catch (e) {
 			return d({
 				busy: !1,
-				error: O(e)
+				error: D(e)
 			}), null;
 		}
 	}
@@ -6517,7 +6589,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			return d({
 				busy: !1,
 				timeline: t,
-				projectPath: T(t).projectPath,
+				projectPath: re(t).projectPath,
 				view: "editor",
 				selectedClipId: null,
 				frame: 0,
@@ -6526,7 +6598,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 		} catch (e) {
 			return d({
 				busy: !1,
-				error: O(e)
+				error: D(e)
 			}), null;
 		}
 	}
@@ -6542,14 +6614,14 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			return d({
 				busy: !1,
 				timeline: r,
-				projectPath: T(r).projectPath,
+				projectPath: re(r).projectPath,
 				revision: a.revision + 1,
-				frame: Math.min(a.frame, Math.max(0, E(r) - 1))
+				frame: Math.min(a.frame, Math.max(0, T(r) - 1))
 			}), n;
 		} catch (e) {
 			return d({
 				busy: !1,
-				error: O(e)
+				error: D(e)
 			}), null;
 		}
 	}
@@ -6564,15 +6636,15 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			return d({
 				busy: !1,
 				timeline: r,
-				projectPath: T(r).projectPath,
+				projectPath: re(r).projectPath,
 				revision: a.revision + 1,
-				selectedClipId: ne(r, a.selectedClipId) === null ? null : a.selectedClipId,
-				frame: Math.min(a.frame, Math.max(0, E(r) - 1))
+				selectedClipId: w(r, a.selectedClipId) === null ? null : a.selectedClipId,
+				frame: Math.min(a.frame, Math.max(0, T(r) - 1))
 			}), n;
 		} catch (e) {
 			return d({
 				busy: !1,
-				error: O(e)
+				error: D(e)
 			}), null;
 		}
 	}
@@ -6594,12 +6666,12 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 	}
 	function C(e) {
 		let t = e === "export" || e === "settings" || e === "captions" ? e : "editor";
-		d({ panel: t }), t === "settings" && ae();
+		d({ panel: t }), t === "settings" && oe();
 	}
-	function w() {
+	function ne() {
 		d({ panel: "editor" });
 	}
-	async function ae() {
+	async function oe() {
 		d({
 			settingsLoading: !0,
 			settings: a.settings
@@ -6611,7 +6683,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			e.invoke("search_index_status")
 		]), o = [];
 		function s(e) {
-			return e.status === "fulfilled" ? e.value : (o.push(O(e.reason)), null);
+			return e.status === "fulfilled" ? e.value : (o.push(D(e.reason)), null);
 		}
 		d({
 			settingsLoading: !1,
@@ -6624,7 +6696,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}
 		});
 	}
-	async function oe(t, { modelsConfirmed: n = !1 } = {}) {
+	async function se(t, { modelsConfirmed: n = !1 } = {}) {
 		let r = Array.isArray(t) ? t.filter((e) => typeof e == "string") : [];
 		if (r.length === 0) return null;
 		try {
@@ -6638,10 +6710,10 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 				error: null
 			} }), t;
 		} catch (e) {
-			return d({ error: O(e) }), null;
+			return d({ error: D(e) }), null;
 		}
 	}
-	async function se(t = {}) {
+	async function ce(t = {}) {
 		if (a.exportState.active) return d({ error: "an export is already running" }), null;
 		let n = typeof t.outPath == "string" ? t.outPath : "";
 		if (n.length === 0) return d({ error: "export requires an output path" }), null;
@@ -6701,35 +6773,73 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 				phase: "error",
 				done: a.exportState.done,
 				total: a.exportState.total,
-				error: O(e),
+				error: D(e),
 				summary: null
 			} }), null;
 		} finally {
 			c !== null && (i(c), c = null);
 		}
 	}
-	async function k() {
+	async function O() {
 		try {
 			return await e.invoke("cancel_export");
 		} catch (e) {
-			return d({ error: O(e) }), null;
+			return d({ error: D(e) }), null;
 		}
 	}
-	async function ce(e, t) {
+	async function le(e, t) {
+		return t !== null && (typeof t != "object" || Array.isArray(t)) ? (d({ error: "color grade must be an object or null" }), null) : b({
+			type: "setColorGrade",
+			clipIds: [e],
+			grade: t
+		});
+	}
+	async function k(e, t) {
+		return t !== null && (typeof t != "object" || Array.isArray(t)) ? (d({ error: "LUT reference must be an object or null" }), null) : b({
+			type: "setLut",
+			clipIds: [e],
+			lut: t
+		});
+	}
+	async function ue(e, t) {
+		return t !== null && (typeof t != "object" || Array.isArray(t)) ? (d({ error: "chroma key must be an object or null" }), null) : b({
+			type: "setChromaKey",
+			clipIds: [e],
+			chromaKey: t
+		});
+	}
+	async function de(e, t) {
+		return typeof t != "object" || !t || Array.isArray(t) ? (d({ error: "text style must be an object" }), null) : b({
+			type: "setClipProperties",
+			clipIds: [e],
+			properties: { textStyle: t }
+		});
+	}
+	async function fe() {
+		let e = w(a.timeline, a.selectedClipId);
+		return e === null ? (d({ error: "select a clip before deleting it" }), null) : b({
+			type: "removeClips",
+			clipIds: [e.clip.id]
+		});
+	}
+	function pe(e) {
+		d({ error: typeof e == "string" ? e : String(e) });
+	}
+	async function me(e, t) {
 		return Array.isArray(t) ? b({
 			type: "setEffects",
 			clipIds: [e],
 			effects: t
 		}) : (d({ error: "effects must be an array" }), null);
 	}
-	async function A(e, t) {
+	async function he(e, t) {
 		return Array.isArray(t) ? b({
 			type: "setMasks",
 			clipIds: [e],
 			masks: t
 		}) : (d({ error: "masks must be an array" }), null);
 	}
-	async function le(e, t, n, r) {
+	async function ge(e, t, n, r) {
 		let i = Math.trunc(Number(n));
 		return !Number.isInteger(i) || i < 0 ? (d({ error: "keyframe frame must be a non-negative integer" }), null) : typeof r != "number" || !Number.isFinite(r) ? (d({ error: "keyframe value must be a finite number" }), null) : b({
 			type: "upsertKeyframe",
@@ -6742,7 +6852,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}
 		});
 	}
-	async function ue(e, t, n) {
+	async function A(e, t, n) {
 		let r = Math.trunc(Number(n));
 		return !Number.isInteger(r) || r < 0 ? null : b({
 			type: "removeKeyframe",
@@ -6751,7 +6861,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			frame: r
 		});
 	}
-	async function de({ content: e, startFrame: t = 0, durationFrames: n = 60 } = {}) {
+	async function _e({ content: e, startFrame: t = 0, durationFrames: n = 60 } = {}) {
 		let r = typeof e == "string" ? e.trim() : "";
 		return r.length === 0 ? (d({ error: "caption text must not be empty" }), null) : b({
 			type: "addCaptions",
@@ -6759,7 +6869,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 				startFrame: Math.max(0, Math.trunc(Number(t)) || 0),
 				durationFrames: Math.max(1, Math.trunc(Number(n)) || 60),
 				content: r,
-				captionGroupId: `captions-native-${D("group").split("-").pop()}`,
+				captionGroupId: `captions-native-${E("group").split("-").pop()}`,
 				textStyle: {
 					fontName: "Helvetica-Bold",
 					fontSize: 48,
@@ -6814,8 +6924,8 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}]
 		});
 	}
-	async function fe(e, { content: t, startFrame: n, durationFrames: r } = {}) {
-		let i = ne(a.timeline, e);
+	async function ve(e, { content: t, startFrame: n, durationFrames: r } = {}) {
+		let i = w(a.timeline, e);
 		if (i === null) return d({ error: "caption clip not found" }), null;
 		let o = {};
 		return typeof t == "string" && (o.textContent = t), Number.isFinite(Number(r)) && (o.durationFrames = Math.max(1, Math.trunc(Number(r)))), Object.keys(o).length > 0 && await b({
@@ -6831,7 +6941,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}]
 		}) : null;
 	}
-	async function pe(t) {
+	async function ye(t) {
 		let n = Array.isArray(t) ? t.filter((e) => typeof e == "string" && e.trim().length > 0) : [];
 		if (n.length === 0) return d({ error: "enter one or more media paths to import" }), null;
 		d({
@@ -6842,16 +6952,16 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			let t = await e.importMedia(n);
 			return d({
 				busy: !1,
-				media: ie(t)
+				media: ae(t)
 			}), t;
 		} catch (e) {
 			return d({
 				busy: !1,
-				error: O(e)
+				error: D(e)
 			}), null;
 		}
 	}
-	async function me() {
+	async function j() {
 		if (!(a.playback.active && a.playback.paused === !1)) try {
 			let t = a.timeline ?? {};
 			await e.invoke("playback_start", {
@@ -6869,7 +6979,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 				try {
 					let t = await e.playbackStatus();
 					if (t === null || t.active !== !0) {
-						he(), d({ playback: {
+						be(), d({ playback: {
 							active: !1,
 							paused: !0,
 							frame: a.frame
@@ -6884,13 +6994,13 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 							paused: t.paused === !0,
 							frame: n
 						}
-					}), (t.terminal === !0 || t.active === !1) && (he(), d({ playback: {
+					}), (t.terminal === !0 || t.active === !1) && (be(), d({ playback: {
 						active: !1,
 						paused: !0,
 						frame: n
 					} }));
 				} catch {
-					he(), d({ playback: {
+					be(), d({ playback: {
 						active: !1,
 						paused: !0,
 						frame: a.frame
@@ -6898,18 +7008,18 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 				}
 			}, 200);
 		} catch (e) {
-			d({ error: O(e) });
+			d({ error: D(e) });
 		}
 	}
-	function he() {
+	function be() {
 		l !== null && (i(l), l = null);
 	}
-	async function j() {
-		he();
+	async function xe() {
+		be();
 		try {
 			await e.invoke("playback_pause", { frame: a.frame });
 		} catch (e) {
-			d({ error: O(e) });
+			d({ error: D(e) });
 		}
 		d({ playback: {
 			active: a.playback.active,
@@ -6917,7 +7027,7 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			frame: a.frame
 		} });
 	}
-	async function ge(t) {
+	async function Se(t) {
 		let n = Number.isFinite(Number(t)) ? Math.trunc(Number(t)) : 0;
 		if (d({
 			frame: Math.max(0, n),
@@ -6928,11 +7038,11 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 		}), a.playback.active) try {
 			await e.invoke("playback_seek", { frame: Math.max(0, n) });
 		} catch (e) {
-			d({ error: O(e) });
+			d({ error: D(e) });
 		}
 	}
-	async function _e() {
-		he();
+	async function Ce() {
+		be();
 		try {
 			await e.invoke("playback_stop");
 		} catch {}
@@ -6942,18 +7052,18 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			frame: a.frame
 		} });
 	}
-	function ve(e) {
-		d({ selectedClipId: typeof e == "string" && ne(a.timeline, e) ? e : null });
+	function we(e) {
+		d({ selectedClipId: typeof e == "string" && w(a.timeline, e) ? e : null });
 	}
-	function ye(e) {
-		d({ selectedMediaId: typeof e == "string" && ie(a.media).some((t) => t.id === e) ? e : null });
+	function Te(e) {
+		d({ selectedMediaId: typeof e == "string" && ae(a.media).some((t) => t.id === e) ? e : null });
 	}
-	function be(e) {
+	function Ee(e) {
 		let t = Number.isFinite(Number(e)) ? Math.trunc(Number(e)) : 0;
-		d({ frame: Math.min(Math.max(0, t), Math.max(0, E(a.timeline) - 1)) });
+		d({ frame: Math.min(Math.max(0, t), Math.max(0, T(a.timeline) - 1)) });
 	}
-	async function xe(e) {
-		let t = ne(a.timeline, a.selectedClipId);
+	async function De(e) {
+		let t = w(a.timeline, a.selectedClipId);
 		if (t === null) return d({ error: "select a clip before moving it" }), null;
 		let n = Math.trunc(Number(e) || 0);
 		if (n === 0) return null;
@@ -6967,41 +7077,41 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 			}]
 		});
 	}
-	function Se(e) {
+	function Oe(e) {
 		d({ view: e === "editor" ? "editor" : "home" });
 	}
-	function Ce(e) {
+	function ke(e) {
 		d(p(e));
 	}
-	function we(e) {
+	function Ae(e) {
 		d({ theme: e === "light" || e === "dark" ? e : "system" });
 	}
-	function Te() {
+	function je() {
 		d({ error: null });
 	}
-	function Ee(t = a.pollIntervalMs) {
-		De();
+	function Me(t = a.pollIntervalMs) {
+		Ne();
 		let n = Number(t);
 		!Number.isFinite(n) || n < 250 || (d({ pollIntervalMs: n }), s = r(async () => {
 			if (!a.busy) try {
-				let [t, n] = await Promise.all([e.timeline(), e.media()]), r = T(t);
+				let [t, n] = await Promise.all([e.timeline(), e.media()]), r = re(t);
 				d({
 					timeline: t,
-					media: ie(n),
+					media: ae(n),
 					projectPath: r.projectPath,
-					selectedClipId: ne(t, a.selectedClipId) === null ? null : a.selectedClipId,
-					frame: Math.min(a.frame, Math.max(0, E(t) - 1))
+					selectedClipId: w(t, a.selectedClipId) === null ? null : a.selectedClipId,
+					frame: Math.min(a.frame, Math.max(0, T(t) - 1))
 				});
 			} catch (e) {
-				d({ error: O(e) });
+				d({ error: D(e) });
 			}
 		}, n));
 	}
-	function De() {
+	function Ne() {
 		s !== null && (i(s), s = null);
 	}
-	function Oe() {
-		De(), c !== null && (i(c), c = null), he(), o.clear();
+	function Pe() {
+		Ne(), c !== null && (i(c), c = null), be(), o.clear();
 	}
 	return {
 		getSnapshot: () => a,
@@ -7017,50 +7127,56 @@ function se({ client: e, locale: t = "en", pollIntervalMs: n = 0, setIntervalImp
 		apply: b,
 		undo: () => x("undo"),
 		redo: () => x("redo"),
-		selectClip: ve,
-		selectMedia: ye,
+		selectClip: we,
+		selectMedia: Te,
 		setClipProperties: ee,
 		setTrackProperties: te,
-		setClipEffects: ce,
-		setClipMasks: A,
-		upsertKeyframe: le,
-		removeKeyframe: ue,
-		addCaption: de,
-		updateCaption: fe,
-		importMedia: pe,
-		play: me,
-		pause: j,
-		seekTo: ge,
-		stopPlayback: _e,
+		setClipEffects: me,
+		setClipMasks: he,
+		setColorGrade: le,
+		setLut: k,
+		setChromaKey: ue,
+		setTextStyle: de,
+		removeSelected: fe,
+		setError: pe,
+		upsertKeyframe: ge,
+		removeKeyframe: A,
+		addCaption: _e,
+		updateCaption: ve,
+		importMedia: ye,
+		play: j,
+		pause: xe,
+		seekTo: Se,
+		stopPlayback: Ce,
 		openPanel: C,
-		closePanel: w,
-		refreshSettings: ae,
-		clearStorage: oe,
-		exportVideo: se,
-		cancelExport: k,
-		setFrame: be,
-		moveSelected: xe,
-		setView: Se,
-		setLocale: Ce,
-		setTheme: we,
-		clearError: Te,
-		startPolling: Ee,
-		stopPolling: De,
-		dispose: Oe,
-		clipCount: () => re(a.timeline),
-		totalFrames: () => E(a.timeline)
+		closePanel: ne,
+		refreshSettings: oe,
+		clearStorage: se,
+		exportVideo: ce,
+		cancelExport: O,
+		setFrame: Ee,
+		moveSelected: De,
+		setView: Oe,
+		setLocale: ke,
+		setTheme: Ae,
+		clearError: je,
+		startPolling: Me,
+		stopPolling: Ne,
+		dispose: Pe,
+		clipCount: () => ie(a.timeline),
+		totalFrames: () => T(a.timeline)
 	};
 }
 //#endregion
 //#region web/src/native/components.js
-var k = (e, t, n, ...r) => e.createElement(t, n, ...r);
-function ce(e, t) {
+var O = (e, t, n, ...r) => e.createElement(t, n, ...r);
+function le(e, t) {
 	if (typeof e.useSyncExternalStore == "function") return e.useSyncExternalStore(t.subscribe, t.getSnapshot, t.getSnapshot);
 	let [n, r] = e.useState(t.getSnapshot());
 	return e.useEffect(() => t.subscribe(r), [t]), n;
 }
-function A(e, t, n, r = {}) {
-	return k(e, "button", {
+function k(e, t, n, r = {}) {
+	return O(e, "button", {
 		type: "button",
 		className: `otn-btn${r.primary ? " otn-btn--primary" : ""}`,
 		onClick: n,
@@ -7069,25 +7185,25 @@ function A(e, t, n, r = {}) {
 		"aria-label": r.ariaLabel
 	}, t);
 }
-function le(e, t, n) {
+function ue(e, t, n) {
 	let r = t.engine?.connected === !0;
-	return k(e, "span", {
+	return O(e, "span", {
 		className: `otn-badge${r ? "" : " otn-badge--down"}`,
 		title: t.engine?.error ?? void 0
-	}, k(e, "span", {
+	}, O(e, "span", {
 		className: `otn-dot${r ? "" : " otn-dot--down"}`,
 		"aria-hidden": "true"
 	}), n(r ? "engineReady" : "engineDown"));
 }
-function ue(e, t, n, r) {
-	return typeof t.error != "string" || t.error.length === 0 ? null : k(e, "div", {
+function de(e, t, n, r) {
+	return typeof t.error != "string" || t.error.length === 0 ? null : O(e, "div", {
 		className: "otn-error",
 		role: "alert"
-	}, k(e, "span", { className: "otn-error__message" }, t.error), A(e, r("retry"), () => {
+	}, O(e, "span", { className: "otn-error__message" }, t.error), k(e, r("retry"), () => {
 		n.refresh();
-	}), A(e, r("dismiss"), () => n.clearError(), { ariaLabel: r("dismiss") }));
+	}), k(e, r("dismiss"), () => n.clearError(), { ariaLabel: r("dismiss") }));
 }
-function de({ React: e, state: t, store: n, client: r, t: i }) {
+function fe({ React: e, state: t, store: n, client: r, t: i }) {
 	let [a, o] = e.useState(t.projectPath ?? "");
 	e.useEffect(() => {
 		t.projectPath !== null && t.projectPath !== a && o(t.projectPath);
@@ -7097,63 +7213,71 @@ function de({ React: e, state: t, store: n, client: r, t: i }) {
 		e.preventDefault(), a.trim().length !== 0 && n.openProject(a.trim());
 	}
 	let l = t.info;
-	return k(e, "section", {
+	return O(e, "section", {
 		className: "otn-home",
 		"aria-label": i("home")
-	}, k(e, "div", null, k(e, "h1", { className: "otn-home__title" }, i("appName")), k(e, "p", { className: "otn-home__subtitle" }, i("prototypeNotice"))), k(e, "div", { className: "otn-card" }, k(e, "div", { className: "otn-panel-title" }, i("engine")), k(e, "div", { className: "otn-kv" }, k(e, "span", null, i("status")), k(e, "span", { className: "otn-kv__value" }, le(e, t, i)), k(e, "span", null, i("locale")), k(e, "span", { className: "otn-kv__value" }, t.locale), k(e, "span", null, "Node"), k(e, "span", { className: "otn-kv__value" }, l?.node ?? "—"), k(e, "span", null, "N-API"), k(e, "span", { className: "otn-kv__value" }, l?.napi ?? "—")), l?.loadError ? k(e, "p", { className: "otn-hint" }, l.loadError) : null), k(e, "form", {
+	}, O(e, "div", null, O(e, "h1", { className: "otn-home__title" }, i("appName")), O(e, "p", { className: "otn-home__subtitle" }, i("prototypeNotice"))), O(e, "div", { className: "otn-card" }, O(e, "div", { className: "otn-panel-title" }, i("engine")), O(e, "div", { className: "otn-kv" }, O(e, "span", null, i("status")), O(e, "span", { className: "otn-kv__value" }, ue(e, t, i)), O(e, "span", null, i("locale")), O(e, "span", { className: "otn-kv__value" }, t.locale), O(e, "span", null, "Node"), O(e, "span", { className: "otn-kv__value" }, l?.node ?? "—"), O(e, "span", null, "N-API"), O(e, "span", { className: "otn-kv__value" }, l?.napi ?? "—")), l?.loadError ? O(e, "p", { className: "otn-hint" }, l.loadError) : null), O(e, "form", {
 		className: "otn-card",
 		onSubmit: c
-	}, k(e, "div", { className: "otn-panel-title" }, i("openProject")), k(e, "div", { className: "otn-home__row" }, k(e, "input", {
+	}, O(e, "div", { className: "otn-panel-title" }, i("openProject")), O(e, "div", { className: "otn-home__row" }, O(e, "input", {
 		className: "otn-input",
 		value: a,
 		placeholder: i("projectPath"),
 		onChange: (e) => o(e.target.value),
 		"aria-label": i("projectPath"),
 		spellCheck: !1
-	}), A(e, i("openProject"), () => {
+	}), k(e, i("openProject"), () => {
 		n.openProject(a.trim());
-	}, { disabled: s || a.trim().length === 0 }), A(e, i("newProject"), () => {
+	}, { disabled: s || a.trim().length === 0 }), k(e, i("newProject"), () => {
 		n.newProject();
 	}, {
 		primary: !0,
 		disabled: s
-	})), k(e, "p", { className: "otn-hint" }, i("recentUnavailable"))), k(e, "div", { className: "otn-card" }, k(e, "div", { className: "otn-panel-title" }, i("media")), k(e, "p", { className: "otn-hint" }, i("mediaCount", { count: t.media.length })), k(e, "div", { className: "otn-home__row" }, A(e, i("editor"), () => n.setView("editor"), { disabled: t.timeline === null }), A(e, i("refresh"), () => {
+	})), O(e, "p", { className: "otn-hint" }, i("recentUnavailable"))), O(e, "div", { className: "otn-card" }, O(e, "div", { className: "otn-panel-title" }, i("media")), O(e, "p", { className: "otn-hint" }, i("mediaCount", { count: t.media.length })), O(e, "div", { className: "otn-home__row" }, k(e, i("editor"), () => n.setView("editor"), { disabled: t.timeline === null }), k(e, i("refresh"), () => {
 		n.refresh();
-	}, { disabled: s }))), k(e, "p", { className: "otn-hint" }, i("allChanges")));
+	}, { disabled: s }))), O(e, "p", { className: "otn-hint" }, i("allChanges")));
 }
-function fe(e, { state: t, client: n, t: r, store: i }) {
+function pe(e, { state: t, client: n, t: r, store: i }) {
 	let a = t.media;
-	return k(e, "aside", {
+	return O(e, "aside", {
 		className: "otn-media",
 		"aria-label": r("media")
-	}, k(e, "div", { className: "otn-panel-title" }, k(e, "span", null, r("media")), k(e, "span", null, String(a.length))), k(e, "form", {
+	}, O(e, "div", { className: "otn-panel-title" }, O(e, "span", null, r("media")), O(e, "span", null, String(a.length))), O(e, "form", {
 		className: "otn-media-import",
 		onSubmit: (e) => {
 			e.preventDefault();
 			let t = e.currentTarget.elements.nativeImportPath, n = typeof t?.value == "string" ? t.value.trim() : "";
 			n.length > 0 && (i.importMedia([n]), t.value = "");
 		}
-	}, k(e, "input", {
+	}, O(e, "input", {
 		className: "otn-input",
 		name: "nativeImportPath",
 		placeholder: r("importMediaPath"),
 		"aria-label": r("importMediaPath"),
 		spellCheck: !1,
 		"data-otn-import-path": ""
-	}), k(e, "button", {
+	}), O(e, "button", {
 		type: "submit",
 		className: "otn-btn",
 		disabled: t.busy,
 		"data-otn-action": "import-media"
-	}, t.busy ? r("importing") : r("importMedia"))), a.length === 0 ? k(e, "p", { className: "otn-empty" }, r("noMedia")) : k(e, "ul", { className: "otn-media-list" }, a.map((r) => {
+	}, t.busy ? r("importing") : r("importMedia")), O(e, "input", {
+		type: "file",
+		className: "otn-file-picker",
+		"data-otn-file-picker": "",
+		onChange: (e) => {
+			let t = e.target.files?.[0] ?? null, n = typeof t?.path == "string" ? t.path : "";
+			n.length > 0 ? i.importMedia([n]) : i.setError(r("filePathUnavailable")), e.target.value = "";
+		}
+	})), a.length === 0 ? O(e, "p", { className: "otn-empty" }, r("noMedia")) : O(e, "ul", { className: "otn-media-list" }, a.map((r) => {
 		let a = typeof r.name == "string" && r.name.length > 0 ? r.name : r.id, o = typeof r.type == "string" ? r.type : "media", s = typeof r.path == "string" ? n.assetUrl(r.path) : null;
-		return k(e, "li", { key: String(r.id) }, k(e, "button", {
+		return O(e, "li", { key: String(r.id) }, O(e, "button", {
 			type: "button",
 			className: `otn-media-card${t.selectedMediaId === r.id ? " otn-media-card--selected" : ""}`,
 			title: a,
 			"aria-pressed": t.selectedMediaId === r.id,
 			onClick: () => i.selectMedia(r.id)
-		}, s ? k(e, "img", {
+		}, s ? O(e, "img", {
 			className: "otn-media-thumb",
 			src: s,
 			alt: "",
@@ -7161,32 +7285,32 @@ function fe(e, { state: t, client: n, t: r, store: i }) {
 			onError: (e) => {
 				e.currentTarget.style.visibility = "hidden";
 			}
-		}) : k(e, "span", {
+		}) : O(e, "span", {
 			className: "otn-media-thumb otn-media-thumb--empty",
 			"aria-hidden": "true"
-		}, o.slice(0, 4).toUpperCase()), k(e, "span", { className: "otn-media-copy" }, k(e, "span", { className: "otn-media-name" }, a), k(e, "span", { className: "otn-media-meta" }, `${o}${Number.isFinite(Number(r.duration)) ? ` · ${Number(r.duration).toFixed(1)}s` : ""}`))));
+		}, o.slice(0, 4).toUpperCase()), O(e, "span", { className: "otn-media-copy" }, O(e, "span", { className: "otn-media-name" }, a), O(e, "span", { className: "otn-media-meta" }, `${o}${Number.isFinite(Number(r.duration)) ? ` · ${Number(r.duration).toFixed(1)}s` : ""}`))));
 	})));
 }
-function pe(e, { state: t, client: n, store: r, t: i }) {
-	let a = T(t.timeline), o = Math.max(0, E(t.timeline) - 1), s = Math.min(t.frame, o), c = t.timeline !== null;
-	return k(e, "section", {
+function me(e, { state: t, client: n, store: r, t: i }) {
+	let a = re(t.timeline), o = Math.max(0, T(t.timeline) - 1), s = Math.min(t.frame, o), c = t.timeline !== null;
+	return O(e, "section", {
 		className: "otn-preview",
 		"aria-label": i("preview")
-	}, k(e, "div", { className: "otn-preview-stage" }, c ? k(e, "img", {
+	}, O(e, "div", { className: "otn-preview-stage" }, c ? O(e, "img", {
 		className: "otn-preview-image",
 		src: n.previewUrl(s, { revision: t.revision }),
 		alt: `${i("preview")} ${i("frame")} ${s}`,
 		draggable: !1
-	}) : k(e, "div", { className: "otn-preview-placeholder" }, i("noProject"))), k(e, "div", {
+	}) : O(e, "div", { className: "otn-preview-placeholder" }, i("noProject"))), O(e, "div", {
 		className: "otn-transport",
 		"data-otn-playback": t.playback.active ? t.playback.paused ? "paused" : "playing" : "idle"
-	}, A(e, "◀", () => {
+	}, k(e, "◀", () => {
 		r.seekTo(Math.max(0, s - 1));
 	}, {
 		ariaLabel: i("previousFrame"),
 		disabled: s <= 0,
 		title: i("previousFrame")
-	}), k(e, "button", {
+	}), O(e, "button", {
 		type: "button",
 		className: "otn-btn otn-btn--icon",
 		"data-otn-action": "playback-toggle",
@@ -7195,7 +7319,7 @@ function pe(e, { state: t, client: n, store: r, t: i }) {
 		onClick: () => {
 			t.playback.active && !t.playback.paused ? r.pause() : r.play();
 		}
-	}, t.playback.active && !t.playback.paused ? "❚❚" : "▶"), k(e, "button", {
+	}, t.playback.active && !t.playback.paused ? "❚❚" : "▶"), O(e, "button", {
 		type: "button",
 		className: "otn-btn otn-btn--icon",
 		"data-otn-action": "playback-stop",
@@ -7204,7 +7328,7 @@ function pe(e, { state: t, client: n, store: r, t: i }) {
 		onClick: () => {
 			r.stopPlayback();
 		}
-	}, "■"), k(e, "input", {
+	}, "■"), O(e, "input", {
 		className: "otn-scrub",
 		type: "range",
 		min: 0,
@@ -7214,60 +7338,60 @@ function pe(e, { state: t, client: n, store: r, t: i }) {
 			r.seekTo(Number(e.target.value));
 		},
 		"aria-label": i("frame")
-	}), A(e, "▶", () => {
+	}), k(e, "▶", () => {
 		r.seekTo(Math.min(o, s + 1));
 	}, {
 		ariaLabel: i("nextFrame"),
 		disabled: s >= o,
 		title: i("nextFrame")
-	}), k(e, "span", { className: "otn-frame-readout" }, `${i("frame")} ${s} / ${o} · ${a.fps}fps`)));
+	}), O(e, "span", { className: "otn-frame-readout" }, `${i("frame")} ${s} / ${o} · ${a.fps}fps`)));
 }
-function me(e, t) {
+function he(e, t) {
 	if (typeof t?.textContent == "string" && t.textContent.length > 0) return t.textContent.slice(0, 40);
 	let n = e?.name;
 	return typeof n == "string" && n.length > 0 ? n : typeof t?.id == "string" ? t.id.slice(0, 18) : "clip";
 }
-function he(e, { state: t, store: n, t: r }) {
-	let i = w(t.timeline), a = E(t.timeline), o = ne(t.timeline, t.selectedClipId), s = new Map(ie(t.media).map((e) => [e.id, e])), c = [
+function ge(e, { state: t, store: n, t: r }) {
+	let i = ne(t.timeline), a = T(t.timeline), o = w(t.timeline, t.selectedClipId), s = new Map(ae(t.media).map((e) => [e.id, e])), c = [
 		0,
 		.25,
 		.5,
 		.75,
 		1
 	].map((e) => Math.round(e * a));
-	return k(e, "section", {
+	return O(e, "section", {
 		className: "otn-timeline",
 		"aria-label": r("timeline")
-	}, k(e, "div", { className: "otn-timeline-toolbar" }, k(e, "strong", null, r("timeline")), k(e, "span", { className: "otn-hint" }, `${i.length} ${r("tracks")} · ${re(t.timeline)} ${r("clips")}`), k(e, "span", { className: "otn-spacer" }), A(e, r("undo"), () => {
+	}, O(e, "div", { className: "otn-timeline-toolbar" }, O(e, "strong", null, r("timeline")), O(e, "span", { className: "otn-hint" }, `${i.length} ${r("tracks")} · ${ie(t.timeline)} ${r("clips")}`), O(e, "span", { className: "otn-spacer" }), k(e, r("undo"), () => {
 		n.undo();
-	}, { disabled: t.busy }), A(e, r("redo"), () => {
+	}, { disabled: t.busy }), k(e, r("redo"), () => {
 		n.redo();
-	}, { disabled: t.busy }), A(e, r("moveLeft"), () => {
+	}, { disabled: t.busy }), k(e, r("moveLeft"), () => {
 		n.moveSelected(-1);
 	}, {
 		disabled: t.busy || o === null,
 		title: `${r("moveLeft")} (${r("clip")})`
-	}), A(e, r("moveRight"), () => {
+	}), k(e, r("moveRight"), () => {
 		n.moveSelected(1);
 	}, {
 		disabled: t.busy || o === null,
 		title: `${r("moveRight")} (${r("clip")})`
-	}), k(e, "span", { className: "otn-frame-readout" }, o === null ? r("selectClip") : `${r("selected")}: ${me(s.get(o.clip.mediaRef), o.clip)}`)), k(e, "div", { className: "otn-timeline-body" }, k(e, "div", {
+	}), O(e, "span", { className: "otn-frame-readout" }, o === null ? r("selectClip") : `${r("selected")}: ${he(s.get(o.clip.mediaRef), o.clip)}`)), O(e, "div", { className: "otn-timeline-body" }, O(e, "div", {
 		className: "otn-ruler",
 		"aria-hidden": "true"
-	}, c.map((t, n) => k(e, "span", {
+	}, c.map((t, n) => O(e, "span", {
 		key: `tick-${n}`,
 		className: "otn-ruler-tick",
 		style: { left: `${t / a * 100}%` }
-	}, k(e, "span", { className: "otn-ruler-label" }, String(t))))), i.length === 0 ? k(e, "p", { className: "otn-empty" }, r("noTracks")) : i.map((r, i) => k(e, "div", {
+	}, O(e, "span", { className: "otn-ruler-label" }, String(t))))), i.length === 0 ? O(e, "p", { className: "otn-empty" }, r("noTracks")) : i.map((r, i) => O(e, "div", {
 		key: r.id ?? `track-${i}`,
 		className: "otn-track-row"
-	}, k(e, "div", {
+	}, O(e, "div", {
 		className: "otn-track-head",
 		title: r.id ?? ""
-	}, k(e, "span", null, `${String(r.type ?? "video").toLowerCase() === "audio" ? "A" : "V"}${i + 1}`)), k(e, "div", { className: "otn-track-lane" }, (Array.isArray(r.clips) ? r.clips : []).map((r, o) => {
-		let c = Number(r.startFrame) || 0, l = Math.max(1, Number(r.durationFrames) || 1), u = Math.max(0, c / a * 100), d = Math.max(.4, l / a * 100), f = r.id === t.selectedClipId, p = me(s.get(r.mediaRef), r);
-		return k(e, "button", {
+	}, O(e, "span", null, `${String(r.type ?? "video").toLowerCase() === "audio" ? "A" : "V"}${i + 1}`)), O(e, "div", { className: "otn-track-lane" }, (Array.isArray(r.clips) ? r.clips : []).map((r, o) => {
+		let c = Number(r.startFrame) || 0, l = Math.max(1, Number(r.durationFrames) || 1), u = Math.max(0, c / a * 100), d = Math.max(.4, l / a * 100), f = r.id === t.selectedClipId, p = he(s.get(r.mediaRef), r);
+		return O(e, "button", {
 			key: r.id ?? `clip-${i}-${o}`,
 			type: "button",
 			className: `otn-clip${f ? " otn-clip--selected" : ""}`,
@@ -7280,8 +7404,8 @@ function he(e, { state: t, store: n, t: r }) {
 		}, p);
 	}))))));
 }
-function j(e, { label: t, value: n, onChange: r, onBlur: i, min: a, max: o, step: s, dataKey: c }) {
-	return k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, t), k(e, "input", {
+function A(e, { label: t, value: n, onChange: r, onBlur: i, min: a, max: o, step: s, dataKey: c }) {
+	return O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, t), O(e, "input", {
 		className: "otn-field__input",
 		type: "number",
 		value: n,
@@ -7296,8 +7420,8 @@ function j(e, { label: t, value: n, onChange: r, onBlur: i, min: a, max: o, step
 		}
 	}));
 }
-function ge({ React: e, state: t, store: n, t: r }) {
-	let i = ne(t.timeline, t.selectedClipId), a = i?.clip ?? null, o = a?.id ?? "", s = a?.transform ?? {}, [c, l] = e.useState({
+function _e({ React: e, state: t, store: n, t: r }) {
+	let i = w(t.timeline, t.selectedClipId), a = i?.clip ?? null, o = a?.id ?? "", s = a?.transform ?? {}, [c, l] = e.useState({
 		opacity: "",
 		volume: "",
 		centerX: "",
@@ -7306,7 +7430,7 @@ function ge({ React: e, state: t, store: n, t: r }) {
 		height: "",
 		rotation: "",
 		textContent: ""
-	});
+	}), [u, d] = e.useState("properties");
 	if (e.useEffect(() => {
 		if (a === null) {
 			l({
@@ -7341,159 +7465,537 @@ function ge({ React: e, state: t, store: n, t: r }) {
 		a?.transform?.height,
 		a?.transform?.rotation,
 		a?.textContent
-	]), i === null || a === null) return k(e, "aside", {
+	]), i === null || a === null) return O(e, "aside", {
 		className: "otn-inspector",
 		"aria-label": r("inspector")
-	}, k(e, "div", { className: "otn-panel-title" }, r("inspector")), k(e, "p", { className: "otn-empty" }, r("inspectorEmpty")));
-	let u = i.track, d = i.trackIndex, f = t.busy;
-	function p(e, t) {
+	}, O(e, "div", { className: "otn-panel-title" }, r("inspector")), O(e, "p", { className: "otn-empty" }, r("inspectorEmpty")));
+	let f = i.track, p = i.trackIndex, m = t.busy;
+	function h(e, t) {
 		l((n) => ({
 			...n,
 			[e]: t
 		}));
 	}
-	function m(e, t) {
+	function g(e, t) {
 		let r = Number(c[e]);
 		if (!Number.isFinite(r)) return;
 		let i = e === "opacity" || e === "volume" ? Math.min(1, Math.max(0, r)) : r;
 		i !== Number(a[t]) && n.setClipProperties(a.id, { [t]: i });
 	}
-	function h(e) {
+	function _(e) {
 		let t = Number(c[e]);
 		Number.isFinite(t) && t !== Number(s[e] ?? 0) && n.setClipProperties(a.id, { transform: {
 			...s,
 			[e]: t
 		} });
 	}
-	function g() {
+	function v() {
 		typeof a.textContent == "string" && c.textContent !== a.textContent && n.setClipProperties(a.id, { textContent: c.textContent });
 	}
-	return k(e, "aside", {
+	return O(e, "aside", {
 		className: "otn-inspector",
 		"aria-label": r("inspector")
-	}, k(e, "div", { className: "otn-panel-title" }, r("inspector"), k(e, "span", null, me(null, a))), k(e, "div", { className: "otn-inspector__body" }, k(e, "div", { className: "otn-inspector__group" }, k(e, "span", { className: "otn-inspector__title" }, r("properties")), j(e, {
+	}, O(e, "div", { className: "otn-panel-title" }, r("inspector"), O(e, "span", null, he(null, a))), O(e, "div", { className: "otn-inspector__body" }, O(e, "div", {
+		className: "otn-inspector__tabs",
+		role: "tablist"
+	}, [
+		"properties",
+		"effects",
+		"keyframes",
+		"masks",
+		"advanced"
+	].map((t) => O(e, "button", {
+		key: t,
+		type: "button",
+		role: "tab",
+		className: `otn-inspector__tab${u === t ? " otn-inspector__tab--active" : ""}`,
+		"aria-selected": u === t,
+		"data-otn-inspector-tab": t,
+		onClick: () => d(t)
+	}, r(t === "properties" ? "properties" : t)))), O(e, "div", { hidden: u !== "properties" }, O(e, "div", { className: "otn-inspector__group" }, O(e, "span", { className: "otn-inspector__title" }, r("properties")), A(e, {
 		label: r("opacity"),
 		value: c.opacity,
 		dataKey: "opacity",
 		min: 0,
 		max: 1,
 		step: .01,
-		onChange: (e) => p("opacity", e),
-		onBlur: () => m("opacity", "opacity")
-	}), j(e, {
+		onChange: (e) => h("opacity", e),
+		onBlur: () => g("opacity", "opacity")
+	}), A(e, {
 		label: r("volume"),
 		value: c.volume,
 		dataKey: "volume",
 		min: 0,
 		max: 1,
 		step: .01,
-		onChange: (e) => p("volume", e),
-		onBlur: () => m("volume", "volume")
-	})), k(e, "div", { className: "otn-inspector__group" }, k(e, "span", { className: "otn-inspector__title" }, `${r("positionX")} / ${r("positionY")}`), k(e, "div", { className: "otn-field__row" }, j(e, {
+		onChange: (e) => h("volume", e),
+		onBlur: () => g("volume", "volume")
+	})), O(e, "div", { className: "otn-inspector__group" }, O(e, "span", { className: "otn-inspector__title" }, `${r("positionX")} / ${r("positionY")}`), O(e, "div", { className: "otn-field__row" }, A(e, {
 		label: r("positionX"),
 		value: c.centerX,
 		dataKey: "centerX",
 		min: 0,
 		max: 1,
 		step: .01,
-		onChange: (e) => p("centerX", e),
-		onBlur: () => h("centerX")
-	}), j(e, {
+		onChange: (e) => h("centerX", e),
+		onBlur: () => _("centerX")
+	}), A(e, {
 		label: r("positionY"),
 		value: c.centerY,
 		dataKey: "centerY",
 		min: 0,
 		max: 1,
 		step: .01,
-		onChange: (e) => p("centerY", e),
-		onBlur: () => h("centerY")
-	})), k(e, "div", { className: "otn-field__row" }, j(e, {
+		onChange: (e) => h("centerY", e),
+		onBlur: () => _("centerY")
+	})), O(e, "div", { className: "otn-field__row" }, A(e, {
 		label: r("scaleWidth"),
 		value: c.width,
 		dataKey: "width",
 		min: .01,
 		max: 8,
 		step: .01,
-		onChange: (e) => p("width", e),
-		onBlur: () => h("width")
-	}), j(e, {
+		onChange: (e) => h("width", e),
+		onBlur: () => _("width")
+	}), A(e, {
 		label: r("scaleHeight"),
 		value: c.height,
 		dataKey: "height",
 		min: .01,
 		max: 8,
 		step: .01,
-		onChange: (e) => p("height", e),
-		onBlur: () => h("height")
-	})), j(e, {
+		onChange: (e) => h("height", e),
+		onBlur: () => _("height")
+	})), A(e, {
 		label: r("rotation"),
 		value: c.rotation,
 		dataKey: "rotation",
 		min: -360,
 		max: 360,
 		step: 1,
-		onChange: (e) => p("rotation", e),
-		onBlur: () => h("rotation")
-	})), typeof a.textContent == "string" ? k(e, "div", { className: "otn-inspector__group" }, k(e, "span", { className: "otn-inspector__title" }, r("textContent")), k(e, "textarea", {
+		onChange: (e) => h("rotation", e),
+		onBlur: () => _("rotation")
+	})), typeof a.textContent == "string" ? O(e, "div", { className: "otn-inspector__group" }, O(e, "span", { className: "otn-inspector__title" }, r("textContent")), O(e, "textarea", {
 		className: "otn-field__input",
 		rows: 3,
 		value: c.textContent,
 		"data-otn-inspector-field": "textContent",
-		onChange: (e) => p("textContent", e.target.value),
-		onBlur: g
-	})) : null, k(e, "div", { className: "otn-inspector__group" }, k(e, "span", { className: "otn-inspector__title" }, r("trackProperties")), k(e, "span", { className: "otn-inspector__track-name" }, `${r("track")} ${d + 1} · ${String(u.type ?? "video")}`), k(e, "div", { className: "otn-field__row" }, k(e, "button", {
+		onChange: (e) => h("textContent", e.target.value),
+		onBlur: v
+	})) : null, O(e, "div", { className: "otn-inspector__group" }, O(e, "span", { className: "otn-inspector__title" }, r("trackProperties")), O(e, "span", { className: "otn-inspector__track-name" }, `${r("track")} ${p + 1} · ${String(f.type ?? "video")}`), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
-		disabled: f,
-		"aria-pressed": u.muted === !0,
+		disabled: m,
+		"aria-pressed": f.muted === !0,
 		"data-otn-track-prop": "muted",
 		onClick: () => {
-			n.setTrackProperties(d, { muted: u.muted !== !0 });
+			n.setTrackProperties(p, { muted: f.muted !== !0 });
 		}
-	}, r("mute")), k(e, "button", {
+	}, r("mute")), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
-		disabled: f,
-		"aria-pressed": u.hidden === !0,
+		disabled: m,
+		"aria-pressed": f.hidden === !0,
 		"data-otn-track-prop": "hidden",
 		onClick: () => {
-			n.setTrackProperties(d, { hidden: u.hidden !== !0 });
+			n.setTrackProperties(p, { hidden: f.hidden !== !0 });
 		}
-	}, r("hide")), k(e, "button", {
+	}, r("hide")), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
-		disabled: f,
-		"aria-pressed": u.syncLocked === !0,
+		disabled: m,
+		"aria-pressed": f.syncLocked === !0,
 		"data-otn-track-prop": "syncLocked",
 		onClick: () => {
-			n.setTrackProperties(d, { syncLocked: u.syncLocked !== !0 });
+			n.setTrackProperties(p, { syncLocked: f.syncLocked !== !0 });
 		}
-	}, r("syncLock")))), k(e, ye, {
+	}, r("syncLock"))))), O(e, "div", { hidden: u !== "effects" }, O(e, Ce, {
 		React: e,
 		clip: a,
 		store: n,
 		t: r,
-		disabled: f
-	}), k(e, be, {
+		disabled: m
+	})), O(e, "div", { hidden: u !== "keyframes" }, O(e, we, {
 		React: e,
 		state: t,
 		clip: a,
 		store: n,
 		t: r,
-		disabled: f
-	}), k(e, Se, {
+		disabled: m
+	})), O(e, "div", { hidden: u !== "masks" }, O(e, Ee, {
 		React: e,
 		clip: a,
 		store: n,
 		t: r,
-		disabled: f
-	})));
+		disabled: m
+	})), O(e, "div", { hidden: u !== "advanced" }, O(e, be, {
+		React: e,
+		clip: a,
+		store: n,
+		t: r,
+		disabled: m
+	}))));
 }
-var _e = [
+var ve = {
+	exposure: 0,
+	temperature: 0,
+	tint: 0,
+	liftGammaGain: {
+		lift: {
+			r: 0,
+			g: 0,
+			b: 0
+		},
+		gamma: {
+			r: 1,
+			g: 1,
+			b: 1
+		},
+		gain: {
+			r: 1,
+			g: 1,
+			b: 1
+		}
+	},
+	contrast: 0,
+	saturation: 1,
+	hslSecondary: null
+}, ye = {
+	fontName: "Helvetica-Bold",
+	fontSize: 48,
+	fontScale: 1,
+	color: {
+		r: 1,
+		g: 1,
+		b: 1,
+		a: 1
+	},
+	alignment: "center",
+	shadow: {
+		enabled: !1,
+		color: {
+			r: 0,
+			g: 0,
+			b: 0,
+			a: 0
+		},
+		offsetX: 0,
+		offsetY: 0,
+		blur: 0
+	},
+	background: {
+		enabled: !1,
+		color: {
+			r: 0,
+			g: 0,
+			b: 0,
+			a: 0
+		}
+	},
+	border: {
+		enabled: !1,
+		color: {
+			r: 0,
+			g: 0,
+			b: 0,
+			a: 1
+		}
+	}
+};
+function j(e, t, n) {
+	let r = e.elements[t]?.value, i = Number(r);
+	return Number.isFinite(i) ? i : n;
+}
+function be({ React: e, clip: t, store: n, t: r, disabled: i }) {
+	let a = t.colorGrade ?? ve, o = t.textStyle ?? ye, s = t.chromaKey ?? null, c = t.lut ?? null;
+	return O(e, "div", {
+		className: "otn-inspector__group",
+		"data-otn-advanced": ""
+	}, O(e, "span", { className: "otn-inspector__title" }, r("advanced")), O(e, "form", {
+		className: "otn-advanced-card",
+		"data-otn-advanced-section": "colorGrade",
+		onSubmit: (e) => {
+			e.preventDefault();
+			let r = e.currentTarget;
+			n.setColorGrade(t.id, {
+				...ve,
+				...a,
+				exposure: j(r, "exposure", a.exposure ?? 0),
+				temperature: j(r, "temperature", a.temperature ?? 0),
+				tint: j(r, "tint", a.tint ?? 0),
+				contrast: j(r, "contrast", a.contrast ?? 0),
+				saturation: j(r, "saturation", a.saturation ?? 1),
+				liftGammaGain: a.liftGammaGain ?? ve.liftGammaGain,
+				hslSecondary: a.hslSecondary ?? null
+			});
+		}
+	}, O(e, "span", { className: "otn-inspector__title" }, r("colorGrade")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("exposure")), O(e, "input", {
+		className: "otn-field__input",
+		name: "exposure",
+		type: "number",
+		step: .1,
+		min: -5,
+		max: 5,
+		defaultValue: String(a.exposure ?? 0),
+		"data-otn-grade-field": "exposure"
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("contrast")), O(e, "input", {
+		className: "otn-field__input",
+		name: "contrast",
+		type: "number",
+		step: .05,
+		min: -1,
+		max: 2,
+		defaultValue: String(a.contrast ?? 0),
+		"data-otn-grade-field": "contrast"
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("temperature")), O(e, "input", {
+		className: "otn-field__input",
+		name: "temperature",
+		type: "number",
+		step: .05,
+		min: -1,
+		max: 1,
+		defaultValue: String(a.temperature ?? 0),
+		"data-otn-grade-field": "temperature"
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("tint")), O(e, "input", {
+		className: "otn-field__input",
+		name: "tint",
+		type: "number",
+		step: .05,
+		min: -1,
+		max: 1,
+		defaultValue: String(a.tint ?? 0),
+		"data-otn-grade-field": "tint"
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("saturation")), O(e, "input", {
+		className: "otn-field__input",
+		name: "saturation",
+		type: "number",
+		step: .05,
+		min: 0,
+		max: 3,
+		defaultValue: String(a.saturation ?? 1),
+		"data-otn-grade-field": "saturation"
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
+		type: "submit",
+		className: "otn-btn",
+		disabled: i,
+		"data-otn-action": "grade-apply"
+	}, r("apply")), t.colorGrade !== null && t.colorGrade !== void 0 ? O(e, "button", {
+		type: "button",
+		className: "otn-toggle",
+		disabled: i,
+		"data-otn-action": "grade-remove",
+		onClick: () => {
+			n.setColorGrade(t.id, null);
+		}
+	}, r("remove")) : null)), O(e, "form", {
+		className: "otn-advanced-card",
+		"data-otn-advanced-section": "textStyle",
+		onSubmit: (e) => {
+			e.preventDefault();
+			let r = e.currentTarget;
+			n.setTextStyle(t.id, {
+				...ye,
+				...o,
+				fontName: String(r.elements.fontName?.value ?? o.fontName ?? "Helvetica-Bold"),
+				fontSize: j(r, "fontSize", o.fontSize ?? 48),
+				fontScale: j(r, "fontScale", o.fontScale ?? 1),
+				alignment: String(r.elements.alignment?.value ?? o.alignment ?? "center"),
+				color: {
+					r: j(r, "colorR", o.color?.r ?? 1),
+					g: j(r, "colorG", o.color?.g ?? 1),
+					b: j(r, "colorB", o.color?.b ?? 1),
+					a: j(r, "colorA", o.color?.a ?? 1)
+				}
+			});
+		}
+	}, O(e, "span", { className: "otn-inspector__title" }, r("textStyle")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("fontName")), O(e, "input", {
+		className: "otn-field__input",
+		name: "fontName",
+		defaultValue: o.fontName ?? "Helvetica-Bold",
+		"data-otn-text-field": "fontName"
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("fontSize")), O(e, "input", {
+		className: "otn-field__input",
+		name: "fontSize",
+		type: "number",
+		min: 4,
+		max: 400,
+		defaultValue: String(o.fontSize ?? 48),
+		"data-otn-text-field": "fontSize"
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("alignment")), O(e, "select", {
+		className: "otn-field__input",
+		name: "alignment",
+		defaultValue: o.alignment ?? "center",
+		"data-otn-text-field": "alignment"
+	}, [
+		"left",
+		"center",
+		"right"
+	].map((t) => O(e, "option", {
+		key: t,
+		value: t
+	}, t)))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("textColor")), O(e, "div", { className: "otn-field__row" }, O(e, "input", {
+		className: "otn-field__input",
+		name: "colorR",
+		type: "number",
+		min: 0,
+		max: 1,
+		step: .05,
+		defaultValue: String(o.color?.r ?? 1),
+		"aria-label": "R"
+	}), O(e, "input", {
+		className: "otn-field__input",
+		name: "colorG",
+		type: "number",
+		min: 0,
+		max: 1,
+		step: .05,
+		defaultValue: String(o.color?.g ?? 1),
+		"aria-label": "G"
+	}), O(e, "input", {
+		className: "otn-field__input",
+		name: "colorB",
+		type: "number",
+		min: 0,
+		max: 1,
+		step: .05,
+		defaultValue: String(o.color?.b ?? 1),
+		"aria-label": "B"
+	})))), O(e, "button", {
+		type: "submit",
+		className: "otn-btn",
+		disabled: i,
+		"data-otn-action": "text-style-apply"
+	}, r("apply"))), O(e, "form", {
+		className: "otn-advanced-card",
+		"data-otn-advanced-section": "chromaKey",
+		onSubmit: (e) => {
+			e.preventDefault();
+			let r = e.currentTarget;
+			n.setChromaKey(t.id, {
+				keyColor: {
+					r: j(r, "keyR", s?.keyColor?.r ?? 0),
+					g: j(r, "keyG", s?.keyColor?.g ?? 1),
+					b: j(r, "keyB", s?.keyColor?.b ?? 0)
+				},
+				similarity: j(r, "similarity", s?.similarity ?? .15),
+				smoothness: j(r, "smoothness", s?.smoothness ?? .35),
+				spill: j(r, "spill", s?.spill ?? .5)
+			});
+		}
+	}, O(e, "span", { className: "otn-inspector__title" }, r("chromaKey")), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("keyColor")), O(e, "div", { className: "otn-field__row" }, O(e, "input", {
+		className: "otn-field__input",
+		name: "keyR",
+		type: "number",
+		min: 0,
+		max: 1,
+		step: .05,
+		defaultValue: String(s?.keyColor?.r ?? 0),
+		"aria-label": "R"
+	}), O(e, "input", {
+		className: "otn-field__input",
+		name: "keyG",
+		type: "number",
+		min: 0,
+		max: 1,
+		step: .05,
+		defaultValue: String(s?.keyColor?.g ?? 1),
+		"aria-label": "G"
+	}), O(e, "input", {
+		className: "otn-field__input",
+		name: "keyB",
+		type: "number",
+		min: 0,
+		max: 1,
+		step: .05,
+		defaultValue: String(s?.keyColor?.b ?? 0),
+		"aria-label": "B"
+	}))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("similarity")), O(e, "input", {
+		className: "otn-field__input",
+		name: "similarity",
+		type: "number",
+		min: 0,
+		max: 1,
+		step: .01,
+		defaultValue: String(s?.similarity ?? .15),
+		"data-otn-chroma-field": "similarity"
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("spill")), O(e, "input", {
+		className: "otn-field__input",
+		name: "spill",
+		type: "number",
+		min: 0,
+		max: 1,
+		step: .01,
+		defaultValue: String(s?.spill ?? .5),
+		"data-otn-chroma-field": "spill"
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
+		type: "submit",
+		className: "otn-btn",
+		disabled: i,
+		"data-otn-action": "chroma-apply"
+	}, r("apply")), s === null ? null : O(e, "button", {
+		type: "button",
+		className: "otn-toggle",
+		disabled: i,
+		"data-otn-action": "chroma-remove",
+		onClick: () => {
+			n.setChromaKey(t.id, null);
+		}
+	}, r("remove")))), O(e, "form", {
+		className: "otn-advanced-card",
+		"data-otn-advanced-section": "lut",
+		onSubmit: (e) => {
+			e.preventDefault();
+			let i = e.currentTarget, a = String(i.elements.lutId?.value ?? "").trim(), o = String(i.elements.lutName?.value ?? "").trim();
+			if (a.length !== 64 || o.length === 0) {
+				n.setError(r("lutInvalid"));
+				return;
+			}
+			n.setLut(t.id, {
+				id: a,
+				name: o,
+				intensity: j(i, "lutIntensity", 1)
+			});
+		}
+	}, O(e, "span", { className: "otn-inspector__title" }, r("lut")), O(e, "p", { className: "otn-sheet__hint" }, c === null ? r("noLut") : `${c.name ?? ""} · ${c.intensity ?? ""}`), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("lutId")), O(e, "input", {
+		className: "otn-field__input",
+		name: "lutId",
+		defaultValue: c?.id ?? "",
+		"data-otn-lut-field": "id",
+		spellCheck: !1
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("lutIntensity")), O(e, "input", {
+		className: "otn-field__input",
+		name: "lutIntensity",
+		type: "number",
+		min: 0,
+		max: 1,
+		step: .05,
+		defaultValue: String(c?.intensity ?? 1),
+		"data-otn-lut-field": "intensity"
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("lutName")), O(e, "input", {
+		className: "otn-field__input",
+		name: "lutName",
+		defaultValue: c?.name ?? "",
+		"data-otn-lut-field": "name"
+	})), O(e, "button", {
+		type: "submit",
+		className: "otn-btn",
+		disabled: i,
+		"data-otn-action": "lut-apply"
+	}, r("apply")), c === null ? null : O(e, "button", {
+		type: "button",
+		className: "otn-toggle",
+		disabled: i,
+		"data-otn-action": "lut-remove",
+		onClick: () => {
+			n.setLut(t.id, null);
+		}
+	}, r("remove")))));
+}
+var xe = [
 	"grayscale",
 	"sepia",
 	"invert"
-], ve = [
+], Se = [
 	{
 		property: "opacity",
 		field: "opacityTrack",
@@ -7528,7 +8030,7 @@ var _e = [
 		scalar: !1
 	}
 ];
-function ye({ React: e, clip: t, store: n, t: r, disabled: i }) {
+function Ce({ React: e, clip: t, store: n, t: r, disabled: i }) {
 	let a = Array.isArray(t.effects) ? t.effects : [];
 	function o(e) {
 		n.setClipEffects(t.id, e);
@@ -7546,33 +8048,33 @@ function ye({ React: e, clip: t, store: n, t: r, disabled: i }) {
 			...t
 		} : n));
 	}
-	return k(e, "div", {
+	return O(e, "div", {
 		className: "otn-inspector__group",
 		"data-otn-effects": ""
-	}, k(e, "span", { className: "otn-inspector__title" }, r("effects")), k(e, "div", { className: "otn-field__row" }, _e.map((t) => k(e, "button", {
+	}, O(e, "span", { className: "otn-inspector__title" }, r("effects")), O(e, "div", { className: "otn-field__row" }, xe.map((t) => O(e, "button", {
 		key: t,
 		type: "button",
 		className: "otn-toggle",
 		"data-otn-effect-add": t,
 		disabled: i || a.length >= 8,
 		onClick: () => s(t)
-	}, t))), a.length === 0 ? k(e, "p", { className: "otn-sheet__hint" }, r("noEffects")) : null, a.map((t, n) => k(e, "div", {
+	}, t))), a.length === 0 ? O(e, "p", { className: "otn-sheet__hint" }, r("noEffects")) : null, a.map((t, n) => O(e, "div", {
 		key: `${t.name}-${n}`,
 		className: "otn-effect-card",
 		"data-otn-effect-index": n,
 		"data-otn-effect-name": t.name
-	}, k(e, "div", { className: "otn-field__row" }, k(e, "strong", { className: "otn-inspector__track-name" }, t.name), k(e, "button", {
+	}, O(e, "div", { className: "otn-field__row" }, O(e, "strong", { className: "otn-inspector__track-name" }, t.name), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
 		"aria-pressed": t.enabled !== !1,
 		"data-otn-effect-enabled": n,
 		onClick: () => c(n, { enabled: t.enabled === !1 })
-	}, r("effectEnabled")), k(e, "button", {
+	}, r("effectEnabled")), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
 		"data-otn-effect-remove": n,
 		onClick: () => o(a.filter((e, t) => t !== n))
-	}, r("removeEffect"))), k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("amount")), k(e, "input", {
+	}, r("removeEffect"))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("amount")), O(e, "input", {
 		className: "otn-field__input",
 		type: "number",
 		min: 0,
@@ -7587,19 +8089,19 @@ function ye({ React: e, clip: t, store: n, t: r, disabled: i }) {
 				amount: r
 			} });
 		}
-	})))), k(e, "p", { className: "otn-sheet__hint" }, r("effectsHint")));
+	})))), O(e, "p", { className: "otn-sheet__hint" }, r("effectsHint")));
 }
-function be({ React: e, state: t, clip: n, store: r, t: i, disabled: a }) {
-	return k(e, "div", {
+function we({ React: e, state: t, clip: n, store: r, t: i, disabled: a }) {
+	return O(e, "div", {
 		className: "otn-inspector__group",
 		"data-otn-keyframes": ""
-	}, k(e, "span", { className: "otn-inspector__title" }, i("keyframes")), ve.map(({ property: o, field: s, scalar: c, value: l }) => {
-		let u = n[s], d = Array.isArray(u?.keyframes) ? u.keyframes : [], f = c && u !== void 0 ? oe(u, t.frame) : null;
-		return k(e, "div", {
+	}, O(e, "span", { className: "otn-inspector__title" }, i("keyframes")), Se.map(({ property: o, field: s, scalar: c, value: l }) => {
+		let u = n[s], d = Array.isArray(u?.keyframes) ? u.keyframes : [], f = c && u !== void 0 ? se(u, t.frame) : null;
+		return O(e, "div", {
 			key: o,
 			className: "otn-keyframe-track",
 			"data-otn-keyframe-track": o
-		}, k(e, "div", { className: "otn-field__row" }, k(e, "strong", { className: "otn-inspector__track-name" }, o), k(e, "span", { className: "otn-sheet__hint" }, `${d.length}`), c ? k(e, "button", {
+		}, O(e, "div", { className: "otn-field__row" }, O(e, "strong", { className: "otn-inspector__track-name" }, o), O(e, "span", { className: "otn-sheet__hint" }, `${d.length}`), c ? O(e, "button", {
 			type: "button",
 			className: "otn-toggle",
 			"data-otn-keyframe-add": o,
@@ -7607,11 +8109,11 @@ function be({ React: e, state: t, clip: n, store: r, t: i, disabled: a }) {
 			onClick: () => {
 				r.upsertKeyframe(n.id, o, t.frame, Number(l(n)));
 			}
-		}, i("addKeyframe")) : null), d.length === 0 ? null : k(e, "div", { className: "otn-keyframe-list" }, d.map((t) => k(e, "div", {
+		}, i("addKeyframe")) : null), d.length === 0 ? null : O(e, "div", { className: "otn-keyframe-list" }, d.map((t) => O(e, "div", {
 			key: `${o}-${t.frame}`,
 			className: "otn-keyframe-row",
 			"data-otn-keyframe-frame": t.frame
-		}, k(e, "span", null, `${i("frame")} ${t.frame}`), k(e, "span", { className: "otn-sheet__hint" }, typeof t.value == "object" ? JSON.stringify(t.value) : String(t.value)), k(e, "button", {
+		}, O(e, "span", null, `${i("frame")} ${t.frame}`), O(e, "span", { className: "otn-sheet__hint" }, typeof t.value == "object" ? JSON.stringify(t.value) : String(t.value)), O(e, "button", {
 			type: "button",
 			className: "otn-toggle",
 			disabled: a,
@@ -7619,14 +8121,14 @@ function be({ React: e, state: t, clip: n, store: r, t: i, disabled: a }) {
 			onClick: () => {
 				r.removeKeyframe(n.id, o, t.frame);
 			}
-		}, i("removeKeyframe"))))), f === null ? null : k(e, "span", { className: "otn-sheet__hint" }, `${i("evaluate")} ${t.frame}: ${f.toFixed(3)}`));
-	}), k(e, "p", { className: "otn-sheet__hint" }, i("keyframesHint")));
+		}, i("removeKeyframe"))))), f === null ? null : O(e, "span", { className: "otn-sheet__hint" }, `${i("evaluate")} ${t.frame}: ${f.toFixed(3)}`));
+	}), O(e, "p", { className: "otn-sheet__hint" }, i("keyframesHint")));
 }
-function xe(e) {
+function Te(e) {
 	let t = e?.shape?.kind;
 	return t === "circle" ? "ellipse" : t === "poly" ? "rectangle / poly" : t === "linear" ? "linear" : "mask";
 }
-function Se({ React: e, clip: t, store: n, t: r, disabled: i }) {
+function Ee({ React: e, clip: t, store: n, t: r, disabled: i }) {
 	let a = Array.isArray(t.masks) ? t.masks : [];
 	function o(e) {
 		n.setClipMasks(t.id, e);
@@ -7679,52 +8181,156 @@ function Se({ React: e, clip: t, store: n, t: r, disabled: i }) {
 		};
 		o([...a, t]);
 	}
-	return k(e, "div", {
+	return O(e, "div", {
 		className: "otn-inspector__group",
 		"data-otn-masks": ""
-	}, k(e, "span", { className: "otn-inspector__title" }, r("masks")), k(e, "div", { className: "otn-field__row" }, k(e, "button", {
+	}, O(e, "span", { className: "otn-inspector__title" }, r("masks")), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
 		disabled: i,
 		"data-otn-mask-add": "rect",
 		onClick: () => c("rect")
-	}, r("addRectMask")), k(e, "button", {
+	}, r("addRectMask")), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
 		disabled: i,
 		"data-otn-mask-add": "ellipse",
 		onClick: () => c("ellipse")
-	}, r("addEllipseMask"))), a.length === 0 ? k(e, "p", { className: "otn-sheet__hint" }, r("noMasks")) : a.map((t, n) => k(e, "div", {
-		key: n,
+	}, r("addEllipseMask"))), a.length === 0 ? O(e, "p", { className: "otn-sheet__hint" }, r("noMasks")) : a.map((t, i) => O(e, "div", {
+		key: i,
 		className: "otn-effect-card",
-		"data-otn-mask-index": n
-	}, k(e, "div", { className: "otn-field__row" }, k(e, "strong", { className: "otn-inspector__track-name" }, xe(t)), k(e, "button", {
+		"data-otn-mask-index": i
+	}, O(e, "div", { className: "otn-field__row" }, O(e, "strong", { className: "otn-inspector__track-name" }, Te(t)), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
 		"aria-pressed": t.invert === !0,
-		"data-otn-mask-invert": n,
-		onClick: () => s(n, { invert: t.invert !== !0 })
-	}, r("invertMask")), k(e, "button", {
+		"data-otn-mask-invert": i,
+		onClick: () => s(i, { invert: t.invert !== !0 })
+	}, r("invertMask")), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
-		"data-otn-mask-remove": n,
-		onClick: () => o(a.filter((e, t) => t !== n))
-	}, r("removeMask"))), k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("feather")), k(e, "input", {
+		"data-otn-mask-remove": i,
+		onClick: () => o(a.filter((e, t) => t !== i))
+	}, r("removeMask"))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("feather")), O(e, "input", {
 		className: "otn-field__input",
 		type: "number",
 		min: 0,
 		max: 1,
 		step: .01,
 		defaultValue: String(t.feather ?? 0),
-		"data-otn-mask-feather": n,
+		"data-otn-mask-feather": i,
 		onBlur: (e) => {
 			let t = Math.max(0, Number(e.target.value));
-			Number.isFinite(t) && s(n, { feather: t });
+			Number.isFinite(t) && s(i, { feather: t });
 		}
-	})))), k(e, "p", { className: "otn-sheet__hint" }, r("masksHint")));
+	})), (() => {
+		let a = t.transform ?? {
+			offset: {
+				x: 0,
+				y: 0
+			},
+			scale: {
+				x: 1,
+				y: 1
+			},
+			rotationDegrees: 0
+		}, o = (e) => s(i, { transform: {
+			...a,
+			...e
+		} });
+		return O(e, "div", {
+			className: "otn-mask-advanced",
+			"data-otn-mask-transform": i
+		}, O(e, "span", { className: "otn-field__label" }, r("maskTransform")), O(e, "div", { className: "otn-field__row" }, O(e, "input", {
+			className: "otn-field__input",
+			type: "number",
+			step: .01,
+			defaultValue: String(a.offset?.x ?? 0),
+			"aria-label": "offsetX",
+			"data-otn-mask-offset-x": i,
+			onBlur: (e) => o({ offset: {
+				...a.offset ?? {
+					x: 0,
+					y: 0
+				},
+				x: Number(e.target.value)
+			} })
+		}), O(e, "input", {
+			className: "otn-field__input",
+			type: "number",
+			step: .01,
+			defaultValue: String(a.offset?.y ?? 0),
+			"aria-label": "offsetY",
+			"data-otn-mask-offset-y": i,
+			onBlur: (e) => o({ offset: {
+				...a.offset ?? {
+					x: 0,
+					y: 0
+				},
+				y: Number(e.target.value)
+			} })
+		}), O(e, "input", {
+			className: "otn-field__input",
+			type: "number",
+			step: .01,
+			defaultValue: String(a.scale?.x ?? 1),
+			"aria-label": "scaleX",
+			"data-otn-mask-scale-x": i,
+			onBlur: (e) => o({ scale: {
+				...a.scale ?? {
+					x: 1,
+					y: 1
+				},
+				x: Number(e.target.value)
+			} })
+		}), O(e, "input", {
+			className: "otn-field__input",
+			type: "number",
+			step: .01,
+			defaultValue: String(a.scale?.y ?? 1),
+			"aria-label": "scaleY",
+			"data-otn-mask-scale-y": i,
+			onBlur: (e) => o({ scale: {
+				...a.scale ?? {
+					x: 1,
+					y: 1
+				},
+				y: Number(e.target.value)
+			} })
+		}), O(e, "input", {
+			className: "otn-field__input",
+			type: "number",
+			step: 1,
+			defaultValue: String(a.rotationDegrees ?? 0),
+			"aria-label": "rotation",
+			"data-otn-mask-rotation": i,
+			onBlur: (e) => o({ rotationDegrees: Number(e.target.value) })
+		})), t.shape?.kind === "poly" ? O(e, "div", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("maskPoints")), O(e, "textarea", {
+			className: "otn-field__input",
+			rows: 2,
+			defaultValue: JSON.stringify(t.shape.points ?? []),
+			"data-otn-mask-points": i
+		}), O(e, "button", {
+			type: "button",
+			className: "otn-btn",
+			"data-otn-mask-points-apply": i,
+			onClick: (e) => {
+				try {
+					let n = JSON.parse(e.currentTarget.previousSibling.value);
+					if (!Array.isArray(n) || n.length < 3) throw Error("need 3+ points");
+					s(i, { shape: {
+						...t.shape,
+						points: n
+					} });
+				} catch {
+					n.setError(r("maskPointsInvalid"));
+				}
+			}
+		}, r("apply"))) : null);
+	})())), O(e, "p", { className: "otn-sheet__hint" }, r("masksHint")));
 }
-function Ce({ React: e, state: t, store: n, t: r }) {
-	let i = ae(t.timeline), [a, o] = e.useState(""), [s, c] = e.useState({
+function De({ React: e, state: t, store: n, t: r }) {
+	let i = oe(t.timeline), [a, o] = e.useState(""), [s, c] = e.useState({
 		content: "",
 		startFrame: 0,
 		durationFrames: 60
@@ -7756,22 +8362,22 @@ function Ce({ React: e, state: t, store: n, t: r }) {
 			durationFrames: Number(s.durationFrames)
 		});
 	}
-	return k(e, "div", {
+	return O(e, "div", {
 		className: "otn-overlay",
 		"data-otn-panel": "captions"
-	}, k(e, "section", {
+	}, O(e, "section", {
 		className: "otn-sheet",
 		"aria-label": r("captions")
-	}, k(e, "div", { className: "otn-sheet__header" }, k(e, "h2", { className: "otn-sheet__title" }, r("captions")), A(e, r("close"), () => n.closePanel(), { ariaLabel: r("close") })), k(e, "div", { className: "otn-sheet__body" }, k(e, "div", { className: "otn-sheet__section" }, k(e, "span", { className: "otn-sheet__section-title" }, r("captions")), i.length === 0 ? k(e, "p", { className: "otn-sheet__hint" }, r("captionsEmpty")) : i.map((t) => k(e, "button", {
+	}, O(e, "div", { className: "otn-sheet__header" }, O(e, "h2", { className: "otn-sheet__title" }, r("captions")), k(e, r("close"), () => n.closePanel(), { ariaLabel: r("close") })), O(e, "div", { className: "otn-sheet__body" }, O(e, "div", { className: "otn-sheet__section" }, O(e, "span", { className: "otn-sheet__section-title" }, r("captions")), i.length === 0 ? O(e, "p", { className: "otn-sheet__hint" }, r("captionsEmpty")) : i.map((t) => O(e, "button", {
 		key: t.clip.id,
 		type: "button",
 		className: `otn-toggle${t.clip.id === a ? " otn-toggle--active" : ""}`,
 		"data-otn-caption-id": t.clip.id,
 		onClick: () => u(t.clip)
-	}, `${t.clip.startFrame}+${t.clip.durationFrames} · ${t.clip.textContent ?? ""}`))), k(e, "form", {
+	}, `${t.clip.startFrame}+${t.clip.durationFrames} · ${t.clip.textContent ?? ""}`))), O(e, "form", {
 		className: "otn-sheet__section",
 		onSubmit: d
-	}, k(e, "span", { className: "otn-sheet__section-title" }, r("addCaption")), k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("captionText")), k(e, "textarea", {
+	}, O(e, "span", { className: "otn-sheet__section-title" }, r("addCaption")), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("captionText")), O(e, "textarea", {
 		className: "otn-field__input",
 		rows: 2,
 		value: s.content,
@@ -7780,7 +8386,7 @@ function Ce({ React: e, state: t, store: n, t: r }) {
 			...t,
 			content: e.target.value
 		}))
-	})), k(e, "div", { className: "otn-field__row" }, k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("rangeStart")), k(e, "input", {
+	})), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("rangeStart")), O(e, "input", {
 		className: "otn-field__input",
 		type: "number",
 		min: 0,
@@ -7790,7 +8396,7 @@ function Ce({ React: e, state: t, store: n, t: r }) {
 			...t,
 			startFrame: e.target.value
 		}))
-	})), k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("duration")), k(e, "input", {
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("duration")), O(e, "input", {
 		className: "otn-field__input",
 		type: "number",
 		min: 1,
@@ -7800,14 +8406,14 @@ function Ce({ React: e, state: t, store: n, t: r }) {
 			...t,
 			durationFrames: e.target.value
 		}))
-	}))), k(e, "div", { className: "otn-field__row" }, k(e, "button", {
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
 		type: "submit",
 		className: "otn-btn otn-btn--primary",
 		"data-otn-action": "caption-create"
-	}, r("addCaption")))), l === null ? null : k(e, "div", {
+	}, r("addCaption")))), l === null ? null : O(e, "div", {
 		className: "otn-sheet__section",
 		"data-otn-caption-edit": l.id
-	}, k(e, "span", { className: "otn-sheet__section-title" }, `${r("saveCaption")} · ${l.captionGroupId}`), k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("captionText")), k(e, "textarea", {
+	}, O(e, "span", { className: "otn-sheet__section-title" }, `${r("saveCaption")} · ${l.captionGroupId}`), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("captionText")), O(e, "textarea", {
 		className: "otn-field__input",
 		rows: 2,
 		value: s.content,
@@ -7816,7 +8422,7 @@ function Ce({ React: e, state: t, store: n, t: r }) {
 			...t,
 			content: e.target.value
 		}))
-	})), k(e, "div", { className: "otn-field__row" }, k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("rangeStart")), k(e, "input", {
+	})), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("rangeStart")), O(e, "input", {
 		className: "otn-field__input",
 		type: "number",
 		min: 0,
@@ -7826,7 +8432,7 @@ function Ce({ React: e, state: t, store: n, t: r }) {
 			...t,
 			startFrame: e.target.value
 		}))
-	})), k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("duration")), k(e, "input", {
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("duration")), O(e, "input", {
 		className: "otn-field__input",
 		type: "number",
 		min: 1,
@@ -7836,24 +8442,24 @@ function Ce({ React: e, state: t, store: n, t: r }) {
 			...t,
 			durationFrames: e.target.value
 		}))
-	}))), k(e, "div", { className: "otn-field__row" }, k(e, "button", {
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
 		type: "button",
 		className: "otn-btn otn-btn--primary",
 		"data-otn-action": "caption-save",
 		onClick: f
 	}, r("saveCaption")))))));
 }
-var we = [
+var Oe = [
 	"h264",
 	"h265",
 	"prores",
 	"prores4444"
-], Te = [
+], ke = [
 	"720p",
 	"1080p",
 	"4k"
 ];
-function Ee({ React: e, state: t, store: n, t: r }) {
+function Ae({ React: e, state: t, store: n, t: r }) {
 	let [i, a] = e.useState({
 		outPath: "/tmp/opentake-export.mp4",
 		codec: "h264",
@@ -7883,48 +8489,48 @@ function Ee({ React: e, state: t, store: n, t: r }) {
 		});
 	}
 	let l = o.total > 0 ? Math.min(100, Math.round(o.done / o.total * 100)) : 0;
-	return k(e, "div", {
+	return O(e, "div", {
 		className: "otn-overlay",
 		"data-otn-panel": "export"
-	}, k(e, "form", {
+	}, O(e, "form", {
 		className: "otn-sheet",
 		onSubmit: c,
 		"aria-label": r("exportTitle")
-	}, k(e, "div", { className: "otn-sheet__header" }, k(e, "h2", { className: "otn-sheet__title" }, r("exportTitle")), A(e, r("close"), () => n.closePanel(), { ariaLabel: r("close") })), k(e, "div", { className: "otn-sheet__body" }, k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("outputPath")), k(e, "input", {
+	}, O(e, "div", { className: "otn-sheet__header" }, O(e, "h2", { className: "otn-sheet__title" }, r("exportTitle")), k(e, r("close"), () => n.closePanel(), { ariaLabel: r("close") })), O(e, "div", { className: "otn-sheet__body" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("outputPath")), O(e, "input", {
 		className: "otn-field__input",
 		value: i.outPath,
 		"data-otn-export-field": "outPath",
 		onChange: (e) => s("outPath", e.target.value),
 		spellCheck: !1
-	})), k(e, "div", { className: "otn-field__row" }, k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("codec")), k(e, "select", {
+	})), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("codec")), O(e, "select", {
 		className: "otn-field__input",
 		value: i.codec,
 		"data-otn-export-field": "codec",
 		onChange: (e) => s("codec", e.target.value)
-	}, we.map((t) => k(e, "option", {
+	}, Oe.map((t) => O(e, "option", {
 		key: t,
 		value: t
-	}, t)))), k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("quality")), k(e, "select", {
+	}, t)))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("quality")), O(e, "select", {
 		className: "otn-field__input",
 		value: i.quality,
 		"data-otn-export-field": "quality",
 		onChange: (e) => s("quality", e.target.value)
-	}, Te.map((t) => k(e, "option", {
+	}, ke.map((t) => O(e, "option", {
 		key: t,
 		value: t
-	}, t)))), k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, r("bitDepth")), k(e, "select", {
+	}, t)))), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, r("bitDepth")), O(e, "select", {
 		className: "otn-field__input",
 		value: i.bitDepth,
 		"data-otn-export-field": "bitDepth",
 		onChange: (e) => s("bitDepth", Number(e.target.value))
-	}, k(e, "option", { value: 8 }, "8-bit"), k(e, "option", { value: 10 }, "10-bit")))), k(e, "div", { className: "otn-field__row" }, k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, `${r("range")} · ${r("rangeStart")}`), k(e, "input", {
+	}, O(e, "option", { value: 8 }, "8-bit"), O(e, "option", { value: 10 }, "10-bit")))), O(e, "div", { className: "otn-field__row" }, O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, `${r("range")} · ${r("rangeStart")}`), O(e, "input", {
 		className: "otn-field__input",
 		type: "number",
 		min: 0,
 		value: i.rangeStartFrame,
 		"data-otn-export-field": "rangeStartFrame",
 		onChange: (e) => s("rangeStartFrame", e.target.value)
-	})), k(e, "label", { className: "otn-field" }, k(e, "span", { className: "otn-field__label" }, `${r("range")} · ${r("rangeEnd")}`), k(e, "input", {
+	})), O(e, "label", { className: "otn-field" }, O(e, "span", { className: "otn-field__label" }, `${r("range")} · ${r("rangeEnd")}`), O(e, "input", {
 		className: "otn-field__input",
 		type: "number",
 		min: 0,
@@ -7932,185 +8538,254 @@ function Ee({ React: e, state: t, store: n, t: r }) {
 		placeholder: r("notAvailable"),
 		"data-otn-export-field": "rangeEndFrame",
 		onChange: (e) => s("rangeEndFrame", e.target.value)
-	}))), k(e, "div", { className: "otn-field__row" }, k(e, "button", {
+	}))), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
 		"aria-pressed": i.duckMusic,
 		"data-otn-export-field": "duckMusic",
 		onClick: () => s("duckMusic", !i.duckMusic)
-	}, r("duckMusic")), k(e, "button", {
+	}, r("duckMusic")), O(e, "button", {
 		type: "button",
 		className: "otn-toggle",
 		"aria-pressed": i.hdr10,
 		"data-otn-export-field": "hdr10",
 		onClick: () => s("hdr10", !i.hdr10)
-	}, r("hdr10"))), k(e, "p", { className: "otn-sheet__hint" }, r("exportHint")), k(e, "div", { className: "otn-field__row" }, k(e, "button", {
+	}, r("hdr10"))), O(e, "p", { className: "otn-sheet__hint" }, r("exportHint")), O(e, "div", { className: "otn-field__row" }, O(e, "button", {
 		type: "submit",
 		className: "otn-btn otn-btn--primary",
 		"data-otn-action": "export-submit",
 		disabled: o.active
-	}, o.active ? r("exporting") : r("exportNow")), o.active ? A(e, r("cancel"), () => {
+	}, o.active ? r("exporting") : r("exportNow")), o.active ? k(e, r("cancel"), () => {
 		n.cancelExport();
-	}) : null), k(e, "div", {
+	}) : null), O(e, "div", {
 		className: "otn-field",
 		"data-otn-export-status": o.phase,
 		role: "status"
-	}, k(e, "span", { className: "otn-field__label" }, o.phase === "error" ? r("exportFailed") : o.phase === "complete" ? r("exportComplete") : o.active ? r("exporting") : r("exportIdle")), o.active ? k(e, "div", { className: "otn-progress-bar" }, k(e, "div", {
+	}, O(e, "span", { className: "otn-field__label" }, o.phase === "error" ? r("exportFailed") : o.phase === "complete" ? r("exportComplete") : o.active ? r("exporting") : r("exportIdle")), o.active ? O(e, "div", { className: "otn-progress-bar" }, O(e, "div", {
 		className: "otn-progress-bar__fill",
 		style: { inlineSize: `${l}%` }
-	})) : null, o.active ? k(e, "span", { className: "otn-sheet__hint" }, `${o.done} / ${o.total || "?"}`) : null, o.error === null ? null : k(e, "span", { className: "otn-sheet__hint" }, o.error), o.summary === null ? null : k(e, "span", { className: "otn-sheet__hint" }, JSON.stringify(o.summary).slice(0, 500))))));
+	})) : null, o.active ? O(e, "span", { className: "otn-sheet__hint" }, `${o.done} / ${o.total || "?"}`) : null, o.error === null ? null : O(e, "span", { className: "otn-sheet__hint" }, o.error), o.summary === null ? null : O(e, "span", { className: "otn-sheet__hint" }, JSON.stringify(o.summary).slice(0, 500))))));
 }
-function De({ React: e, state: t, store: n, t: r }) {
+function je({ React: e, state: t, store: n, t: r }) {
 	e.useEffect(() => {
 		n.refreshSettings();
 	}, []);
 	let i = t.settings, a = i?.storage, o = Array.isArray(a?.categories) ? a.categories : [], s = i?.search ?? null, c = i?.transcribe ?? null;
-	return k(e, "div", {
+	return O(e, "div", {
 		className: "otn-overlay",
 		"data-otn-panel": "settings"
-	}, k(e, "section", {
+	}, O(e, "section", {
 		className: "otn-sheet",
 		"aria-label": r("settingsTitle")
-	}, k(e, "div", { className: "otn-sheet__header" }, k(e, "h2", { className: "otn-sheet__title" }, r("settingsTitle")), A(e, r("close"), () => n.closePanel(), { ariaLabel: r("close") })), k(e, "div", { className: "otn-sheet__body" }, k(e, "p", { className: "otn-sheet__hint" }, r("settingsHint")), k(e, "div", { className: "otn-sheet__section" }, k(e, "span", { className: "otn-sheet__section-title" }, r("storage")), k(e, "div", { className: "otn-storage-row" }, k(e, "span", { className: "otn-storage-row__name" }, r("total")), k(e, "span", null, `${Math.round(Number(a?.totalBytes ?? 0) / 1024)} KB`)), o.map((i) => k(e, "div", {
+	}, O(e, "div", { className: "otn-sheet__header" }, O(e, "h2", { className: "otn-sheet__title" }, r("settingsTitle")), k(e, r("close"), () => n.closePanel(), { ariaLabel: r("close") })), O(e, "div", { className: "otn-sheet__body" }, O(e, "p", { className: "otn-sheet__hint" }, r("settingsHint")), O(e, "div", { className: "otn-sheet__section" }, O(e, "span", { className: "otn-sheet__section-title" }, r("storage")), O(e, "div", { className: "otn-storage-row" }, O(e, "span", { className: "otn-storage-row__name" }, r("total")), O(e, "span", null, `${Math.round(Number(a?.totalBytes ?? 0) / 1024)} KB`)), o.map((i) => O(e, "div", {
 		key: i.id,
 		className: "otn-storage-row"
-	}, k(e, "span", { className: "otn-storage-row__name" }, String(i.id)), k(e, "span", null, `${Math.round(Number(i.bytes ?? 0) / 1024)} KB`), [
+	}, O(e, "span", { className: "otn-storage-row__name" }, String(i.id)), O(e, "span", null, `${Math.round(Number(i.bytes ?? 0) / 1024)} KB`), [
 		"thumbnails",
 		"other",
 		"searchIndex"
-	].includes(i.id) ? A(e, r("clearCache"), () => {
+	].includes(i.id) ? k(e, r("clearCache"), () => {
 		n.clearStorage([i.id]);
-	}, { disabled: t.settingsLoading }) : null))), k(e, "div", { className: "otn-sheet__section" }, k(e, "span", { className: "otn-sheet__section-title" }, r("modelStatus")), k(e, "div", { className: "otn-kv" }, k(e, "span", null, r("searchModel")), k(e, "span", { className: "otn-kv__value" }, s === null ? r("notAvailable") : `${s.visualAvailable === !0 ? "ready" : "missing"}${s.model ? ` · ${s.model}` : ""}`), k(e, "span", null, r("transcribeModel")), k(e, "span", { className: "otn-kv__value" }, c === null ? r("notAvailable") : `${c.installed === !0 ? "ready" : "not configured"}${c.model ? ` · ${c.model}` : ""}`), k(e, "span", null, r("searchIndex")), k(e, "span", { className: "otn-kv__value" }, i?.searchIndex === null || i?.searchIndex === void 0 ? r("notAvailable") : JSON.stringify(i.searchIndex).slice(0, 180)))), i?.error !== null && i?.error !== void 0 ? k(e, "p", { className: "otn-error__message" }, i.error) : null, k(e, "div", { className: "otn-field__row" }, A(e, r("refresh"), () => {
+	}, { disabled: t.settingsLoading }) : null))), O(e, "div", { className: "otn-sheet__section" }, O(e, "span", { className: "otn-sheet__section-title" }, r("modelStatus")), O(e, "div", { className: "otn-kv" }, O(e, "span", null, r("searchModel")), O(e, "span", { className: "otn-kv__value" }, s === null ? r("notAvailable") : `${s.visualAvailable === !0 ? "ready" : "missing"}${s.model ? ` · ${s.model}` : ""}`), O(e, "span", null, r("transcribeModel")), O(e, "span", { className: "otn-kv__value" }, c === null ? r("notAvailable") : `${c.installed === !0 ? "ready" : "not configured"}${c.model ? ` · ${c.model}` : ""}`), O(e, "span", null, r("searchIndex")), O(e, "span", { className: "otn-kv__value" }, i?.searchIndex === null || i?.searchIndex === void 0 ? r("notAvailable") : JSON.stringify(i.searchIndex).slice(0, 180)))), i?.error !== null && i?.error !== void 0 ? O(e, "p", { className: "otn-error__message" }, i.error) : null, O(e, "div", { className: "otn-field__row" }, k(e, r("refresh"), () => {
 		n.refreshSettings();
-	}, { disabled: t.settingsLoading }), t.settingsLoading ? k(e, "span", {
+	}, { disabled: t.settingsLoading }), t.settingsLoading ? O(e, "span", {
 		className: "otn-progress",
 		role: "status"
 	}, r("loading")) : null))));
 }
-function Oe(e, { state: t, store: n, client: r, t: i }) {
-	return k(e, "div", { className: "otn-body" }, fe(e, {
+function Me(e, { state: t, store: n, client: r, t: i }) {
+	return O(e, "div", { className: "otn-body" }, pe(e, {
 		state: t,
 		client: r,
 		t: i,
 		store: n
-	}), k(e, "div", { className: "otn-main" }, pe(e, {
+	}), O(e, "div", { className: "otn-main" }, me(e, {
 		state: t,
 		client: r,
 		store: n,
 		t: i
-	}), he(e, {
+	}), ge(e, {
 		state: t,
 		store: n,
 		t: i
-	})), k(e, ge, {
+	})), O(e, _e, {
 		React: e,
 		state: t,
 		store: n,
 		t: i
 	}));
 }
-function ke({ React: e, store: t, client: n, theme: r = "system" }) {
+function Ne({ React: e, store: t, client: n, theme: r = "system" }) {
 	if (e === null || typeof e.createElement != "function") throw TypeError("React is required");
 	if (typeof n != "object" || !n) throw TypeError("client is required");
-	let i = ce(e, t), a = S(i.locale).t, o = r === "light" || r === "dark" ? r : i.theme === "light" || i.theme === "dark" ? i.theme : "system", s = i.loading || i.busy;
-	return k(e, "div", {
+	let i = le(e, t), a = S(i.locale).t, o = r === "light" || r === "dark" ? r : i.theme === "light" || i.theme === "dark" ? i.theme : "system", s = i.loading || i.busy, c = e.useRef(null), [l, u] = e.useState(!1);
+	function d(e) {
+		let n = e.target, r = typeof n?.tagName == "string" ? n.tagName.toLowerCase() : "";
+		if (r === "input" || r === "textarea" || r === "select" || n?.isContentEditable === !0) return;
+		let a = e.metaKey || e.ctrlKey, o = e.key;
+		if (o === " ") {
+			e.preventDefault(), i.playback.active && !i.playback.paused ? t.pause() : t.play();
+			return;
+		}
+		if (o === "ArrowLeft" || o === "ArrowRight") {
+			e.preventDefault();
+			let n = o === "ArrowLeft" ? -1 : 1;
+			e.shiftKey ? t.moveSelected(n) : t.seekTo(i.frame + n);
+			return;
+		}
+		if (a && (o === "z" || o === "Z")) {
+			e.preventDefault(), e.shiftKey ? t.redo() : t.undo();
+			return;
+		}
+		if (a && (o === "y" || o === "Y")) {
+			e.preventDefault(), t.redo();
+			return;
+		}
+		if (o === "Delete" || o === "Backspace") {
+			e.preventDefault(), t.removeSelected();
+			return;
+		}
+		if (a && (o === "s" || o === "S")) {
+			e.preventDefault(), t.saveProject();
+			return;
+		}
+		if (a && (o === "e" || o === "E")) {
+			e.preventDefault(), t.openPanel("export");
+			return;
+		}
+		if (o === "?" || o === "/" && e.shiftKey) {
+			e.preventDefault(), u((e) => !e);
+			return;
+		}
+		o === "Escape" && (u(!1), i.panel !== "editor" && t.closePanel());
+	}
+	return O(e, "div", {
+		ref: c,
+		tabIndex: 0,
+		onKeyDown: d,
+		onPointerDown: (e) => {
+			e.currentTarget === e.target && e.currentTarget.focus();
+		},
 		className: "otn-root",
 		"data-theme": o,
 		"data-otn-panel": i.panel,
 		lang: i.locale
-	}, k(e, "header", { className: "otn-header" }, k(e, "div", { className: "otn-brand" }, k(e, "span", { className: "otn-brand__name" }, a("appName")), k(e, "span", { className: "otn-brand__note" }, a("nativePreview"))), le(e, i, a), k(e, "span", {
+	}, O(e, "header", { className: "otn-header" }, O(e, "div", { className: "otn-brand" }, O(e, "span", { className: "otn-brand__name" }, a("appName")), O(e, "span", { className: "otn-brand__note" }, a("nativePreview"))), ue(e, i, a), O(e, "span", {
 		className: "otn-project-path",
 		title: i.projectPath ?? ""
-	}, i.projectPath ?? a("noProject")), k(e, "span", { className: "otn-spacer" }), k(e, "div", { className: "otn-actions" }, i.view === "editor" ? A(e, a("home"), () => t.setView("home")) : null, i.view === "editor" ? k(e, "button", {
+	}, i.projectPath ?? a("noProject")), O(e, "span", { className: "otn-spacer" }), O(e, "div", { className: "otn-actions" }, i.view === "editor" ? k(e, a("home"), () => t.setView("home")) : null, i.view === "editor" ? O(e, "button", {
 		type: "button",
 		className: "otn-btn",
 		"data-otn-action": "open-inspector",
 		onClick: () => {
 			t.setView("editor"), t.closePanel();
 		}
-	}, a("inspector")) : null, k(e, "button", {
+	}, a("inspector")) : null, O(e, "button", {
 		type: "button",
 		className: "otn-btn",
 		"data-otn-action": "open-captions",
 		"aria-pressed": i.panel === "captions",
 		onClick: () => t.openPanel(i.panel === "captions" ? "editor" : "captions")
-	}, a("captions")), k(e, "button", {
+	}, a("captions")), O(e, "button", {
 		type: "button",
 		className: "otn-btn",
 		"data-otn-action": "open-export",
 		"aria-pressed": i.panel === "export",
 		onClick: () => t.openPanel(i.panel === "export" ? "editor" : "export")
-	}, a("export")), k(e, "button", {
+	}, a("export")), O(e, "button", {
 		type: "button",
 		className: "otn-btn",
 		"data-otn-action": "open-settings",
 		"aria-pressed": i.panel === "settings",
 		onClick: () => t.openPanel(i.panel === "settings" ? "editor" : "settings")
-	}, a("settings")), i.view === "editor" ? A(e, a("saveProject"), () => {
+	}, a("settings")), O(e, "button", {
+		type: "button",
+		className: "otn-btn",
+		"data-otn-action": "open-shortcuts",
+		"aria-pressed": l,
+		title: a("shortcuts"),
+		onClick: () => u((e) => !e)
+	}, "?"), i.view === "editor" ? k(e, a("saveProject"), () => {
 		t.saveProject();
-	}, { disabled: s }) : null, A(e, a("refresh"), () => {
+	}, { disabled: s }) : null, k(e, a("refresh"), () => {
 		t.refresh();
-	}, { disabled: s }), s ? k(e, "span", {
+	}, { disabled: s }), s ? O(e, "span", {
 		className: "otn-progress",
 		role: "status"
-	}, a("busy")) : null)), ue(e, i, t, a), i.view === "home" ? k(e, de, {
+	}, a("busy")) : null)), de(e, i, t, a), i.view === "home" ? O(e, fe, {
 		React: e,
 		state: i,
 		store: t,
 		client: n,
 		t: a
-	}) : Oe(e, {
+	}) : Me(e, {
 		state: i,
 		store: t,
 		client: n,
 		t: a
-	}), i.panel === "captions" ? k(e, Ce, {
+	}), i.panel === "captions" ? O(e, De, {
 		React: e,
 		state: i,
 		store: t,
 		t: a
-	}) : null, i.panel === "export" ? k(e, Ee, {
+	}) : null, i.panel === "export" ? O(e, Ae, {
 		React: e,
 		state: i,
 		store: t,
 		t: a
-	}) : null, i.panel === "settings" ? k(e, De, {
+	}) : null, i.panel === "settings" ? O(e, je, {
 		React: e,
 		state: i,
 		store: t,
 		t: a
-	}) : null, k(e, "footer", { className: "otn-status" }, k(e, "span", null, `${a("projectVersion", { version: i.timeline?.version ?? 0 })}`), k(e, "span", { className: "otn-spacer" }), k(e, "span", null, `${a("media")}: ${i.media.length}`), k(e, "span", null, `${a("timeline")}: ${re(i.timeline)}`)));
+	}) : null, l ? O(e, "div", {
+		className: "otn-overlay",
+		"data-otn-panel": "shortcuts"
+	}, O(e, "section", {
+		className: "otn-sheet",
+		"aria-label": a("shortcutsHelp")
+	}, O(e, "div", { className: "otn-sheet__header" }, O(e, "h2", { className: "otn-sheet__title" }, a("shortcutsHelp")), k(e, a("close"), () => u(!1), { ariaLabel: a("close") })), O(e, "div", { className: "otn-sheet__body" }, O(e, "ul", { className: "otn-shortcut-list" }, [
+		["shortcutPlay"],
+		["shortcutSeek"],
+		["shortcutNudge"],
+		["shortcutUndo"],
+		["shortcutRedo"],
+		["shortcutDelete"],
+		["shortcutSave"],
+		["shortcutExport"],
+		["shortcutHelp"]
+	].map(([t]) => O(e, "li", { key: t }, O(e, "span", null, a(t)))))))) : null, O(e, "footer", { className: "otn-status" }, O(e, "span", null, `${a("projectVersion", { version: i.timeline?.version ?? 0 })}`), O(e, "span", { className: "otn-spacer" }), O(e, "span", null, `${a("media")}: ${i.media.length}`), O(e, "span", null, `${a("timeline")}: ${ie(i.timeline)}`)));
 }
 //#endregion
 //#region web/src/native/styles.js
-var Ae = "\n:host {\n  all: initial;\n  display: block;\n  box-sizing: border-box;\n  height: 100%;\n  min-height: 0;\n  color-scheme: dark;\n  font-family: \"Inter\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;\n  -webkit-font-smoothing: antialiased;\n}\n*, *::before, *::after { box-sizing: border-box; }\n.otn-root {\n  position: relative;\n  --otn-bg: var(--dsw-alias-bg-base, #0f1115);\n  --otn-panel: var(--dsw-alias-bg-elevated, #171a21);\n  --otn-panel-2: var(--dsw-alias-bg-subtle, #1e222b);\n  --otn-text: var(--dsw-alias-text-primary, #f4f5f7);\n  --otn-muted: var(--dsw-alias-text-secondary, #a6acb8);\n  --otn-border: var(--dsw-alias-border-default, rgba(255, 255, 255, .13));\n  --otn-accent: var(--dsw-alias-accent-primary, #7c5cff);\n  --otn-accent-soft: color-mix(in srgb, var(--otn-accent) 20%, transparent);\n  --otn-danger: var(--dsw-alias-status-error, #ff6b6b);\n  --otn-radius: 10px;\n  display: flex;\n  flex-direction: column;\n  inline-size: 100%;\n  block-size: 100%;\n  min-block-size: 0;\n  overflow: hidden;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font-size: 13px;\n  line-height: 1.35;\n}\n.otn-root[data-theme=\"light\"] {\n  color-scheme: light;\n  --otn-bg: var(--dsw-alias-bg-base, #f7f7f8);\n  --otn-panel: var(--dsw-alias-bg-elevated, #ffffff);\n  --otn-panel-2: var(--dsw-alias-bg-subtle, #eef0f3);\n  --otn-text: var(--dsw-alias-text-primary, #171a20);\n  --otn-muted: var(--dsw-alias-text-secondary, #5d6470);\n  --otn-border: var(--dsw-alias-border-default, rgba(20, 24, 32, .16));\n}\n.otn-root[data-theme=\"dark\"] { color-scheme: dark; }\n.otn-header {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  flex: 0 0 auto;\n  min-block-size: 44px;\n  padding: 0 14px;\n  border-block-end: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-brand { display: flex; align-items: baseline; gap: 8px; min-inline-size: 0; }\n.otn-brand__name { font-weight: 700; letter-spacing: -.02em; font-size: 14px; }\n.otn-brand__note { color: var(--otn-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.otn-spacer { flex: 1 1 auto; }\n.otn-project-path {\n  max-inline-size: 34%;\n  color: var(--otn-muted);\n  font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n.otn-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }\n.otn-btn {\n  appearance: none;\n  border: 1px solid var(--otn-border);\n  border-radius: 7px;\n  background: var(--otn-panel-2);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 5px 9px;\n  cursor: pointer;\n  min-block-size: 28px;\n}\n.otn-btn:hover:not(:disabled) { border-color: var(--otn-accent); }\n.otn-btn:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-btn:disabled { opacity: .5; cursor: default; }\n.otn-btn--primary { background: var(--otn-accent); border-color: var(--otn-accent); color: #fff; }\n.otn-btn--icon { inline-size: 28px; padding: 4px; display: inline-grid; place-items: center; }\n.otn-badge {\n  display: inline-flex;\n  gap: 5px;\n  align-items: center;\n  border: 1px solid var(--otn-border);\n  border-radius: 999px;\n  padding: 3px 8px;\n  color: var(--otn-muted);\n  font-size: 11px;\n  white-space: nowrap;\n}\n.otn-dot { inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--otn-accent); }\n.otn-dot--down { background: var(--otn-danger); }\n.otn-body { display: flex; flex: 1 1 auto; min-block-size: 0; }\n.otn-main { display: flex; flex: 1 1 auto; flex-direction: column; min-inline-size: 0; min-block-size: 0; }\n.otn-media {\n  inline-size: clamp(180px, 22%, 270px);\n  flex: 0 0 auto;\n  border-inline-end: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n  min-block-size: 0;\n  display: flex;\n  flex-direction: column;\n}\n.otn-panel-title {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  flex: 0 0 auto;\n  padding: 10px 12px;\n  border-block-end: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font-size: 11px;\n  font-weight: 600;\n  letter-spacing: .06em;\n  text-transform: uppercase;\n}\n.otn-media-list { list-style: none; margin: 0; padding: 8px; overflow: auto; display: grid; gap: 6px; min-block-size: 0; }\n.otn-media-card {\n  appearance: none;\n  inline-size: 100%;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px;\n  border: 1px solid transparent;\n  border-radius: 8px;\n  background: var(--otn-panel-2);\n  color: inherit;\n  font: inherit;\n  text-align: start;\n  cursor: pointer;\n}\n.otn-media-card:hover { border-color: var(--otn-border); }\n.otn-media-card--selected { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-media-card:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-media-thumb {\n  inline-size: 42px;\n  block-size: 30px;\n  border-radius: 5px;\n  background: var(--otn-bg);\n  object-fit: cover;\n  flex: 0 0 auto;\n}\n.otn-media-thumb--empty { display: grid; place-items: center; color: var(--otn-muted); font-size: 10px; }\n.otn-media-copy { min-inline-size: 0; display: grid; gap: 2px; }\n.otn-media-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }\n.otn-media-meta { color: var(--otn-muted); font-size: 10px; }\n.otn-empty { color: var(--otn-muted); font-size: 12px; padding: 16px; }\n.otn-preview {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  display: flex;\n  flex-direction: column;\n  background: var(--otn-bg);\n}\n.otn-preview-stage {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  display: grid;\n  place-items: center;\n  padding: 14px;\n  overflow: hidden;\n  background: radial-gradient(circle at 50% 40%, var(--otn-panel-2), var(--otn-bg) 70%);\n}\n.otn-preview-image {\n  display: block;\n  max-inline-size: 100%;\n  max-block-size: 100%;\n  inline-size: auto;\n  block-size: auto;\n  border-radius: 4px;\n  background: #000;\n  box-shadow: 0 8px 28px rgba(0, 0, 0, .35);\n}\n.otn-preview-placeholder {\n  display: grid;\n  place-items: center;\n  inline-size: min(100%, 480px);\n  aspect-ratio: 16 / 9;\n  border: 1px dashed var(--otn-border);\n  border-radius: var(--otn-radius);\n  color: var(--otn-muted);\n  font-size: 12px;\n}\n.otn-transport {\n  flex: 0 0 auto;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 7px 12px;\n  border-block-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-scrub { flex: 1 1 auto; accent-color: var(--otn-accent); min-inline-size: 60px; }\n.otn-frame-readout { color: var(--otn-muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }\n.otn-media-import { display: flex; gap: 6px; padding: 8px; border-block-end: 1px solid var(--otn-border); }\n.otn-media-import .otn-input { flex: 1 1 auto; min-inline-size: 0; min-block-size: 28px; }\n.otn-effect-card { display: grid; gap: 6px; padding: 7px; border: 1px solid var(--otn-border); border-radius: 7px; background: var(--otn-panel-2); }\n.otn-keyframe-track { display: grid; gap: 4px; padding-block-start: 6px; border-block-start: 1px solid var(--otn-border); }\n.otn-keyframe-track:first-of-type { border-block-start: 0; padding-block-start: 0; }\n.otn-keyframe-list { display: grid; gap: 3px; }\n.otn-keyframe-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }\n.otn-keyframe-row > span:first-child { min-inline-size: 62px; color: var(--otn-muted); }\n.otn-keyframe-row > button { margin-inline-start: auto; }\n.otn-toggle--active { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-inspector {\n  inline-size: clamp(220px, 24%, 300px);\n  flex: 0 0 auto;\n  border-inline-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n  min-block-size: 0;\n  overflow: auto;\n  padding-block-end: 10px;\n}\n.otn-inspector .otn-panel-title { border-block-end: 1px solid var(--otn-border); }\n.otn-inspector__body { display: grid; gap: 12px; padding: 10px 12px; }\n.otn-field { display: grid; gap: 4px; }\n.otn-field__label { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }\n.otn-field__input {\n  inline-size: 100%;\n  min-block-size: 28px;\n  border: 1px solid var(--otn-border);\n  border-radius: 6px;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 5px 7px;\n}\n.otn-field__input:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-field__row { display: flex; gap: 6px; align-items: center; }\n.otn-field__row .otn-field__input { min-inline-size: 0; }\n.otn-toggle {\n  appearance: none;\n  border: 1px solid var(--otn-border);\n  border-radius: 6px;\n  background: var(--otn-panel-2);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 11px;\n  padding: 4px 7px;\n  cursor: pointer;\n}\n.otn-toggle[aria-pressed=\"true\"] { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-toggle:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-inspector__group { display: grid; gap: 7px; padding-block-start: 10px; border-block-start: 1px solid var(--otn-border); }\n.otn-inspector__group:first-child { border-block-start: 0; padding-block-start: 0; }\n.otn-inspector__title { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }\n.otn-inspector__track-name { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }\n.otn-overlay {\n  position: absolute;\n  inset: 0;\n  z-index: 8;\n  display: flex;\n  justify-content: flex-end;\n  background: rgba(0, 0, 0, .4);\n  padding: 12px;\n}\n.otn-sheet {\n  inline-size: min(480px, 100%);\n  block-size: 100%;\n  overflow: auto;\n  border: 1px solid var(--otn-border);\n  border-radius: var(--otn-radius);\n  background: var(--otn-panel);\n  box-shadow: 0 18px 60px rgba(0, 0, 0, .4);\n}\n.otn-sheet__header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-block-end: 1px solid var(--otn-border); }\n.otn-sheet__title { flex: 1 1 auto; margin: 0; font-size: 14px; }\n.otn-sheet__body { display: grid; gap: 12px; padding: 14px; }\n.otn-sheet__section { display: grid; gap: 8px; }\n.otn-sheet__section-title { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }\n.otn-sheet__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n.otn-sheet__hint { color: var(--otn-muted); font-size: 11px; margin: 0; }\n.otn-progress-bar { inline-size: 100%; block-size: 5px; border-radius: 999px; background: var(--otn-panel-2); overflow: hidden; }\n.otn-progress-bar__fill { block-size: 100%; background: var(--otn-accent); transition: inline-size .2s ease; }\n.otn-storage-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--otn-muted); }\n.otn-storage-row__name { flex: 1 1 auto; color: var(--otn-text); }\n.otn-status-ok { color: var(--otn-accent); }\n.otn-status-bad { color: var(--otn-danger); }\n.otn-timeline {\n  flex: 0 0 38%;\n  min-block-size: 150px;\n  display: flex;\n  flex-direction: column;\n  border-block-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-timeline-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; }\n.otn-timeline-body { overflow: auto; padding: 0 10px 10px; min-block-size: 0; }\n.otn-ruler {\n  position: relative;\n  block-size: 18px;\n  margin-inline-start: 72px;\n  border-block-end: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font: 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;\n}\n.otn-ruler-tick { position: absolute; inset-block-end: 0; inline-size: 1px; block-size: 6px; background: var(--otn-border); }\n.otn-ruler-label { position: absolute; inset-block-start: 2px; transform: translateX(-50%); white-space: nowrap; }\n.otn-track-row { display: flex; align-items: stretch; min-block-size: 34px; border-block-end: 1px solid var(--otn-border); }\n.otn-track-head {\n  inline-size: 72px;\n  flex: 0 0 72px;\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  padding-inline-end: 6px;\n  color: var(--otn-muted);\n  font-size: 10px;\n  white-space: nowrap;\n  overflow: hidden;\n}\n.otn-track-lane { position: relative; flex: 1 1 auto; min-inline-size: 0; margin-block: 4px; border-radius: 4px; background: var(--otn-panel-2); }\n.otn-clip {\n  position: absolute;\n  inset-block: 3px;\n  min-inline-size: 8px;\n  border: 1px solid color-mix(in srgb, var(--otn-accent) 55%, var(--otn-border));\n  border-radius: 4px;\n  background: color-mix(in srgb, var(--otn-accent) 24%, var(--otn-panel-2));\n  color: var(--otn-text);\n  font: 10px/1.2 inherit;\n  padding: 2px 5px;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  text-align: start;\n  cursor: pointer;\n}\n.otn-clip--selected { outline: 2px solid var(--otn-accent); outline-offset: -1px; background: color-mix(in srgb, var(--otn-accent) 38%, var(--otn-panel-2)); }\n.otn-clip:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-status {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px 12px;\n  border-block-start: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font-size: 11px;\n  flex: 0 0 auto;\n}\n.otn-error {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin: 8px 12px 0;\n  padding: 7px 9px;\n  border: 1px solid color-mix(in srgb, var(--otn-danger) 55%, var(--otn-border));\n  border-radius: 7px;\n  background: color-mix(in srgb, var(--otn-danger) 12%, transparent);\n  color: var(--otn-text);\n  font-size: 12px;\n}\n.otn-error__message { flex: 1 1 auto; overflow-wrap: anywhere; }\n.otn-home {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  overflow: auto;\n  display: grid;\n  align-content: start;\n  gap: 14px;\n  padding: clamp(18px, 4vw, 44px);\n  max-inline-size: 900px;\n  inline-size: 100%;\n  margin-inline: auto;\n}\n.otn-home__title { margin: 0; font-size: clamp(24px, 4vw, 38px); line-height: 1.05; letter-spacing: -.04em; }\n.otn-home__subtitle { margin: 0; color: var(--otn-muted); max-inline-size: 66ch; }\n.otn-card { border: 1px solid var(--otn-border); border-radius: var(--otn-radius); background: var(--otn-panel); padding: 14px; }\n.otn-home__row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }\n.otn-input {\n  flex: 1 1 260px;\n  min-inline-size: 160px;\n  border: 1px solid var(--otn-border);\n  border-radius: 7px;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 6px 8px;\n  min-block-size: 30px;\n}\n.otn-input:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; color: var(--otn-muted); font-size: 12px; }\n.otn-kv__value { color: var(--otn-text); overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }\n.otn-hint { color: var(--otn-muted); font-size: 11px; margin: 0; }\n.otn-progress { color: var(--otn-muted); font-size: 11px; }\n@media (max-width: 900px) {\n  .otn-inspector { inline-size: 220px; }\n}\n@media (max-width: 720px) {\n  .otn-media { inline-size: 170px; }\n  .otn-inspector { display: none; }\n  .otn-brand__note, .otn-project-path { display: none; }\n  .otn-timeline { flex-basis: 42%; }\n  .otn-home { padding: 16px; }\n}\n@media (prefers-reduced-motion: reduce) {\n  .otn-root *, .otn-root *::before, .otn-root *::after { transition: none !important; animation: none !important; }\n}\n";
+var Pe = "\n:host {\n  all: initial;\n  display: block;\n  box-sizing: border-box;\n  height: 100%;\n  min-height: 0;\n  color-scheme: dark;\n  font-family: \"Inter\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif;\n  -webkit-font-smoothing: antialiased;\n}\n*, *::before, *::after { box-sizing: border-box; }\n.otn-root {\n  position: relative;\n  --otn-bg: var(--dsw-alias-bg-base, #0f1115);\n  --otn-panel: var(--dsw-alias-bg-elevated, #171a21);\n  --otn-panel-2: var(--dsw-alias-bg-subtle, #1e222b);\n  --otn-text: var(--dsw-alias-text-primary, #f4f5f7);\n  --otn-muted: var(--dsw-alias-text-secondary, #a6acb8);\n  --otn-border: var(--dsw-alias-border-default, rgba(255, 255, 255, .13));\n  --otn-accent: var(--dsw-alias-accent-primary, #7c5cff);\n  --otn-accent-soft: color-mix(in srgb, var(--otn-accent) 20%, transparent);\n  --otn-danger: var(--dsw-alias-status-error, #ff6b6b);\n  --otn-radius: 10px;\n  display: flex;\n  flex-direction: column;\n  inline-size: 100%;\n  block-size: 100%;\n  min-block-size: 0;\n  overflow: hidden;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font-size: 13px;\n  line-height: 1.35;\n}\n.otn-root[data-theme=\"light\"] {\n  color-scheme: light;\n  --otn-bg: var(--dsw-alias-bg-base, #f7f7f8);\n  --otn-panel: var(--dsw-alias-bg-elevated, #ffffff);\n  --otn-panel-2: var(--dsw-alias-bg-subtle, #eef0f3);\n  --otn-text: var(--dsw-alias-text-primary, #171a20);\n  --otn-muted: var(--dsw-alias-text-secondary, #5d6470);\n  --otn-border: var(--dsw-alias-border-default, rgba(20, 24, 32, .16));\n}\n.otn-root[data-theme=\"dark\"] { color-scheme: dark; }\n.otn-header {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  flex: 0 0 auto;\n  min-block-size: 44px;\n  padding: 0 14px;\n  border-block-end: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-brand { display: flex; align-items: baseline; gap: 8px; min-inline-size: 0; }\n.otn-brand__name { font-weight: 700; letter-spacing: -.02em; font-size: 14px; }\n.otn-brand__note { color: var(--otn-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.otn-spacer { flex: 1 1 auto; }\n.otn-project-path {\n  max-inline-size: 34%;\n  color: var(--otn-muted);\n  font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n.otn-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }\n.otn-btn {\n  appearance: none;\n  border: 1px solid var(--otn-border);\n  border-radius: 7px;\n  background: var(--otn-panel-2);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 5px 9px;\n  cursor: pointer;\n  min-block-size: 28px;\n}\n.otn-btn:hover:not(:disabled) { border-color: var(--otn-accent); }\n.otn-btn:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-btn:disabled { opacity: .5; cursor: default; }\n.otn-btn--primary { background: var(--otn-accent); border-color: var(--otn-accent); color: #fff; }\n.otn-btn--icon { inline-size: 28px; padding: 4px; display: inline-grid; place-items: center; }\n.otn-badge {\n  display: inline-flex;\n  gap: 5px;\n  align-items: center;\n  border: 1px solid var(--otn-border);\n  border-radius: 999px;\n  padding: 3px 8px;\n  color: var(--otn-muted);\n  font-size: 11px;\n  white-space: nowrap;\n}\n.otn-dot { inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--otn-accent); }\n.otn-dot--down { background: var(--otn-danger); }\n.otn-body { display: flex; flex: 1 1 auto; min-block-size: 0; }\n.otn-main { display: flex; flex: 1 1 auto; flex-direction: column; min-inline-size: 0; min-block-size: 0; }\n.otn-media {\n  inline-size: clamp(180px, 22%, 270px);\n  flex: 0 0 auto;\n  border-inline-end: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n  min-block-size: 0;\n  display: flex;\n  flex-direction: column;\n}\n.otn-panel-title {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  flex: 0 0 auto;\n  padding: 10px 12px;\n  border-block-end: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font-size: 11px;\n  font-weight: 600;\n  letter-spacing: .06em;\n  text-transform: uppercase;\n}\n.otn-media-list { list-style: none; margin: 0; padding: 8px; overflow: auto; display: grid; gap: 6px; min-block-size: 0; }\n.otn-media-card {\n  appearance: none;\n  inline-size: 100%;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px;\n  border: 1px solid transparent;\n  border-radius: 8px;\n  background: var(--otn-panel-2);\n  color: inherit;\n  font: inherit;\n  text-align: start;\n  cursor: pointer;\n}\n.otn-media-card:hover { border-color: var(--otn-border); }\n.otn-media-card--selected { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-media-card:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-media-thumb {\n  inline-size: 42px;\n  block-size: 30px;\n  border-radius: 5px;\n  background: var(--otn-bg);\n  object-fit: cover;\n  flex: 0 0 auto;\n}\n.otn-media-thumb--empty { display: grid; place-items: center; color: var(--otn-muted); font-size: 10px; }\n.otn-media-copy { min-inline-size: 0; display: grid; gap: 2px; }\n.otn-media-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }\n.otn-media-meta { color: var(--otn-muted); font-size: 10px; }\n.otn-empty { color: var(--otn-muted); font-size: 12px; padding: 16px; }\n.otn-preview {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  display: flex;\n  flex-direction: column;\n  background: var(--otn-bg);\n}\n.otn-preview-stage {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  display: grid;\n  place-items: center;\n  padding: 14px;\n  overflow: hidden;\n  background: radial-gradient(circle at 50% 40%, var(--otn-panel-2), var(--otn-bg) 70%);\n}\n.otn-preview-image {\n  display: block;\n  max-inline-size: 100%;\n  max-block-size: 100%;\n  inline-size: auto;\n  block-size: auto;\n  border-radius: 4px;\n  background: #000;\n  box-shadow: 0 8px 28px rgba(0, 0, 0, .35);\n}\n.otn-preview-placeholder {\n  display: grid;\n  place-items: center;\n  inline-size: min(100%, 480px);\n  aspect-ratio: 16 / 9;\n  border: 1px dashed var(--otn-border);\n  border-radius: var(--otn-radius);\n  color: var(--otn-muted);\n  font-size: 12px;\n}\n.otn-transport {\n  flex: 0 0 auto;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 7px 12px;\n  border-block-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-scrub { flex: 1 1 auto; accent-color: var(--otn-accent); min-inline-size: 60px; }\n.otn-frame-readout { color: var(--otn-muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }\n.otn-media-import { display: flex; gap: 6px; padding: 8px; border-block-end: 1px solid var(--otn-border); }\n.otn-media-import .otn-input { flex: 1 1 auto; min-inline-size: 0; min-block-size: 28px; }\n.otn-file-picker { max-inline-size: 100%; color: var(--otn-muted); font-size: 10px; }\n.otn-file-picker::file-selector-button { margin-inline-end: 6px; border: 1px solid var(--otn-border); border-radius: 5px; background: var(--otn-panel-2); color: var(--otn-text); font-size: 10px; padding: 3px 6px; }\n.otn-effect-card, .otn-advanced-card { display: grid; gap: 6px; padding: 7px; border: 1px solid var(--otn-border); border-radius: 7px; background: var(--otn-panel-2); }\n.otn-advanced-card .otn-field__row { flex-wrap: wrap; }\n.otn-mask-advanced { display: grid; gap: 4px; padding-block-start: 4px; }\n.otn-shortcut-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 12px; }\n.otn-shortcut-list li { display: flex; gap: 8px; color: var(--otn-muted); }\n.otn-shortcut-list li span:last-child { color: var(--otn-text); }\n.otn-keyframe-track { display: grid; gap: 4px; padding-block-start: 6px; border-block-start: 1px solid var(--otn-border); }\n.otn-keyframe-track:first-of-type { border-block-start: 0; padding-block-start: 0; }\n.otn-keyframe-list { display: grid; gap: 3px; }\n.otn-keyframe-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }\n.otn-keyframe-row > span:first-child { min-inline-size: 62px; color: var(--otn-muted); }\n.otn-keyframe-row > button { margin-inline-start: auto; }\n.otn-toggle--active { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-inspector {\n  inline-size: clamp(220px, 24%, 300px);\n  flex: 0 0 auto;\n  border-inline-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n  min-block-size: 0;\n  overflow: auto;\n  padding-block-end: 10px;\n}\n.otn-inspector .otn-panel-title { border-block-end: 1px solid var(--otn-border); }\n.otn-inspector__body { display: grid; gap: 12px; padding: 10px 12px; }\n.otn-inspector__tabs { display: flex; flex-wrap: wrap; gap: 4px; padding-block-end: 4px; border-block-end: 1px solid var(--otn-border); }\n.otn-inspector__tab { appearance: none; border: 1px solid var(--otn-border); border-radius: 999px; background: transparent; color: var(--otn-muted); font: inherit; font-size: 10px; padding: 3px 7px; cursor: pointer; }\n.otn-inspector__tab--active { border-color: var(--otn-accent); background: var(--otn-accent-soft); color: var(--otn-text); }\n.otn-inspector__tab:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-field { display: grid; gap: 4px; }\n.otn-field__label { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }\n.otn-field__input {\n  inline-size: 100%;\n  min-block-size: 28px;\n  border: 1px solid var(--otn-border);\n  border-radius: 6px;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 5px 7px;\n}\n.otn-field__input:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-field__row { display: flex; gap: 6px; align-items: center; }\n.otn-field__row .otn-field__input { min-inline-size: 0; }\n.otn-toggle {\n  appearance: none;\n  border: 1px solid var(--otn-border);\n  border-radius: 6px;\n  background: var(--otn-panel-2);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 11px;\n  padding: 4px 7px;\n  cursor: pointer;\n}\n.otn-toggle[aria-pressed=\"true\"] { border-color: var(--otn-accent); background: var(--otn-accent-soft); }\n.otn-toggle:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-inspector__group { display: grid; gap: 7px; padding-block-start: 10px; border-block-start: 1px solid var(--otn-border); }\n.otn-inspector__group:first-child { border-block-start: 0; padding-block-start: 0; }\n.otn-inspector__title { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }\n.otn-inspector__track-name { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }\n.otn-overlay {\n  position: absolute;\n  inset: 0;\n  z-index: 8;\n  display: flex;\n  justify-content: flex-end;\n  background: rgba(0, 0, 0, .4);\n  padding: 12px;\n}\n.otn-sheet {\n  inline-size: min(480px, 100%);\n  block-size: 100%;\n  overflow: auto;\n  border: 1px solid var(--otn-border);\n  border-radius: var(--otn-radius);\n  background: var(--otn-panel);\n  box-shadow: 0 18px 60px rgba(0, 0, 0, .4);\n}\n.otn-sheet__header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-block-end: 1px solid var(--otn-border); }\n.otn-sheet__title { flex: 1 1 auto; margin: 0; font-size: 14px; }\n.otn-sheet__body { display: grid; gap: 12px; padding: 14px; }\n.otn-sheet__section { display: grid; gap: 8px; }\n.otn-sheet__section-title { color: var(--otn-muted); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }\n.otn-sheet__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n.otn-sheet__hint { color: var(--otn-muted); font-size: 11px; margin: 0; }\n.otn-progress-bar { inline-size: 100%; block-size: 5px; border-radius: 999px; background: var(--otn-panel-2); overflow: hidden; }\n.otn-progress-bar__fill { block-size: 100%; background: var(--otn-accent); transition: inline-size .2s ease; }\n.otn-storage-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--otn-muted); }\n.otn-storage-row__name { flex: 1 1 auto; color: var(--otn-text); }\n.otn-status-ok { color: var(--otn-accent); }\n.otn-status-bad { color: var(--otn-danger); }\n.otn-timeline {\n  flex: 0 0 38%;\n  min-block-size: 150px;\n  display: flex;\n  flex-direction: column;\n  border-block-start: 1px solid var(--otn-border);\n  background: var(--otn-panel);\n}\n.otn-timeline-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; }\n.otn-timeline-body { overflow: auto; padding: 0 10px 10px; min-block-size: 0; }\n.otn-ruler {\n  position: relative;\n  block-size: 18px;\n  margin-inline-start: 72px;\n  border-block-end: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font: 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;\n}\n.otn-ruler-tick { position: absolute; inset-block-end: 0; inline-size: 1px; block-size: 6px; background: var(--otn-border); }\n.otn-ruler-label { position: absolute; inset-block-start: 2px; transform: translateX(-50%); white-space: nowrap; }\n.otn-track-row { display: flex; align-items: stretch; min-block-size: 34px; border-block-end: 1px solid var(--otn-border); }\n.otn-track-head {\n  inline-size: 72px;\n  flex: 0 0 72px;\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  padding-inline-end: 6px;\n  color: var(--otn-muted);\n  font-size: 10px;\n  white-space: nowrap;\n  overflow: hidden;\n}\n.otn-track-lane { position: relative; flex: 1 1 auto; min-inline-size: 0; margin-block: 4px; border-radius: 4px; background: var(--otn-panel-2); }\n.otn-clip {\n  position: absolute;\n  inset-block: 3px;\n  min-inline-size: 8px;\n  border: 1px solid color-mix(in srgb, var(--otn-accent) 55%, var(--otn-border));\n  border-radius: 4px;\n  background: color-mix(in srgb, var(--otn-accent) 24%, var(--otn-panel-2));\n  color: var(--otn-text);\n  font: 10px/1.2 inherit;\n  padding: 2px 5px;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  text-align: start;\n  cursor: pointer;\n}\n.otn-clip--selected { outline: 2px solid var(--otn-accent); outline-offset: -1px; background: color-mix(in srgb, var(--otn-accent) 38%, var(--otn-panel-2)); }\n.otn-clip:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-status {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 6px 12px;\n  border-block-start: 1px solid var(--otn-border);\n  color: var(--otn-muted);\n  font-size: 11px;\n  flex: 0 0 auto;\n}\n.otn-error {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin: 8px 12px 0;\n  padding: 7px 9px;\n  border: 1px solid color-mix(in srgb, var(--otn-danger) 55%, var(--otn-border));\n  border-radius: 7px;\n  background: color-mix(in srgb, var(--otn-danger) 12%, transparent);\n  color: var(--otn-text);\n  font-size: 12px;\n}\n.otn-error__message { flex: 1 1 auto; overflow-wrap: anywhere; }\n.otn-home {\n  flex: 1 1 auto;\n  min-block-size: 0;\n  overflow: auto;\n  display: grid;\n  align-content: start;\n  gap: 14px;\n  padding: clamp(18px, 4vw, 44px);\n  max-inline-size: 900px;\n  inline-size: 100%;\n  margin-inline: auto;\n}\n.otn-home__title { margin: 0; font-size: clamp(24px, 4vw, 38px); line-height: 1.05; letter-spacing: -.04em; }\n.otn-home__subtitle { margin: 0; color: var(--otn-muted); max-inline-size: 66ch; }\n.otn-card { border: 1px solid var(--otn-border); border-radius: var(--otn-radius); background: var(--otn-panel); padding: 14px; }\n.otn-home__row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }\n.otn-input {\n  flex: 1 1 260px;\n  min-inline-size: 160px;\n  border: 1px solid var(--otn-border);\n  border-radius: 7px;\n  background: var(--otn-bg);\n  color: var(--otn-text);\n  font: inherit;\n  font-size: 12px;\n  padding: 6px 8px;\n  min-block-size: 30px;\n}\n.otn-input:focus-visible { outline: 2px solid var(--otn-accent); outline-offset: 1px; }\n.otn-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; color: var(--otn-muted); font-size: 12px; }\n.otn-kv__value { color: var(--otn-text); overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }\n.otn-hint { color: var(--otn-muted); font-size: 11px; margin: 0; }\n.otn-progress { color: var(--otn-muted); font-size: 11px; }\n@media (max-width: 900px) {\n  .otn-inspector { inline-size: 220px; }\n}\n@media (max-width: 720px) {\n  .otn-media { inline-size: 170px; }\n  .otn-inspector { display: none; }\n  .otn-brand__note, .otn-project-path { display: none; }\n  .otn-timeline { flex-basis: 42%; }\n  .otn-home { padding: 16px; }\n}\n@media (prefers-reduced-motion: reduce) {\n  .otn-root *, .otn-root *::before, .otn-root *::after { transition: none !important; animation: none !important; }\n}\n";
 //#endregion
 //#region web/src/native/mount.js
-function je(e) {
+function Fe(e) {
 	if (typeof e != "object" || !e || typeof e.createRoot != "function") throw TypeError("ReactDOM.createRoot is required");
 }
-function Me({ host: e, React: t, ReactDOM: n, client: r, locale: i = "en", theme: a = "system", pollIntervalMs: o = 0, autoInitialize: s = !0, timers: c = void 0, onReady: l = void 0 } = {}) {
+function Ie({ host: e, React: t, ReactDOM: n, client: r, locale: i = "en", theme: a = "system", pollIntervalMs: o = 0, autoInitialize: s = !0, timers: c = void 0, onReady: l = void 0 } = {}) {
 	if (typeof e != "object" || !e || typeof e.attachShadow != "function") throw TypeError("a host element with attachShadow is required");
 	if (typeof t != "object" || !t || typeof t.createElement != "function") throw TypeError("React with createElement is required");
 	if (typeof r != "object" || !r || typeof r.timeline != "function") throw TypeError("engine client is required");
-	je(n);
+	Fe(n);
 	let u = e.ownerDocument;
 	if (u === null || typeof u.createElement != "function") throw TypeError("host.ownerDocument.createElement is required");
 	let d = e.shadowRoot ?? e.attachShadow({ mode: "open" });
 	if (d === null || typeof d.appendChild != "function") throw TypeError("open ShadowRoot could not be created");
 	for (; d.firstChild !== null && d.firstChild !== void 0;) d.removeChild(d.firstChild);
 	let f = u.createElement("style");
-	f.textContent = Ae, f.setAttribute?.("data-otn-styles", ""), d.appendChild(f);
+	f.textContent = Pe, f.setAttribute?.("data-otn-styles", ""), d.appendChild(f);
 	let p = u.createElement("div");
 	p.className = "otn-shadow-root", d.appendChild(p);
-	let m = se({
+	let m = ce({
 		client: r,
 		locale: i,
 		pollIntervalMs: o,
 		setIntervalImpl: c?.setInterval,
 		clearIntervalImpl: c?.clearInterval
 	}), h = n.createRoot(p);
-	h.render(t.createElement(ke, {
+	h.render(t.createElement(Ne, {
 		React: t,
 		store: m,
 		client: r,
@@ -8135,8 +8810,8 @@ function Me({ host: e, React: t, ReactDOM: n, client: r, locale: i = "en", theme
 }
 //#endregion
 //#region web/src/native/browser-entry.js
-var Ne = "/opentake-studio-route-b/app/native-editor/native-editor.js";
-function Pe({ host: e, base: t = "/opentake-studio-route-b", locale: n = "en", theme: r = "system", pollIntervalMs: i = 0, fetchImpl: a = globalThis.fetch, timers: o = void 0, autoInitialize: s = !0, onReady: c = void 0 } = {}) {
+var Le = "/opentake-studio-route-b/app/native-editor/native-editor.js";
+function Re({ host: e, base: t = "/opentake-studio-route-b", locale: n = "en", theme: r = "system", pollIntervalMs: i = 0, fetchImpl: a = globalThis.fetch, timers: o = void 0, autoInitialize: s = !0, onReady: c = void 0 } = {}) {
 	if (typeof AbortController != "function") throw Error("AbortController is required");
 	let l = new AbortController(), u = b({
 		base: t,
@@ -8144,7 +8819,7 @@ function Pe({ host: e, base: t = "/opentake-studio-route-b", locale: n = "en", t
 		signal: l.signal
 	}), d;
 	try {
-		d = Me({
+		d = Ie({
 			host: e,
 			React: g,
 			ReactDOM: { createRoot: _.createRoot },
@@ -8171,5 +8846,5 @@ function Pe({ host: e, base: t = "/opentake-studio-route-b", locale: n = "en", t
 	};
 }
 //#endregion
-var Fe = _.createRoot;
-export { Ne as BUNDLE_PATH, g as React, b as createEngineClient, Fe as createRoot, Pe as mountNative, Me as mountNativeEditor };
+var ze = _.createRoot;
+export { Le as BUNDLE_PATH, g as React, b as createEngineClient, ze as createRoot, Re as mountNative, Ie as mountNativeEditor };

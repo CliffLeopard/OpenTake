@@ -529,6 +529,51 @@ export function createNativeEditorStore({
     }
   }
 
+  async function setColorGrade(clipId, grade) {
+    if (grade !== null && (typeof grade !== 'object' || Array.isArray(grade))) {
+      update({ error: 'color grade must be an object or null' });
+      return null;
+    }
+    return apply({ type: 'setColorGrade', clipIds: [clipId], grade });
+  }
+
+  async function setLut(clipId, lut) {
+    if (lut !== null && (typeof lut !== 'object' || Array.isArray(lut))) {
+      update({ error: 'LUT reference must be an object or null' });
+      return null;
+    }
+    return apply({ type: 'setLut', clipIds: [clipId], lut });
+  }
+
+  async function setChromaKey(clipId, chromaKey) {
+    if (chromaKey !== null && (typeof chromaKey !== 'object' || Array.isArray(chromaKey))) {
+      update({ error: 'chroma key must be an object or null' });
+      return null;
+    }
+    return apply({ type: 'setChromaKey', clipIds: [clipId], chromaKey });
+  }
+
+  async function setTextStyle(clipId, textStyle) {
+    if (textStyle === null || typeof textStyle !== 'object' || Array.isArray(textStyle)) {
+      update({ error: 'text style must be an object' });
+      return null;
+    }
+    return apply({ type: 'setClipProperties', clipIds: [clipId], properties: { textStyle } });
+  }
+
+  async function removeSelected() {
+    const selected = findClip(state.timeline, state.selectedClipId);
+    if (selected === null) {
+      update({ error: 'select a clip before deleting it' });
+      return null;
+    }
+    return apply({ type: 'removeClips', clipIds: [selected.clip.id] });
+  }
+
+  function setError(message) {
+    update({ error: typeof message === 'string' ? message : String(message) });
+  }
+
   async function setClipEffects(clipId, effects) {
     if (!Array.isArray(effects)) {
       update({ error: 'effects must be an array' });
@@ -823,6 +868,12 @@ export function createNativeEditorStore({
     setTrackProperties,
     setClipEffects,
     setClipMasks,
+    setColorGrade,
+    setLut,
+    setChromaKey,
+    setTextStyle,
+    removeSelected,
+    setError,
     upsertKeyframe,
     removeKeyframe,
     addCaption,

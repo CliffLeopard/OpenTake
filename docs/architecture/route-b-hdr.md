@@ -18,7 +18,7 @@ claim matrix and boundary sections below.
 | `LinearFrame::to_sdr_rgba8` fallback | Implemented + tested | No — explicit BT.709/203-nit clip fallback, `tone_mapped = false` |
 | Production wgpu `Compositor` / `RenderLoop` | Unchanged | **No** — still `Rgba8Unorm` SDR; HDR sources are still tone-mapped at decode in `opentake-media::color` |
 | `opentake-export-pro` HDR10 writer (linear → PQ/BT.2020 → libx265 Main10 + metadata) | Implemented + real ffprobe/pixel evidence | **Yes** for the frames handed to it |
-| Addon production HDR path (`exportBegin`/`exportVideo(..., hdr10=true)`) | Implemented + real `.opentake` project → addon export → ffprobe evidence | **Yes for the supported subset** (HDR PQ/HLG video, static/keyframed affine transform/opacity, basic rect/ellipse/polygon masks with feather/invert, SDR text/image overlays at 203-nit linear white, mixed AAC audio; no crops/effects/grades/LUTs or nested sequences) |
+| Addon production HDR path (`exportBegin`/`exportVideo(..., hdr10=true)`) | Implemented + real `.opentake` project → addon export → ffprobe evidence | **Yes for the supported subset** (HDR PQ/HLG video, static/keyframed affine transform/opacity, basic rect/ellipse/polygon masks with feather/invert, crop, basic linear grade + 3D LUT, SDR text/image overlays at 203-nit linear white, mixed AAC audio; no effects/chroma key/stabilization/transitions/reverse or nested sequences) |
 | Host `hdr10` option (`export_video`, chunked `/engine/export`, agent export tool) | Implemented pass-through to the addon | **Yes** (forwards to addon; SDR default preserved) |
 | `opentake-export-pro` SDR 10-bit encoder (RGBA8 input, HDR tags) | Pre-existing policy path | No — 10-bit precision and metadata only; SDR pixels |
 | Shared `opentake_media::ExportPreset` / `VideoEncoder` | Not modified (coordination required) | No HDR claim |
@@ -114,9 +114,13 @@ When `hdr10 === true`:
    (4-point polygon), ellipse, polygon and half-plane, with feather/invert and
    whole-mask offset/scale/rotation; multiple masks intersect. HLG inputs
    (`arib-std-b67`) use the HLG inverse OETF and are mapped to PQ/BT.2020 with
-   HLG peak = 1,000 cd/m² (0.1 in the 10,000-nit contract). Unsupported: crops,
-   effects/grades/LUTs, chroma key, stabilization, transitions, reverse and
-   nested sequences.
+   HLG peak = 1,000 cd/m² (0.1 in the 10,000-nit contract). Crop is sampled
+   through `crop_at(frame)` as a source UV sub-rect. Basic `ColorGrade`
+   (exposure/contrast/saturation/temperature/tint/lift-gamma-gain) and project
+   3D `.cube` LUTs are applied in SDR-white-relative linear space (203 cd/m² =
+   1.0) before mapping back to the 10,000-nit contract; LUT intensity is blended
+   and LUT inputs are clamped to [0,1]. Unsupported: effects/chroma key/
+   stabilization/transitions/reverse and nested sequences.
 3. Codec must be `h265`. The timeline audio is mixed exactly like SDR export
    (including optional ducking via the existing path), written to a temporary
    WAV and muxed with the HDR10 video stream using `-c:v copy -c:a aac`; the
@@ -257,7 +261,7 @@ Tests:
 
 ```text
 cargo test -p opentake-render --lib --offline
-  test result: ok. 74 passed; 0 failed  (10 HDR tests included)
+  test result: ok. 75 passed; 0 failed  (11 HDR tests included)
 
 cargo test --offline --manifest-path crates/opentake-export-pro/Cargo.toml --lib
   test result: ok. 32 passed; 0 failed
@@ -265,7 +269,7 @@ cargo test --offline --manifest-path crates/opentake-export-pro/Cargo.toml --lib
 cargo check -p opentake-render --offline
 cargo check -p opentake-node --offline
 cargo test -p opentake-node --lib
-  2 passed (SDR 203-nit conversion + premultiplied alpha)
+  4 passed (SDR 203-nit conversion, premultiplied alpha, unbounded HDR grade, 17³ LUT sampling)
   Finished (macOS arm64; warnings are pre-existing)
 
 scripts/route-b/export/hdr10-evidence.sh          # isolated writer proof
@@ -328,6 +332,34 @@ HLG-input evidence: `production_hdr10_from_hlg.mp4` starts from an
 `arib-std-b67` BT.2020 fixture and exports PQ/BT.2020 Main10 with mastering/
 content-light metadata; measured Y codes [222,439,554,695] (4 distinct levels).
 
+Crop evidence: `production_hdr10_cropped.mp4` applies left/right crop 0.25;
+base-vs-cropped Y deltas at x=20%/80% are **376/132**, with HDR tags and AAC
+preserved.
+
+Grade + LUT evidence: `production_hdr10_grade_lut.mp4` applies exposure +0.5,
+contrast 0.1, saturation 1.2, temperature 0.1 and a 17³ inverting `.cube` LUT
+(intensity 1.0). First-frame centre Y changes from **668 (base) to 64**, proving
+the linear grade/LUT pipeline runs in the HDR path; HDR tags/audio preserved.
+
+### Nested sequences — concrete blocker
+
+`opentake_render::plan::try_build_render_plan` already flattens nested
+sequences into `ClipPlan`/`LayerDraw` with compound affine, crop UV, masks and
+grade/LUT metadata. The HDR addon currently walks the *raw* timeline clips and
+decodes each source into a full-frame `LinearFrame`; it does not consume the
+flattened plan. True HDR nested flattening therefore needs one of:
+
+1. a new compositor layer form carrying the plan's arbitrary `LayerDraw.affine`
+   matrix (preferred transform + compound ancestor transforms) and `crop_uv`,
+   instead of the current center/size/rotation `LayerTransform`; or
+2. pre-flattening nested clips into a synthetic HDR timeline (requires remapping
+   compound transforms, timing/trim, text clip lookup and per-leaf HDR decode).
+
+The blocker is geometric representation + text/compound metadata plumbing, not
+source decode or audio (the SDR audio plan already flattens nested). Until that
+lands, nested sequences stay rejected with this exact reason rather than being
+silently misrendered.
+
 Affine-transform evidence: `production_hdr10_transformed.mp4` places the layer
 in the left half (width 0.5, centre 0.25) with opacity 0.75; first-frame Y at
 x=10% is **182** (HDR layer present) and at x=75% is **64** (background black),
@@ -352,6 +384,8 @@ f4f010ef80b6d7223bdc5dbdccbae2c72d259c671840cfe59a2dfa82750b078a  production_hdr
 cae8390a482fd5259025ab216086727a9cd2ae555f51a89c3042c348b88284a7  production_hdr10_keyframed.mp4
 82fb43dd4af82a7e315cac1c37d269877b1f269ac999d74afd3712ace1a94a03  production_hdr10_masked.mp4
 04fabd209f612f223a6c97f1093d1660e9d153aa35730b10a8563d52cf3a53bd  production_hdr10_from_hlg.mp4
+1e60f5603dcfedfc87538191a60cf9c36992f84fd819244dc7ce2e3872d56512  production_hdr10_cropped.mp4
+735778a492d8b13d527b0e945a75d1845d6e3b7f3229adc7f1e5e858499aa537  production_hdr10_grade_lut.mp4
 ```
 
 The isolated export-pro evidence (§4) remains the writer-only proof; §4.1 is the
@@ -409,11 +443,11 @@ Required follow-up to widen/consume the production HDR path:
 1. Migrate the wgpu compositor output to `Rgba16Float` (or add an HDR-capable
    second compositor) and composite layer textures in scene-linear space; keep
    the existing RGBA8 path as the SDR fallback. Add GPU readback for RGBA16F.
-2. Extend the addon HDR path beyond the supported subset: crop (non-mask),
-   effects/grades/LUTs/keying, nested sequences, and range-trimmed audio. SDR
-   text/image overlays, keyframed transform/opacity, basic masks and HLG→PQ input
-   conversion are now supported. HLG policy is static 1,000-nit peak, not a
-   dynamic scene-referred tone-map.
+2. Extend the addon HDR path beyond the supported subset: effects/chroma key/
+   keying, nested-sequence flattening, and range-trimmed audio. Crop, basic
+   linear grade/3D LUT, SDR text/image overlays, keyframed transform/opacity,
+   basic masks and HLG→PQ input conversion are now supported. HLG policy is
+   static 1,000-nit peak, not a dynamic scene-referred tone-map.
    Or replace the CPU linear compositor with the GPU linear compositor once (1)
    exists.
 3. Port the HDR10 writer into the shared `opentake_media` encoder/`ExportPreset`
@@ -433,12 +467,13 @@ Required follow-up to widen/consume the production HDR path:
 
 - The production addon HDR path is **supported-subset only**: HDR PQ video
   layers with static or keyframed affine transform/opacity, basic rect/ellipse/
-  polygon masks with feather/invert, mixed timeline audio, SDR text/image
-  overlays using the documented 203-nit linear white policy, and HLG→PQ input
-  conversion (static 1,000-nit peak). No crop/effects/grades/LUTs/chroma key/
-  stabilization/transitions/reverse/nested sequences; unsupported timelines are
-  rejected, not exported. SDR overlay conversion and HLG peak mapping are
-  explicit approximations, not source-accurate HDR master claims.
+  polygon masks with feather/invert, crop, basic linear grade/3D LUT, mixed
+  timeline audio, SDR text/image overlays using the documented 203-nit linear
+  white policy, and HLG→PQ input conversion (static 1,000-nit peak). No effects/
+  chroma key/stabilization/transitions/reverse/nested sequences; unsupported
+  timelines are rejected, not exported. SDR overlay conversion, HLG peak mapping
+  and grade/LUT normalization are explicit approximations, not source-accurate
+  HDR master claims. HDR preview remains SDR; no HLG output/HDR10+/DV claim.
 - The addon HDR path uses a **CPU linear compositor** (bilinear affine sampling,
   full-frame decode per layer) and per-frame ffmpeg HDR decode; it is correct and
   evidenced, not a performance path. The wgpu compositor is still RGBA8 SDR and

@@ -1,135 +1,128 @@
-# Route B — final verification (v41)
+# Route B — final verification (v42)
 
 | | |
 |---|---|
-| Status | **Final v41 integration verification** — verified on the tagged-worktree build, package and live DSH client |
-| Branch / commit | `feat/dsh-rust-engine` @ `5167c60` (`feat(route-b): HDR audio + affine layers, native inspector/export/settings`); worktree has only the Lead-owned `scripts/build-route-b-addon.sh` version bump (v41) and this verifier's report/script changes |
-| Addon | `opentake_engine_v41.node` — arm64 sha256 `81cbf44ca07e3a6fdd7a62e743eb03ab58f434ba6f5c61e385c4a881f9456b44` (45.4 MiB, ORT); x64 `0344f9be9d6b3742f4fe2979178e953f139942401fe99bc6c2079275639d22cd` (43.3 MiB, tract) |
-| Final package | `dist/opentake-studio-route-b-0.1.0-darwin-universal.tgz` — sha256 `c9e2eeb0309eaecb81ee4c5e816d8d09a12c6cb48a46b3873da0e1ecc334addc`, 28,252,419 B, 24 files, both v41 slices, current index, `lib/search/*`, native-editor bundle |
-| Model | `~/.dsh/opentake/models/siglip2-base-patch16-256-v2` — all three files match pinned SHA-256; complete |
-| Environment | macOS 27.2 arm64 · Node 26.13.0 (N-API 10) · DSH Electron Node 24.21.0 (N-API 10) · rustc 1.99.1 · ffmpeg/ffprobe 9.0.2 · Chrome 157 · no Rosetta, 0 signing identities, no `pwsh` |
+| Status | **Final v42 integration verification** — HDR overlays/masks/keyframes/HLG and native full panels |
+| Branch / commit | `feat/dsh-rust-engine` @ `63616cd` (`feat(route-b): HDR masks/HLG/overlays/keyframes and native full panels`); worktree clean except `?? .codegraph/` |
+| Addon | `opentake_engine_v42.node` — arm64 sha256 `37d8b567be5a95790d94faf92d64e0557a9efd3e138c760b2cc1d9cf870d88a4` (45.4 MiB, ORT); x64 `4044bcec376a4e5082e33f5298fbed8b91eb056a8cfbe90b7cc1a514e00eb5a4` (43.3 MiB, tract) |
+| Final package | `dist/opentake-studio-route-b-0.1.0-darwin-universal.tgz` — sha256 `545175ba9fc6971e602bc6869eff78afccae0b15518377893e42fbcc794fdfb1`, 28,278,576 B, 24 files, both v42 slices, current index, search libs, native-editor bundle (279,451 B) |
+| Model | `~/.dsh/opentake/models/siglip2-base-patch16-256-v2` — complete; all pinned SHA-256 verified |
+| Environment | macOS 27.2 arm64 · Node 26.13.0 (N-API 10) · DSH Electron Node 24.21.0 (N-API 10) · rustc 1.99.1 · ffmpeg 9.0.2 · Chrome 157 · no Rosetta, 0 signing identities, no `pwsh` |
 
-Method: every item below was re-run against v41; no implementation file was
-edited and nothing was committed by the verifier. The DSH live checks used the
-authenticated Chrome CDP session at `127.0.0.1:9333` (page
-`http://127.0.0.1:56474/`); the 9230 host inspector exposes no DOM.
+Method: all checks below were re-run against v42; no implementation file was
+edited and nothing was committed by the verifier. Live UI checks used the
+authenticated Chrome CDP session at `127.0.0.1:9333` → DSH
+`http://127.0.0.1:56474/`; the 9230 host inspector has no DOM.
 
 ## 1. Final matrix
 
 | # | Item | Status | Evidence |
 |---|---|---|---|
-| 1 | v41 addon build / ABI / load | **Verified (functional)** | smoke OK; `verify-addon --workers` **22 passed, 2 warnings, 0 failed** in Node 26 and DSH Node 24; revalidate **19 passed, 0 failed, 1 skipped, 0 warnings**. A clean build yields sha256 `589b0b11…` vs checked-in `81cbf44c…`, but both carry the **same LC_UUID `FF175789-F215-3E45-B0B7-442F56E4DA99`** and the same code-section total (103,440 bytes); the byte difference is only `__LINKEDIT` (13,647,872 vs 12,845,056 — stripped/signed packaging), so it is not a source drift; revalidate reports SKIP, not failure. |
-| 2 | Final package + DSH profile install | **Verified** | dist universal **12 passed, 1 warning, 0 failed (13 checks)**: 24 files, both v41 slices byte-equal to repo, correct index (`01c10432…`), packaged addon smoke, packaged plugin loads **32 tools**; fresh `npm pack` also 24 entries/12-13; temp-`DSH_HOME` `dsh plugin add` + `--dump-config` + installed arm64 v41 loads. |
-| 3 | HDR audio + affine/multi-layer expansion | **Verified (v41, shipped)** | Workstream evidence hashes reproduced exactly: `production_hdr10.mp4` **fefc97e6…**, `production_hdr10_transformed.mp4` **2e9eee11…**, `production_sdr10.mp4` **5097ce9e…**. `verify-hdr-expansion` on v41: audio export summary `hdr10:true, hasAudio:true`, ffprobe **HEVC Main10 / yuv420p10le / bt2020 / smpte2084 / bt2020nc + AAC LC 48 kHz mono**; two overlapping HDR layers (affine transform/rotation + opacity 0.5) produce Main10/PQ; transformed pixel evidence inside=182 / outside=64; SDR source rejected. |
-| 4 | Native Inspector/Export/Settings panels + live HDR export | **Verified live (v41)** | CDP: native `OpenTake（原生）` → `原生预览` ShadowRoot; header actions `检查器/导出/设置`; Inspector fields for opacity/volume/position/scale/rotation (opacity 1→0.5 incremented timeline v2→v3, undo restored); move right 0→1/v3 + undo; Settings shows storage/model/search-index; fallback restores iframe `/opentake-studio-route-b/app/`. Native Export panel: all fields including hdr10/duckMusic; live HDR export on a temp project returned `{hdr10:true,hasAudio:true,frameCount:10}` and `/tmp/native-hdr-v41.mp4` is **Main10/PQ with AAC** (host addon v41 loaded). |
-| 5 | HDR10 ffprobe vs SDR/false-HDR | **Verified** | HDR output: Main10/yuv420p10le/bt2020/smpte2084/bt2020nc + mastering/content-light metadata; SDR output (same project, hdr10=false) is Main10 but bt709 with no HDR metadata; `verify-hdr10.mjs` classifies true HDR as `hdr10`, SDR as `sdr`, a 10-bit SDR file re-tagged PQ without mastering metadata as `false-hdr`; SDR-source HDR requests fail with `HDR10 export requires HDR sources`; H.264+HDR fails `requires codec h265`; native panel live HDR request **hasAudio true**. |
-| 6 | Native bundle serving / package | **Verified** | repo bundle `/app/native-editor/native-editor.js` sha/size current (255,980 B, contains open-inspector/export/settings); Host API serves it; dist package contains the same bundle; native-editor tests **14/14**, shell tests **11/11**. |
-| 7 | SigLIP2 model + real search (regression) | **Verified** | model complete, pinned SHA-256 (image `f5cb1672…`, text `d3de4a6b…`, tokenizer `cb9140fa…`, receipts); Host API extracted v41: real Host search PASS (installed/visual true, indexed 4, text Moments, image self-match); addon real search PASS (text `red`→red-video 0.1321, image red→red-video 0.9999 > blue 0.9559, `ort-native`). |
-| 8 | Playback / export / motion / providers | **Verified on macOS arm64** | Host API 31/32: cpal playback + multipart stream, JPEG preview, denoise/loudness/stabilization, SDR 10-bit H.265, ducking, ASR/captions, Motion doc+template, native bundle route; providers only loopback mocks. |
-| 9 | x64 search parity | **Static Verified / runtime Unknown** | v41 x64 is a tract build (`hasTract:true, hasOrtNative:false, hasOrtLinkage:false, ok:true`), no ONNX/CoreML linkage; package ships it. No Rosetta on this arm64 host, so x64 runtime/inference quality remains Unknown. |
-| 10 | CI / signing | **Partial / external resources pending** | workflow 5 jobs validates (YAML, pinned SHAs, scripts); wgpu readiness READY all; mac signing dry-run SKIP (0 identities); local Linux/Windows preflights exit 78; no `pwsh`; no CI run or signing. |
+| 1 | v42 build / ABI / package | **Verified** | Clean rebuild is **byte-identical** to checked-in arm64 v42 (`37d8b567…`); smoke + `verify-addon --workers` 22 passed/2 warnings/0 failed in Node 26 and DSH Node 24; consolidated revalidate **20 passed, 0 failed, 0 skipped, 0 warnings**; dist universal **12/13**, 24 files, packaged plugin loads 32 tools; temp-`DSH_HOME` install; installed arm64 v42 hash matches; Host API 31/32 on repo + extracted package. |
+| 2 | HDR10 SDR text/image overlays | **Verified** | `production_hdr10_overlays.mp4` sha256 **f4f010ef…**; independently recomputed pixels: image sample delta 232, text-changed pixels 1952; ffprobe still HEVC Main10/yuv420p10le/bt2020/smpte2084/bt2020nc with mastering metadata; SDR overlays map via 203-nit linear white (documented), not HDR-native graphics. |
+| 3 | HDR10 masks (rect/ellipse/poly, feather/invert) | **Verified** | `production_hdr10_masked.mp4` **82fb43dd…**; ellipse mask centre Y=669 vs corner Y=64; invert/feather applied; output HDR10 tags preserved; mask path is the CPU linear compositor. |
+| 4 | HDR10 keyframed transform/opacity | **Verified** | `production_hdr10_keyframed.mp4` **cae8390a…**; opacity keyframe sampled per frame: centre Y 668 at frame 0 → 521 at frame 9; output Main10/PQ; unsupported effect keyframes refuse. |
+| 5 | HDR10 HLG input → PQ | **Verified input conversion / output policy absent** | `production_hdr10_from_hlg.mp4` **04fabd20…**; HLG source (`arib-std-b67`) exported to Main10/yuv420p10le/bt2020/smpte2084/PQ with four distinct bar levels (222/439/554/695); HLG **output** and HDR10+/DV are not implemented. |
+| 6 | HDR10 nested sequences | **Not supported (explicit rejection)** | Preflight errors with `HDR10 export does not support nested sequences yet` (`crates/opentake-node/src/lib.rs:1024-1025`); effect/crop projects fail with the explicit “crops/effects/grades/LUTs/keying/transitions/reverse/nested sequences are not supported yet” message. |
+| 7 | HDR10 SDR/false-HDR regression | **Verified** | `production_sdr10.mp4` **5097ce9e…** is Main10 but bt709 with no HDR metadata (classified `sdr`); a 10-bit SDR retagged PQ without mastering metadata is classified `false-hdr`; SDR-source HDR request rejected (`requires HDR sources`); H.264+HDR rejected. |
+| 8 | Native Effects/Captions/Keyframes/Masks/Playback/import | **Verified live (v42)** | Engine v42 loaded in the live page; native preview ShadowRoot: Effect add `grayscale` → engine `effects:[{name:"grayscale",…}]`; ellipse mask + invert → engine `masks:[{kind:circle,invert:true}]`; opacity keyframe at frame 5 → `opacityTrack`; caption create → timeline clip `id-11 "V42 caption" 0+45`; playback attr `playing` + stop; media import path → media count 1→3; fallback restores iframe `/opentake-studio-route-b/app/`. Native tests 18/18, shell tests 11/11; bundle 279,451 B with all panel markers. |
+| 9 | SigLIP2 search + model | **Verified** | model complete/pinned; Host API real Host search PASS (`ort-native`, indexed 4, text Moments + image self-match); addon real text/image search PASS. |
+| 10 | x64 / CI / signing | **x64 static verified; CI/signing pending external** | v42 x64 tract: `hasTract:true`, no ORT linkage, `ok:true`; package ships it; no Rosetta to execute x64. CI workflow/scripts statically valid; mac signing SKIP (0 identities); Linux/Windows preflights exit 78; no `pwsh`; no CI run/signing. |
 
-## 2. Evidence and commands
+## 2. Exact evidence
 
-### 2.1 Addon/package
+### 2.1 HDR evidence pipeline (v42)
+```bash
+bash scripts/route-b/export/hdr10-production-evidence.sh /tmp/task78-hdr-evidence
+# evidence addon sha256 37d8b567… == checked-in arm64 v42
+# PASS; media hashes:
+# production_hdr10.mp4                    fefc97e6…
+# production_sdr10.mp4                    5097ce9e…
+# production_hdr10_transformed.mp4        2e9eee11…
+# production_hdr10_overlays.mp4           f4f010ef…
+# production_hdr10_keyframed.mp4          cae8390a…
+# production_hdr10_masked.mp4             82fb43dd…
+# production_hdr10_from_hlg.mp4           04fabd20…
+```
+Independently decoded the raw `yuv420p10le` frames and recomputed:
+mask centre 669 / corner 64, overlay image delta 232, keyframe 668→521,
+HLG levels 222/439/554/695. `verify-hdr10.mjs` reports `hdr10` for all HDR
+outputs with mastering + content-light metadata; SDR output is `sdr`; a
+retagged-SDR file is `false-hdr`. False-HDR project rejection:
+`HDR10 export requires HDR sources; sdr_source is SDR`.
+
+Unsupported boundaries (v42):
+```text
+effect: HDR10 export supports static/keyframed affine + opacity, SDR text/image
+        overlays and basic masks; crops/effects/grades/LUTs/keying/transitions/
+        reverse/nested sequences are not supported yet
+crop:   same explicit rejection
+nested: HDR10 export does not support nested sequences yet
+HLG output / HDR10+ / Dolby Vision: not implemented
+```
+The shipped wgpu compositor/preview and ordinary SDR export remain RGBA8/SDR;
+HDR is the addon/export path only (CPU linear compositor).
+
+### 2.2 Native panels (live v42)
+Authenticated Chrome CDP 9333 → DSH 56474; `OpenTake（原生）` → `原生预览`:
+- **Effects**: added `grayscale`; engine timeline returned that effect.
+- **Masks**: added ellipse and inverted it; engine returned `kind:"circle"` with `invert:true`.
+- **Keyframes**: seeked to frame 5, added opacity keyframe; engine `opacityTrack` updated.
+- **Captions**: created “V42 caption” 0+45; engine timeline returned caption clip `id-11`.
+- **Playback**: play → transport `data-otn-playback="playing"`, stop worked.
+- **Import**: path entry imported `/tmp/ostudio-media/motion.mp4`; media count 3.
+- **Fallback**: `Iframe 编辑器` restored the iframe app; native preview can be re-entered.
+- Bundle markers: `open-captions`, `data-otn-mask-add`, `data-otn-effect-add`,
+  `data-otn-keyframe-add`, `data-otn-playback`, `data-otn-import-path`; tests 18/18 + 11/11.
+
+### 2.3 Package / install
 ```bash
 bash scripts/route-b/verify/revalidate-v28.sh --fresh-pack
-# 19 passed, 0 failed, 1 skipped (build byte-hash packaging variant), 0 warnings
-# dist tarball index matches working tree — 01c10432…
-# tarball verification 12/13; extraction 24 files; temp-DSH install; installed v41 loads
-# Host API probe (repo plugin, temp copy) 31 passed, 0 failed (32 checks)
-# Host API probe (extracted package) 31 passed, 0 failed (32 checks)
-
-node scripts/route-b/verify/verify-tarball.mjs \
-  --tarball dist/opentake-studio-route-b-0.1.0-darwin-universal.tgz
-# 12 passed, 1 warning, 0 failed — 24 files, addon v41, packaged plugin loads 32 tools
-
-DSH_HOME=/tmp/v41-dsh dsh plugin --profile v41 add dist/…universal.tgz
-# installed darwin-arm64/opentake_engine_v41.node sha256 81cbf44c…
+# 20 passed, 0 failed, 0 skipped, 0 warnings
+# built addon matches checked-in v42 exactly
+node scripts/route-b/verify/verify-tarball.mjs --tarball dist/…universal.tgz
+# 12 passed, 1 warning, 0 failed — 24 files, addon v42, packaged plugin loads 32 tools
+DSH_HOME=/tmp/v42-dsh dsh plugin --profile v42 add dist/…universal.tgz
+# installed darwin-arm64/opentake_engine_v42.node sha256 37d8b567…
+# installed addon expansion PASS; Host API extracted package 31/32
 ```
-Clean-build/reproducibility note: `cargo build -p opentake-node --release --locked` from `5167c60` gives `589b0b11…`; the checked-in `81cbf44c…` has the same LC_UUID and same code-section total, smaller `__LINKEDIT` (stripped/signed packaging). Functional ABI/behaviour is verified in both runtimes; byte-for-byte rebuild equality is not claimed because the packaging/strip step is not reproduced by the plain build.
-
-### 2.2 HDR audio/affine/multi-layer (media-dev evidence reproduced)
-```bash
-bash scripts/route-b/export/hdr10-production-evidence.sh /tmp/route-b-hdr10-v41-evidence
-# PASS; hashes exactly:
-# fefc97e67cb73189… production_hdr10.mp4
-# 2e9eee11c881227d… production_hdr10_transformed.mp4
-# 5097ce9eb35087c5… production_sdr10.mp4
-# transform pixel evidence: insideY 182 / outsideY 64; PQ HDR pass; SDR tone-mapped pass
-
-node scripts/route-b/verify/verify-hdr-expansion.mjs \
-  --addon plugins/opentake-studio-route-b/native/darwin-arm64/opentake_engine_v41.node
-# PASS: audio= aac 48000 Hz mono + Main10/PQ; 2 layers transformed/opacity;
-#       SDR refused
-node scripts/route-b/verify/verify-hdr10.mjs /tmp/.../production_hdr10.mp4
-# hdr10 PASS (mastering + content-light)
-```
-Live native-panel HDR export on a temp project (`/tmp/routeb-native-hdr-v41.opentake`,
-one affine HDR video layer + audio, v41 Host addon):
-summary `{hdr10:true,hasAudio:true,frameCount:10,metadata:{primaries:bt2020,transfer:smpte2084,...}}`;
-ffprobe `/tmp/native-hdr-v41.mp4`: HEVC Main 10/yuv420p10le/bt2020/smpte2084 + AAC.
-
-### 2.3 Native Inspector/Export/Settings (live CDP)
-Authenticated Chrome CDP 9333 → `http://127.0.0.1:56474/`; live engine info reported
-`native/darwin-arm64/opentake_engine_v41.node`, loaded.
-
-- **Inspector**: selected clip; fields opacity/volume/centerX/centerY/width/height/
-  rotation; opacity 1→0.5 → engine `version 2→3`, clip opacity 0.5; undo →
-  opacity 1/version 4.
-- **Timeline edit**: `右移` moved startFrame 0→1 (version 3); `撤销` restored
-  (version 4).
-- **Export**: native sheet fields outPath, codec (h264/h265/prores/prores4444),
-  quality, bitDepth 8/10, range start/end, duckMusic, hdr10; HDR export above
-  completed successfully through the live Host engine.
-- **Settings**: storage categories, search model `ready · siglip2-base-patch16-256`,
-  transcription `not configured`, search-index JSON.
-- **Fallback**: `Iframe 编辑器` restored `/opentake-studio-route-b/app/`; iframe
-  is the default/fallback and native preview can be toggled again.
-- Screenshots: `/tmp/live-native-panels.png`, `/tmp/live-native-editor-mode.png`,
-  `/tmp/live-native-v40-verifier.png`; native tests 14/14, shell 11/11.
 
 ### 2.4 Search/model
-`verify-search-model.mjs` exit 0 (complete); Host API real search PASS
-(`installed:true, visualAvailable:true, backend:ort-native`, indexed 4, text
-Moments, image self-match); addon `verify-real-search` PASS with text/image
-scores above.
+Model complete with pinned SHA-256; Host real search PASS (`installed:true,
+visualAvailable:true, backend:ort-native`, indexed 4, text Moments + image
+self-match); addon `verify-real-search` PASS.
 
 ### 2.5 x64 / CI
-`arch-capability.mjs` v41 x64: expectedBackend tract, `hasTract:true`,
-`hasOrtLinkage:false`, `ok:true`; cannot execute x64 (no Rosetta).
-`validate-workflows.sh` OK; wgpu READY macOS/Windows/Linux; `sign-macos.sh`
-SKIP (0 identities); local Linux/Windows preflight exit 78; `verify-ci-signing`
-8 PASS + 1 WARN (no `pwsh`); no CI run/signing/notarization.
+x64 v42 tract: `arch-capability` `expectedBackend:tract`, `hasTract:true`,
+`hasOrtLinkage:false`, `ok:true`; no execution on this arm64 host.
+CI workflow valid, wgpu platforms READY, signing dry-run SKIP, local
+Linux/Windows preflight 78, no `pwsh`; no CI/signing executed.
 
-## 3. Remaining limits / blockers
+## 3. Remaining gaps (exact true-vs-fallback boundaries)
 
-1. **HDR supported subset** — HDR PQ video, static affine transform/opacity, mixed
-   AAC audio, multiple HDR video layers; no crop/masks/effects/grades/LUT/chroma
-   key/stabilization/transitions/reverse/nested sequences, text/image layers,
-   visual keyframe tracks or HLG; range exports mux the full timeline mix. The
-   production wgpu compositor/preview remains RGBA8 SDR; CPU linear compositor is
-   not a performance path.
-2. **x64 runtime** — v41 x64 tract build is static-verified and packaged; no x64
-   execution/quality evidence on this arm64 host (no Rosetta).
-3. **CI/signing** — workflow/scripts prepared and statically validated; no GitHub
-   run, no Windows/Linux binary, no Apple/Windows signing or notarization.
-4. **Reproducible packaging** — clean `cargo build` bytes differ from the
-   checked-in v41 artifact only in `__LINKEDIT` (same LC_UUID/code sections);
-   reproduce the strip/sign/package step for byte-for-byte release equality.
-5. **Live-Host verification requires the authenticated Chrome CDP session** on
-   9333; the 9230 host inspector has no DOM and the unauthenticated web URL is 401.
-6. **Real providers** — still loopback mocks; no real key/network call was made.
+1. **HDR unsupported**: crops (non-mask), effects/grades/LUTs, chroma key,
+   stabilization, transitions, reverse, nested sequences; range exports mux the
+   whole timeline audio; HLG is input→PQ only (no HLG output); HDR10+/Dolby
+   Vision not implemented; overlays are SDR (203-nit mapped), not HDR-native
+   graphics; preview/shared encoder remain SDR; CPU linear compositor only.
+2. **Native editor**: bounded panels only — home/media/timeline/preview,
+   Inspector with Effects/Keyframes/Masks sections, Captions, Export, Settings,
+   playback transport and a media-path import. No full effects/grades/LUT UI,
+   no drag-and-drop/file-picker import, no motion/library/agent panels; the full
+   editor remains in the iframe fallback.
+3. **x64 runtime** unknown (no Rosetta); tract build/package static only.
+4. **CI/signing** prepared only; Windows/Linux binaries and Apple/Windows
+   signing/notarization not executed.
+5. **Real providers** still loopback mocks.
+6. **Live UI checks** require the authenticated Chrome CDP session; the DSH host
+   inspector at 9230 has no DOM.
 
 ## 4. Docs status
-- `route-b-hdr.md` matches v41 (audio mux + affine layers + explicit remaining
-  subset limits); `route-b-search.md` matches the pinned-model/tract architecture;
-  `native-editor/README.md` documents the verified live panels and remaining
-  full-editor gaps.
-- `route-b-verification.md` still contains old v27 names and “HDR/ducking not
-  verified” wording — stale; update or retire.
-- This report supersedes the earlier v40 snapshot and the interim task-77
-  “source-built/stale artifacts” addendum.
+`route-b-hdr.md` matches v42 (HLG→PQ input, overlays at 203 nits, masks,
+keyframes, audio; nested/crops/effects/LUTs/HLG-output unsupported);
+`native-editor/README.md` matches the live panel evidence; `route-b-search.md`
+matches the pinned model/backends. `route-b-verification.md` still names v27 and
+“HDR/ducking not verified” — stale, update or retire.
 
 ## 5. Verifier scripts (owned under `scripts/route-b/verify/`)
 `revalidate-v28.sh`, `verify-tarball.mjs`, `verify-host-api.mjs`,

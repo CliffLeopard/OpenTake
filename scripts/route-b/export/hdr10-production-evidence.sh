@@ -147,6 +147,37 @@ print(json.dumps(result, indent=2))
 raise SystemExit(0 if result['pass'] else 1)
 PY
 
+echo "== crop evidence"
+"$FFMPEG" -y -hide_banner -loglevel error -i "$OUT/production_hdr10_cropped.mp4" -frames:v 1 -f rawvideo -pix_fmt yuv420p10le "$OUT/cropped_f0.yuv"
+python3 - "$OUT/base_f0.yuv" "$OUT/cropped_f0.yuv" "$WIDTH" "$HEIGHT" <<'PY' | tee "$OUT/production-crop-measure.json"
+import json, struct, sys
+base, cropped, width, height = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+def plane(path):
+    data = open(path, 'rb').read()
+    return struct.unpack(f'<{width * height}H', data[:width * height * 2])
+a, b = plane(base), plane(cropped)
+row = height // 2
+left = abs(a[row * width + int(0.2 * width)] - b[row * width + int(0.2 * width)])
+right = abs(a[row * width + int(0.8 * width)] - b[row * width + int(0.8 * width)])
+result = {'leftDelta': left, 'rightDelta': right, 'pass': left > 20 and right > 20}
+print(json.dumps(result, indent=2))
+raise SystemExit(0 if result['pass'] else 1)
+PY
+
+echo "== grade + 3D LUT evidence"
+"$FFMPEG" -y -hide_banner -loglevel error -i "$OUT/production_hdr10_grade_lut.mp4" -frames:v 1 -f rawvideo -pix_fmt yuv420p10le "$OUT/grade_f0.yuv"
+python3 - "$OUT/base_f0.yuv" "$OUT/grade_f0.yuv" "$WIDTH" "$HEIGHT" <<'PY' | tee "$OUT/production-grade-measure.json"
+import json, struct, sys
+base, graded, width, height = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+def sample(path):
+    data = open(path, 'rb').read()
+    return struct.unpack_from('<H', data, (height // 2 * width + width // 2) * 2)[0]
+a, b = sample(base), sample(graded)
+result = {'baseY': a, 'gradedY': b, 'delta': abs(a - b), 'pass': abs(a - b) > 20}
+print(json.dumps(result, indent=2))
+raise SystemExit(0 if result['pass'] else 1)
+PY
+
 echo "== HLG→PQ input evidence"
 "$FFMPEG" -y -hide_banner -loglevel error -i "$OUT/production_hdr10_from_hlg.mp4" -frames:v 1 -f rawvideo -pix_fmt yuv420p10le "$OUT/hlg_f0.yuv"
 python3 - "$OUT/hlg_f0.yuv" "$WIDTH" "$HEIGHT" <<'PY' | tee "$OUT/production-hlg-measure.json"
@@ -191,8 +222,8 @@ PY
 
 echo "== hashes"
 if command -v shasum >/dev/null 2>&1; then
-  shasum -a 256 "$OUT/production_hdr10.mp4" "$OUT/production_sdr10.mp4" "$OUT/production_hdr10_transformed.mp4" "$OUT/production_hdr10_overlays.mp4" "$OUT/production_hdr10_keyframed.mp4" "$OUT/production_hdr10_masked.mp4" "$OUT/production_hdr10_from_hlg.mp4" | tee "$OUT/sha256.txt"
+  shasum -a 256 "$OUT/production_hdr10.mp4" "$OUT/production_sdr10.mp4" "$OUT/production_hdr10_transformed.mp4" "$OUT/production_hdr10_overlays.mp4" "$OUT/production_hdr10_keyframed.mp4" "$OUT/production_hdr10_masked.mp4" "$OUT/production_hdr10_from_hlg.mp4" "$OUT/production_hdr10_cropped.mp4" "$OUT/production_hdr10_grade_lut.mp4" | tee "$OUT/sha256.txt"
 else
-  sha256sum "$OUT/production_hdr10.mp4" "$OUT/production_sdr10.mp4" "$OUT/production_hdr10_transformed.mp4" "$OUT/production_hdr10_overlays.mp4" "$OUT/production_hdr10_keyframed.mp4" "$OUT/production_hdr10_masked.mp4" "$OUT/production_hdr10_from_hlg.mp4" | tee "$OUT/sha256.txt"
+  sha256sum "$OUT/production_hdr10.mp4" "$OUT/production_sdr10.mp4" "$OUT/production_hdr10_transformed.mp4" "$OUT/production_hdr10_overlays.mp4" "$OUT/production_hdr10_keyframed.mp4" "$OUT/production_hdr10_masked.mp4" "$OUT/production_hdr10_from_hlg.mp4" "$OUT/production_hdr10_cropped.mp4" "$OUT/production_hdr10_grade_lut.mp4" | tee "$OUT/sha256.txt"
 fi
 echo "PASS: production HDR10 evidence written under $OUT"

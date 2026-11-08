@@ -131,6 +131,18 @@ function MediaPanel(React, { state, client, t, store }) {
     },
       h(React, 'input', { className: 'otn-input', name: 'nativeImportPath', placeholder: t('importMediaPath'), 'aria-label': t('importMediaPath'), spellCheck: false, 'data-otn-import-path': '' }),
       h(React, 'button', { type: 'submit', className: 'otn-btn', disabled: state.busy, 'data-otn-action': 'import-media' }, state.busy ? t('importing') : t('importMedia')),
+      h(React, 'input', {
+        type: 'file',
+        className: 'otn-file-picker',
+        'data-otn-file-picker': '',
+        onChange: (event) => {
+          const file = event.target.files?.[0] ?? null;
+          const absolutePath = typeof file?.path === 'string' ? file.path : '';
+          if (absolutePath.length > 0) void store.importMedia([absolutePath]);
+          else store.setError(t('filePathUnavailable'));
+          event.target.value = '';
+        },
+      }),
     ),
     items.length === 0
       ? h(React, 'p', { className: 'otn-empty' }, t('noMedia'))
@@ -288,6 +300,7 @@ function InspectorPanel({ React, state, store, t }) {
   const [draft, setDraft] = React.useState({
     opacity: '', volume: '', centerX: '', centerY: '', width: '', height: '', rotation: '', textContent: '',
   });
+  const [tab, setTab] = React.useState('properties');
   React.useEffect(() => {
     if (clip === null) {
       setDraft({ opacity: '', volume: '', centerX: '', centerY: '', width: '', height: '', rotation: '', textContent: '' });
@@ -340,6 +353,14 @@ function InspectorPanel({ React, state, store, t }) {
   return h(React, 'aside', { className: 'otn-inspector', 'aria-label': t('inspector') },
     h(React, 'div', { className: 'otn-panel-title' }, t('inspector'), h(React, 'span', null, clipName(null, clip))),
     h(React, 'div', { className: 'otn-inspector__body' },
+      h(React, 'div', { className: 'otn-inspector__tabs', role: 'tablist' },
+        ['properties', 'effects', 'keyframes', 'masks', 'advanced'].map((name) => h(React, 'button', {
+          key: name, type: 'button', role: 'tab', className: `otn-inspector__tab${tab === name ? ' otn-inspector__tab--active' : ''}`,
+          'aria-selected': tab === name, 'data-otn-inspector-tab': name,
+          onClick: () => setTab(name),
+        }, t(name === 'properties' ? 'properties' : name))),
+      ),
+      h(React, 'div', { hidden: tab !== 'properties' },
       h(React, 'div', { className: 'otn-inspector__group' },
         h(React, 'span', { className: 'otn-inspector__title' }, t('properties')),
         numberField(React, { label: t('opacity'), value: draft.opacity, dataKey: 'opacity', min: 0, max: 1, step: 0.01, onChange: (value) => setDraftValue('opacity', value), onBlur: () => commitNumber('opacity', 'opacity') }),
@@ -379,9 +400,174 @@ function InspectorPanel({ React, state, store, t }) {
           h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'aria-pressed': track.syncLocked === true, 'data-otn-track-prop': 'syncLocked', onClick: () => { void store.setTrackProperties(trackIndex, { syncLocked: track.syncLocked !== true }); } }, t('syncLock')),
         ),
       ),
-      h(React, EffectsSection, { React, clip, store, t, disabled }),
-      h(React, KeyframesSection, { React, state, clip, store, t, disabled }),
-      h(React, MasksSection, { React, clip, store, t, disabled }),
+      ),
+      h(React, 'div', { hidden: tab !== 'effects' }, h(React, EffectsSection, { React, clip, store, t, disabled })),
+      h(React, 'div', { hidden: tab !== 'keyframes' }, h(React, KeyframesSection, { React, state, clip, store, t, disabled })),
+      h(React, 'div', { hidden: tab !== 'masks' }, h(React, MasksSection, { React, clip, store, t, disabled })),
+      h(React, 'div', { hidden: tab !== 'advanced' }, h(React, AdvancedSection, { React, clip, store, t, disabled })),
+    ),
+  );
+}
+
+const GRADE_DEFAULT = {
+  exposure: 0, temperature: 0, tint: 0,
+  liftGammaGain: { lift: { r: 0, g: 0, b: 0 }, gamma: { r: 1, g: 1, b: 1 }, gain: { r: 1, g: 1, b: 1 } },
+  contrast: 0, saturation: 1, hslSecondary: null,
+};
+const TEXT_STYLE_DEFAULT = {
+  fontName: 'Helvetica-Bold', fontSize: 48, fontScale: 1,
+  color: { r: 1, g: 1, b: 1, a: 1 }, alignment: 'center',
+  shadow: { enabled: false, color: { r: 0, g: 0, b: 0, a: 0 }, offsetX: 0, offsetY: 0, blur: 0 },
+  background: { enabled: false, color: { r: 0, g: 0, b: 0, a: 0 } },
+  border: { enabled: false, color: { r: 0, g: 0, b: 0, a: 1 } },
+};
+const CHROMA_DEFAULT = {
+  keyColor: { r: 0, g: 1, b: 0 }, similarity: 0.15, smoothness: 0.35, spill: 0.5,
+};
+
+function formNumber(form, name, fallback) {
+  const raw = form.elements[name]?.value;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function AdvancedSection({ React, clip, store, t, disabled }) {
+  const grade = clip.colorGrade ?? GRADE_DEFAULT;
+  const textStyle = clip.textStyle ?? TEXT_STYLE_DEFAULT;
+  const chroma = clip.chromaKey ?? null;
+  const lut = clip.lut ?? null;
+  return h(React, 'div', { className: 'otn-inspector__group', 'data-otn-advanced': '' },
+    h(React, 'span', { className: 'otn-inspector__title' }, t('advanced')),
+
+    h(React, 'form', {
+      className: 'otn-advanced-card', 'data-otn-advanced-section': 'colorGrade',
+      onSubmit: (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        void store.setColorGrade(clip.id, {
+          ...GRADE_DEFAULT,
+          ...grade,
+          exposure: formNumber(form, 'exposure', grade.exposure ?? 0),
+          temperature: formNumber(form, 'temperature', grade.temperature ?? 0),
+          tint: formNumber(form, 'tint', grade.tint ?? 0),
+          contrast: formNumber(form, 'contrast', grade.contrast ?? 0),
+          saturation: formNumber(form, 'saturation', grade.saturation ?? 1),
+          liftGammaGain: grade.liftGammaGain ?? GRADE_DEFAULT.liftGammaGain,
+          hslSecondary: grade.hslSecondary ?? null,
+        });
+      },
+    },
+      h(React, 'span', { className: 'otn-inspector__title' }, t('colorGrade')),
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('exposure')), h(React, 'input', { className: 'otn-field__input', name: 'exposure', type: 'number', step: 0.1, min: -5, max: 5, defaultValue: String(grade.exposure ?? 0), 'data-otn-grade-field': 'exposure' })),
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('contrast')), h(React, 'input', { className: 'otn-field__input', name: 'contrast', type: 'number', step: 0.05, min: -1, max: 2, defaultValue: String(grade.contrast ?? 0), 'data-otn-grade-field': 'contrast' })),
+      ),
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('temperature')), h(React, 'input', { className: 'otn-field__input', name: 'temperature', type: 'number', step: 0.05, min: -1, max: 1, defaultValue: String(grade.temperature ?? 0), 'data-otn-grade-field': 'temperature' })),
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('tint')), h(React, 'input', { className: 'otn-field__input', name: 'tint', type: 'number', step: 0.05, min: -1, max: 1, defaultValue: String(grade.tint ?? 0), 'data-otn-grade-field': 'tint' })),
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('saturation')), h(React, 'input', { className: 'otn-field__input', name: 'saturation', type: 'number', step: 0.05, min: 0, max: 3, defaultValue: String(grade.saturation ?? 1), 'data-otn-grade-field': 'saturation' })),
+      ),
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'button', { type: 'submit', className: 'otn-btn', disabled, 'data-otn-action': 'grade-apply' }, t('apply')),
+        clip.colorGrade !== null && clip.colorGrade !== undefined ? h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'data-otn-action': 'grade-remove', onClick: () => { void store.setColorGrade(clip.id, null); } }, t('remove')) : null,
+      ),
+    ),
+
+    h(React, 'form', {
+      className: 'otn-advanced-card', 'data-otn-advanced-section': 'textStyle',
+      onSubmit: (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        void store.setTextStyle(clip.id, {
+          ...TEXT_STYLE_DEFAULT,
+          ...textStyle,
+          fontName: String(form.elements.fontName?.value ?? textStyle.fontName ?? 'Helvetica-Bold'),
+          fontSize: formNumber(form, 'fontSize', textStyle.fontSize ?? 48),
+          fontScale: formNumber(form, 'fontScale', textStyle.fontScale ?? 1),
+          alignment: String(form.elements.alignment?.value ?? textStyle.alignment ?? 'center'),
+          color: {
+            r: formNumber(form, 'colorR', textStyle.color?.r ?? 1),
+            g: formNumber(form, 'colorG', textStyle.color?.g ?? 1),
+            b: formNumber(form, 'colorB', textStyle.color?.b ?? 1),
+            a: formNumber(form, 'colorA', textStyle.color?.a ?? 1),
+          },
+        });
+      },
+    },
+      h(React, 'span', { className: 'otn-inspector__title' }, t('textStyle')),
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('fontName')), h(React, 'input', { className: 'otn-field__input', name: 'fontName', defaultValue: textStyle.fontName ?? 'Helvetica-Bold', 'data-otn-text-field': 'fontName' })),
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('fontSize')), h(React, 'input', { className: 'otn-field__input', name: 'fontSize', type: 'number', min: 4, max: 400, defaultValue: String(textStyle.fontSize ?? 48), 'data-otn-text-field': 'fontSize' })),
+      ),
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('alignment')), h(React, 'select', { className: 'otn-field__input', name: 'alignment', defaultValue: textStyle.alignment ?? 'center', 'data-otn-text-field': 'alignment' }, ['left', 'center', 'right'].map((value) => h(React, 'option', { key: value, value }, value)))),
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('textColor')), h(React, 'div', { className: 'otn-field__row' },
+          h(React, 'input', { className: 'otn-field__input', name: 'colorR', type: 'number', min: 0, max: 1, step: 0.05, defaultValue: String(textStyle.color?.r ?? 1), 'aria-label': 'R' }),
+          h(React, 'input', { className: 'otn-field__input', name: 'colorG', type: 'number', min: 0, max: 1, step: 0.05, defaultValue: String(textStyle.color?.g ?? 1), 'aria-label': 'G' }),
+          h(React, 'input', { className: 'otn-field__input', name: 'colorB', type: 'number', min: 0, max: 1, step: 0.05, defaultValue: String(textStyle.color?.b ?? 1), 'aria-label': 'B' }),
+        )),
+      ),
+      h(React, 'button', { type: 'submit', className: 'otn-btn', disabled, 'data-otn-action': 'text-style-apply' }, t('apply')),
+    ),
+
+    h(React, 'form', {
+      className: 'otn-advanced-card', 'data-otn-advanced-section': 'chromaKey',
+      onSubmit: (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        void store.setChromaKey(clip.id, {
+          keyColor: {
+            r: formNumber(form, 'keyR', chroma?.keyColor?.r ?? 0),
+            g: formNumber(form, 'keyG', chroma?.keyColor?.g ?? 1),
+            b: formNumber(form, 'keyB', chroma?.keyColor?.b ?? 0),
+          },
+          similarity: formNumber(form, 'similarity', chroma?.similarity ?? 0.15),
+          smoothness: formNumber(form, 'smoothness', chroma?.smoothness ?? 0.35),
+          spill: formNumber(form, 'spill', chroma?.spill ?? 0.5),
+        });
+      },
+    },
+      h(React, 'span', { className: 'otn-inspector__title' }, t('chromaKey')),
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('keyColor')), h(React, 'div', { className: 'otn-field__row' },
+          h(React, 'input', { className: 'otn-field__input', name: 'keyR', type: 'number', min: 0, max: 1, step: 0.05, defaultValue: String(chroma?.keyColor?.r ?? 0), 'aria-label': 'R' }),
+          h(React, 'input', { className: 'otn-field__input', name: 'keyG', type: 'number', min: 0, max: 1, step: 0.05, defaultValue: String(chroma?.keyColor?.g ?? 1), 'aria-label': 'G' }),
+          h(React, 'input', { className: 'otn-field__input', name: 'keyB', type: 'number', min: 0, max: 1, step: 0.05, defaultValue: String(chroma?.keyColor?.b ?? 0), 'aria-label': 'B' }),
+        )),
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('similarity')), h(React, 'input', { className: 'otn-field__input', name: 'similarity', type: 'number', min: 0, max: 1, step: 0.01, defaultValue: String(chroma?.similarity ?? 0.15), 'data-otn-chroma-field': 'similarity' })),
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('spill')), h(React, 'input', { className: 'otn-field__input', name: 'spill', type: 'number', min: 0, max: 1, step: 0.01, defaultValue: String(chroma?.spill ?? 0.5), 'data-otn-chroma-field': 'spill' })),
+      ),
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'button', { type: 'submit', className: 'otn-btn', disabled, 'data-otn-action': 'chroma-apply' }, t('apply')),
+        chroma !== null ? h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'data-otn-action': 'chroma-remove', onClick: () => { void store.setChromaKey(clip.id, null); } }, t('remove')) : null,
+      ),
+    ),
+
+    h(React, 'form', {
+      className: 'otn-advanced-card', 'data-otn-advanced-section': 'lut',
+      onSubmit: (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const id = String(form.elements.lutId?.value ?? '').trim();
+        const name = String(form.elements.lutName?.value ?? '').trim();
+        if (id.length !== 64 || name.length === 0) {
+          store.setError(t('lutInvalid'));
+          return;
+        }
+        void store.setLut(clip.id, { id, name, intensity: formNumber(form, 'lutIntensity', 1) });
+      },
+    },
+      h(React, 'span', { className: 'otn-inspector__title' }, t('lut')),
+      h(React, 'p', { className: 'otn-sheet__hint' }, lut === null ? t('noLut') : `${lut.name ?? ''} · ${lut.intensity ?? ''}`),
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutId')), h(React, 'input', { className: 'otn-field__input', name: 'lutId', defaultValue: lut?.id ?? '', 'data-otn-lut-field': 'id', spellCheck: false })),
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutIntensity')), h(React, 'input', { className: 'otn-field__input', name: 'lutIntensity', type: 'number', min: 0, max: 1, step: 0.05, defaultValue: String(lut?.intensity ?? 1), 'data-otn-lut-field': 'intensity' })),
+      ),
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('lutName')), h(React, 'input', { className: 'otn-field__input', name: 'lutName', defaultValue: lut?.name ?? '', 'data-otn-lut-field': 'name' })),
+        h(React, 'button', { type: 'submit', className: 'otn-btn', disabled, 'data-otn-action': 'lut-apply' }, t('apply')),
+        lut !== null ? h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'data-otn-action': 'lut-remove', onClick: () => { void store.setLut(clip.id, null); } }, t('remove')) : null,
+      ),
     ),
   );
 }
@@ -517,6 +703,38 @@ function MasksSection({ React, clip, store, t, disabled }) {
           },
         }),
       ),
+      (() => {
+        const transform = mask.transform ?? { offset: { x: 0, y: 0 }, scale: { x: 1, y: 1 }, rotationDegrees: 0 };
+        const updateTransform = (patch) => updateMask(index, { transform: { ...transform, ...patch } });
+        return h(React, 'div', { className: 'otn-mask-advanced', 'data-otn-mask-transform': index },
+          h(React, 'span', { className: 'otn-field__label' }, t('maskTransform')),
+          h(React, 'div', { className: 'otn-field__row' },
+            h(React, 'input', { className: 'otn-field__input', type: 'number', step: 0.01, defaultValue: String(transform.offset?.x ?? 0), 'aria-label': 'offsetX', 'data-otn-mask-offset-x': index, onBlur: (event) => updateTransform({ offset: { ...(transform.offset ?? { x: 0, y: 0 }), x: Number(event.target.value) } }) }),
+            h(React, 'input', { className: 'otn-field__input', type: 'number', step: 0.01, defaultValue: String(transform.offset?.y ?? 0), 'aria-label': 'offsetY', 'data-otn-mask-offset-y': index, onBlur: (event) => updateTransform({ offset: { ...(transform.offset ?? { x: 0, y: 0 }), y: Number(event.target.value) } }) }),
+            h(React, 'input', { className: 'otn-field__input', type: 'number', step: 0.01, defaultValue: String(transform.scale?.x ?? 1), 'aria-label': 'scaleX', 'data-otn-mask-scale-x': index, onBlur: (event) => updateTransform({ scale: { ...(transform.scale ?? { x: 1, y: 1 }), x: Number(event.target.value) } }) }),
+            h(React, 'input', { className: 'otn-field__input', type: 'number', step: 0.01, defaultValue: String(transform.scale?.y ?? 1), 'aria-label': 'scaleY', 'data-otn-mask-scale-y': index, onBlur: (event) => updateTransform({ scale: { ...(transform.scale ?? { x: 1, y: 1 }), y: Number(event.target.value) } }) }),
+            h(React, 'input', { className: 'otn-field__input', type: 'number', step: 1, defaultValue: String(transform.rotationDegrees ?? 0), 'aria-label': 'rotation', 'data-otn-mask-rotation': index, onBlur: (event) => updateTransform({ rotationDegrees: Number(event.target.value) }) }),
+          ),
+          mask.shape?.kind === 'poly'
+            ? h(React, 'div', { className: 'otn-field' },
+              h(React, 'span', { className: 'otn-field__label' }, t('maskPoints')),
+              h(React, 'textarea', { className: 'otn-field__input', rows: 2, defaultValue: JSON.stringify(mask.shape.points ?? []), 'data-otn-mask-points': index }),
+              h(React, 'button', {
+                type: 'button', className: 'otn-btn', 'data-otn-mask-points-apply': index,
+                onClick: (event) => {
+                  try {
+                    const points = JSON.parse(event.currentTarget.previousSibling.value);
+                    if (!Array.isArray(points) || points.length < 3) throw new Error('need 3+ points');
+                    updateMask(index, { shape: { ...mask.shape, points } });
+                  } catch {
+                    store.setError(t('maskPointsInvalid'));
+                  }
+                },
+              }, t('apply')),
+            )
+            : null,
+        );
+      })(),
     )),
     h(React, 'p', { className: 'otn-sheet__hint' }, t('masksHint')),
   );
@@ -758,7 +976,75 @@ export function NativeEditorView({ React, store, client, theme = 'system' }) {
   const t = createTranslator(state.locale).t;
   const resolvedTheme = theme === 'light' || theme === 'dark' ? theme : (state.theme === 'light' || state.theme === 'dark' ? state.theme : 'system');
   const busy = state.loading || state.busy;
-  return h(React, 'div', { className: 'otn-root', 'data-theme': resolvedTheme, 'data-otn-panel': state.panel, lang: state.locale },
+  const rootRef = React.useRef(null);
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
+  function onKeyDown(event) {
+    const target = event.target;
+    const tag = typeof target?.tagName === 'string' ? target.tagName.toLowerCase() : '';
+    const editable = tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable === true;
+    if (editable) return;
+    const mod = event.metaKey || event.ctrlKey;
+    const key = event.key;
+    if (key === ' ') {
+      event.preventDefault();
+      if (state.playback.active && !state.playback.paused) void store.pause();
+      else void store.play();
+      return;
+    }
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      event.preventDefault();
+      const delta = key === 'ArrowLeft' ? -1 : 1;
+      if (event.shiftKey) void store.moveSelected(delta);
+      else void store.seekTo(state.frame + delta);
+      return;
+    }
+    if (mod && (key === 'z' || key === 'Z')) {
+      event.preventDefault();
+      if (event.shiftKey) void store.redo();
+      else void store.undo();
+      return;
+    }
+    if (mod && (key === 'y' || key === 'Y')) {
+      event.preventDefault();
+      void store.redo();
+      return;
+    }
+    if (key === 'Delete' || key === 'Backspace') {
+      event.preventDefault();
+      void store.removeSelected();
+      return;
+    }
+    if (mod && (key === 's' || key === 'S')) {
+      event.preventDefault();
+      void store.saveProject();
+      return;
+    }
+    if (mod && (key === 'e' || key === 'E')) {
+      event.preventDefault();
+      store.openPanel('export');
+      return;
+    }
+    if (key === '?' || (key === '/' && event.shiftKey)) {
+      event.preventDefault();
+      setShortcutsOpen((value) => !value);
+      return;
+    }
+    if (key === 'Escape') {
+      setShortcutsOpen(false);
+      if (state.panel !== 'editor') store.closePanel();
+    }
+  }
+  const shortcutRows = [
+    ['shortcutPlay'], ['shortcutSeek'], ['shortcutNudge'], ['shortcutUndo'],
+    ['shortcutRedo'], ['shortcutDelete'], ['shortcutSave'], ['shortcutExport'], ['shortcutHelp'],
+  ];
+  return h(React, 'div', {
+    ref: rootRef,
+    tabIndex: 0,
+    onKeyDown,
+    onPointerDown: (event) => { if (event.currentTarget === event.target) event.currentTarget.focus(); },
+    className: 'otn-root', 'data-theme': resolvedTheme, 'data-otn-panel': state.panel, lang: state.locale,
+  },
     h(React, 'header', { className: 'otn-header' },
       h(React, 'div', { className: 'otn-brand' },
         h(React, 'span', { className: 'otn-brand__name' }, t('appName')),
@@ -791,6 +1077,14 @@ export function NativeEditorView({ React, store, client, theme = 'system' }) {
           'aria-pressed': state.panel === 'settings',
           onClick: () => store.openPanel(state.panel === 'settings' ? 'editor' : 'settings'),
         }, t('settings')),
+        h(React, 'button', {
+          type: 'button',
+          className: 'otn-btn',
+          'data-otn-action': 'open-shortcuts',
+          'aria-pressed': shortcutsOpen,
+          title: t('shortcuts'),
+          onClick: () => setShortcutsOpen((value) => !value),
+        }, '?'),
         state.view === 'editor' ? button(React, t('saveProject'), () => { void store.saveProject(); }, { disabled: busy }) : null,
         button(React, t('refresh'), () => { void store.refresh(); }, { disabled: busy }),
         busy ? h(React, 'span', { className: 'otn-progress', role: 'status' }, t('busy')) : null,
@@ -803,6 +1097,17 @@ export function NativeEditorView({ React, store, client, theme = 'system' }) {
     state.panel === 'captions' ? h(React, CaptionsPanel, { React, state, store, t }) : null,
     state.panel === 'export' ? h(React, ExportPanel, { React, state, store, t }) : null,
     state.panel === 'settings' ? h(React, SettingsPanel, { React, state, store, t }) : null,
+    shortcutsOpen ? h(React, 'div', { className: 'otn-overlay', 'data-otn-panel': 'shortcuts' },
+      h(React, 'section', { className: 'otn-sheet', 'aria-label': t('shortcutsHelp') },
+        h(React, 'div', { className: 'otn-sheet__header' },
+          h(React, 'h2', { className: 'otn-sheet__title' }, t('shortcutsHelp')),
+          button(React, t('close'), () => setShortcutsOpen(false), { ariaLabel: t('close') }),
+        ),
+        h(React, 'div', { className: 'otn-sheet__body' },
+          h(React, 'ul', { className: 'otn-shortcut-list' }, shortcutRows.map(([key]) => h(React, 'li', { key }, h(React, 'span', null, t(key))))),
+        ),
+      ),
+    ) : null,
     h(React, 'footer', { className: 'otn-status' },
       h(React, 'span', null, `${t('projectVersion', { version: state.timeline?.version ?? 0 })}`),
       h(React, 'span', { className: 'otn-spacer' }),

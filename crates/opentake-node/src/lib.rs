@@ -19,8 +19,8 @@ use opentake_core::dto::{
 };
 use opentake_core::session::ProbedMedia;
 use opentake_domain::{
-    AudioDenoise, ClipType, DenoiseMode, MaskShape as DomainMaskShape, MediaColorMetadata,
-    MediaManifestEntry, MediaSource,
+    AudioDenoise, ClipType, ColorGrade, CubeLut, DenoiseMode, LutReference,
+    MaskShape as DomainMaskShape, MediaColorMetadata, MediaManifestEntry, MediaSource,
 };
 use opentake_media::analysis::{
     analyze_loudness, analyze_stabilization, denoise_interleaved, track_translation_motion,
@@ -995,6 +995,155 @@ fn hdr_layer_masks(masks: &[opentake_domain::Mask]) -> Vec<LayerMask> {
         .collect()
 }
 
+fn sample_cube_lut(lut: &CubeLut, rgb: [f32; 3]) -> [f32; 3] {
+    let size = lut.size().max(2);
+    let n = (size - 1) as f32;
+    let scaled = [
+        (rgb[0].clamp(0.0, 1.0) * n),
+        (rgb[1].clamp(0.0, 1.0) * n),
+        (rgb[2].clamp(0.0, 1.0) * n),
+    ];
+    let lo = [
+        scaled[0].floor() as usize,
+        scaled[1].floor() as usize,
+        scaled[2].floor() as usize,
+    ];
+    let hi = [
+        (lo[0] + 1).min(size as usize - 1),
+        (lo[1] + 1).min(size as usize - 1),
+        (lo[2] + 1).min(size as usize - 1),
+    ];
+    let t = [
+        scaled[0] - lo[0] as f32,
+        scaled[1] - lo[1] as f32,
+        scaled[2] - lo[2] as f32,
+    ];
+    let table = lut.table();
+    let at = |r: usize, g: usize, b: usize| {
+        let index = (b * size as usize + g) * size as usize + r;
+        table.get(index).copied().unwrap_or([0.0, 0.0, 0.0])
+    };
+    let mut out = [0.0_f32; 3];
+    for channel in 0..3 {
+        let c000 = at(lo[0], lo[1], lo[2])[channel];
+        let c100 = at(hi[0], lo[1], lo[2])[channel];
+        let c010 = at(lo[0], hi[1], lo[2])[channel];
+        let c110 = at(hi[0], hi[1], lo[2])[channel];
+        let c001 = at(lo[0], lo[1], hi[2])[channel];
+        let c101 = at(hi[0], lo[1], hi[2])[channel];
+        let c011 = at(lo[0], hi[1], hi[2])[channel];
+        let c111 = at(hi[0], hi[1], hi[2])[channel];
+        let c00 = c000 * (1.0 - t[0]) + c100 * t[0];
+        let c10 = c010 * (1.0 - t[0]) + c110 * t[0];
+        let c01 = c001 * (1.0 - t[0]) + c101 * t[0];
+        let c11 = c011 * (1.0 - t[0]) + c111 * t[0];
+        let c0 = c00 * (1.0 - t[1]) + c10 * t[1];
+        let c1 = c01 * (1.0 - t[1]) + c11 * t[1];
+        out[channel] = c0 * (1.0 - t[2]) + c1 * t[2];
+    }
+    out
+}
+
+/// Basic unbounded linear grade for HDR: exposure, approximate temperature/tint,
+/// contrast around the 0.18 SDR-relative pivot, and saturation. Unlike
+/// `ColorGrade::apply_linear`, this does not clamp to [0,1], so HDR highlights
+/// above SDR white survive. Lift/gamma/gain and secondary qualifiers are not
+/// applied in the HDR path yet.
+fn apply_basic_linear_grade(rgb: [f64; 3], grade: &ColorGrade) -> [f64; 3] {
+    let exposure = if grade.exposure != 0.0 {
+        2.0_f64.powf(grade.exposure)
+    } else {
+        1.0
+    };
+    let warm = grade.temperature.clamp(-1.0, 1.0);
+    let tint = grade.tint.clamp(-1.0, 1.0);
+    let mut rgb = [
+        rgb[0] * exposure * (1.0 + 0.15 * warm),
+        rgb[1] * exposure * (1.0 - 0.10 * tint),
+        rgb[2] * exposure * (1.0 - 0.15 * warm),
+    ];
+    if grade.contrast != 0.0 {
+        let pivot = 0.18;
+        let slope = 1.0 + grade.contrast;
+        for channel in &mut rgb {
+            *channel = (*channel - pivot) * slope + pivot;
+        }
+    }
+    if (grade.saturation - 1.0).abs() > f64::EPSILON {
+        let luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+        for channel in &mut rgb {
+            *channel = luma + (*channel - luma) * grade.saturation;
+        }
+    }
+    rgb
+}
+
+/// Apply the supported linear color pipeline: primary grade and project 3D LUT.
+/// The grade/LUT operate in SDR-white-relative linear space (203 cd/m² = 1.0),
+/// then the result is mapped back to the 10,000-nit linear contract. LUT input
+/// is clamped to the [0,1] cube domain; values above SDR white stay in the
+/// surrounding linear signal but cannot be represented by the LUT.
+fn apply_linear_color_pipeline(
+    frame: &LinearFrame,
+    grade: Option<&ColorGrade>,
+    lut: Option<&LutReference>,
+    project_dir: Option<&FsPath>,
+) -> std::result::Result<LinearFrame, String> {
+    if grade.is_none() && lut.is_none() {
+        return Ok(frame.clone());
+    }
+    let cube = if let Some(reference) = lut {
+        let base =
+            project_dir.ok_or_else(|| "project directory unavailable for LUT".to_string())?;
+        let path = base.join(reference.relative_path());
+        let bytes = std::fs::read(&path)
+            .map_err(|error| format!("read LUT {}: {error}", path.display()))?;
+        Some((
+            CubeLut::parse(&bytes).map_err(|error| error.to_string())?,
+            reference.intensity.clamp(0.0, 1.0),
+        ))
+    } else {
+        None
+    };
+    const SDR_WHITE: f64 = 203.0 / 10_000.0;
+    let mut components = Vec::with_capacity(frame.width() as usize * frame.height() as usize * 4);
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            let pixel = frame.pixel(x, y).unwrap_or([0.0, 0.0, 0.0, 0.0]);
+            let mut rgb = [
+                f64::from(pixel[0]) / SDR_WHITE,
+                f64::from(pixel[1]) / SDR_WHITE,
+                f64::from(pixel[2]) / SDR_WHITE,
+            ];
+            if let Some(grade) = grade {
+                rgb = apply_basic_linear_grade(rgb, grade);
+            }
+            if let Some((cube, intensity)) = &cube {
+                let lut_out = sample_cube_lut(cube, [rgb[0] as f32, rgb[1] as f32, rgb[2] as f32]);
+                for channel in 0..3 {
+                    let mixed = rgb[channel] * (1.0 - f64::from(*intensity))
+                        + f64::from(lut_out[channel]) * f64::from(*intensity);
+                    rgb[channel] = mixed;
+                }
+            }
+            components.extend_from_slice(&[
+                (rgb[0] * SDR_WHITE) as f32,
+                (rgb[1] * SDR_WHITE) as f32,
+                (rgb[2] * SDR_WHITE) as f32,
+                pixel[3],
+            ]);
+        }
+    }
+    LinearFrame::from_f32(
+        frame.width(),
+        frame.height(),
+        &components,
+        LinearPrimaries::Bt2020,
+        LinearTransfer::Linear,
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// Preflight for the HDR10 production path: reject false-HDR before spawning
 /// the encoder. Every visible visual layer in the exported range must be an
 /// HDR PQ video layer in the supported subset (static affine transform/opacity
@@ -1024,18 +1173,14 @@ fn validate_hdr10_timeline(
             if clip.nested_sequence_id.is_some() {
                 return Err("HDR10 export does not support nested sequences yet".to_string());
             }
-            if !clip.crop.is_identity()
-                || !clip.effects.is_empty()
+            if !clip.effects.is_empty()
                 || clip.stabilization.is_some()
-                || clip.color_grade.is_some()
-                || clip.lut.is_some()
                 || clip.chroma_key.is_some()
                 || clip.transition_out.is_some()
                 || clip.reversed
-                || clip.crop_track.is_some()
             {
                 return Err(
-                    "HDR10 export supports static/keyframed affine + opacity, SDR text/image overlays and basic masks; crops/effects/grades/LUTs/keying/transitions/reverse/nested sequences are not supported yet"
+                    "HDR10 export supports crop, affine/keyframe/opacity, basic masks, SDR text/image overlays and basic grades/LUTs; effects/keying/transitions/reverse/nested sequences are not supported yet"
                         .to_string(),
                 );
             }
@@ -1134,7 +1279,13 @@ fn render_hdr_linear_frame(
     let timeline = &snapshot.timeline;
     let manifest = core.media();
     let project_dir = core.project_dir();
-    let mut layers: Vec<(LinearFrame, f64, LayerTransform, Vec<LayerMask>)> = Vec::new();
+    let mut layers: Vec<(
+        LinearFrame,
+        f64,
+        LayerTransform,
+        (f64, f64, f64, f64),
+        Vec<LayerMask>,
+    )> = Vec::new();
     for track in timeline.tracks.iter().filter(|track| !track.hidden) {
         for clip in &track.clips {
             if frame < clip.start_frame || frame >= clip.start_frame + clip.duration_frames {
@@ -1144,18 +1295,14 @@ fn render_hdr_linear_frame(
                 continue;
             }
             if clip.nested_sequence_id.is_some()
-                || !clip.crop.is_identity()
                 || !clip.effects.is_empty()
                 || clip.stabilization.is_some()
-                || clip.color_grade.is_some()
-                || clip.lut.is_some()
                 || clip.chroma_key.is_some()
                 || clip.transition_out.is_some()
                 || clip.reversed
-                || clip.crop_track.is_some()
             {
                 return Err(
-                    "HDR10 export supports static/keyframed affine + opacity, SDR text/image overlays and basic masks; crops/effects/grades/LUTs/keying/transitions/reverse/nested sequences are not supported yet"
+                    "HDR10 export supports crop, affine/keyframe/opacity, basic masks, SDR text/image overlays and basic grades/LUTs; effects/keying/transitions/reverse/nested sequences are not supported yet"
                         .to_string(),
                 );
             }
@@ -1254,10 +1401,24 @@ fn render_hdr_linear_frame(
                     ));
                 }
             };
+            let linear = apply_linear_color_pipeline(
+                &linear,
+                clip.color_grade.as_ref(),
+                clip.lut.as_ref(),
+                project_dir.as_deref(),
+            )?;
+            let crop = clip.crop_at(frame);
+            let crop_uv = (
+                crop.left.clamp(0.0, 0.99),
+                crop.top.clamp(0.0, 0.99),
+                (1.0 - crop.right).clamp(0.01, 1.0),
+                (1.0 - crop.bottom).clamp(0.01, 1.0),
+            );
             layers.push((
                 linear,
                 opacity.clamp(0.0, 1.0),
                 transform,
+                crop_uv,
                 hdr_layer_masks(&clip.masks),
             ));
         }
@@ -1271,10 +1432,11 @@ fn render_hdr_linear_frame(
     let refs: Vec<TransformedLinearLayer<'_>> = layers
         .iter()
         .map(
-            |(linear, opacity, transform, masks)| TransformedLinearLayer {
+            |(linear, opacity, transform, crop_uv, masks)| TransformedLinearLayer {
                 frame: linear,
                 opacity: *opacity as f32,
                 transform: *transform,
+                crop_uv: *crop_uv,
                 masks: masks.clone(),
             },
         )
@@ -3557,5 +3719,52 @@ mod hdr_overlay_tests {
             );
         }
         assert!((premultiplied[3] - 0.502).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod hdr_grade_tests {
+    use super::*;
+
+    #[test]
+    fn exposure_grade_runs_in_sdr_white_relative_linear_space() {
+        let frame = LinearFrame::from_f32(
+            1,
+            1,
+            &[0.0203, 0.0203, 0.0203, 1.0],
+            LinearPrimaries::Bt2020,
+            LinearTransfer::Linear,
+        )
+        .unwrap();
+        let mut grade = ColorGrade::default();
+        grade.exposure = 1.0;
+        let graded = apply_linear_color_pipeline(&frame, Some(&grade), None, None).unwrap();
+        let pixel = graded.pixel(0, 0).unwrap();
+        assert!((pixel[0] - 0.0406).abs() < 1e-4, "pixel={pixel:?}");
+        assert!((pixel[3] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cube_lut_identity_table_is_sampled_in_wire_order() {
+        let size = 17u32;
+        let mut text = format!("TITLE \"identity\"\nLUT_3D_SIZE {size}\n");
+        for b in 0..size {
+            for g in 0..size {
+                for r in 0..size {
+                    text.push_str(&format!(
+                        "{:.6} {:.6} {:.6}\n",
+                        r as f32 / (size - 1) as f32,
+                        g as f32 / (size - 1) as f32,
+                        b as f32 / (size - 1) as f32,
+                    ));
+                }
+            }
+        }
+        let lut = CubeLut::parse(text.as_bytes()).unwrap();
+        assert_eq!(lut.size(), size);
+        let sampled = sample_cube_lut(&lut, [0.25, 0.5, 0.75]);
+        assert!((sampled[0] - 0.25).abs() < 1e-5, "sampled={sampled:?}");
+        assert!((sampled[1] - 0.5).abs() < 1e-5);
+        assert!((sampled[2] - 0.75).abs() < 1e-5);
     }
 }

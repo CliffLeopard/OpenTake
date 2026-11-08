@@ -77,6 +77,69 @@ console.log(JSON.stringify({ hdr10Export: hdr }, null, 2));
 const sdr = exportOnce(engine, path.join(outDir, 'production_sdr10.mp4'), false);
 console.log(JSON.stringify({ sdr10Export: sdr }, null, 2));
 
+// Crop + basic linear color grade + project 3D LUT.
+function sourceClip(engineInstance, durationFrames = 10) {
+  const catalog = JSON.parse(engineInstance.importMedia([sourcePath]));
+  const media = catalog.items.find((item) => item.name.startsWith('hdr_source'));
+  engineInstance.apply(JSON.stringify({ type: 'insertTrack', kind: 'video' }));
+  const timeline = JSON.parse(engineInstance.getTimeline()).timeline;
+  const track = timeline.tracks.findIndex((candidate) => candidate.type === 'video');
+  const applied = JSON.parse(engineInstance.apply(JSON.stringify({
+    type: 'addClips',
+    entries: [{
+      mediaRef: media.id, mediaType: 'video', sourceClipType: 'video',
+      trackIndex: track, startFrame: 0, durationFrames,
+      hasAudio: true, addLinkedAudio: true,
+    }],
+  })));
+  const clip = applied.timeline.timeline.tracks
+    .flatMap((candidate) => candidate.clips)
+    .find((candidate) => candidate.mediaType === 'video');
+  return clip;
+}
+
+const cropEngine = new Engine();
+const cropProject = path.join(outDir, 'hdr-crop.opentake');
+cropEngine.newProjectAt(cropProject);
+const cropClip = sourceClip(cropEngine);
+cropEngine.apply(JSON.stringify({
+  type: 'setClipProperties',
+  clipIds: [cropClip.id],
+  properties: { crop: { left: 0.25, top: 0.0, right: 0.25, bottom: 0.0 } },
+}));
+const cropped = exportOnce(cropEngine, path.join(outDir, 'production_hdr10_cropped.mp4'), true);
+console.log(JSON.stringify({ croppedHdrExport: cropped }, null, 2));
+
+const gradeEngine = new Engine();
+const gradeProject = path.join(outDir, 'hdr-grade-lut.opentake');
+gradeEngine.newProjectAt(gradeProject);
+const gradeClip = sourceClip(gradeEngine);
+gradeEngine.apply(JSON.stringify({
+  type: 'setColorGrade',
+  clipIds: [gradeClip.id],
+  grade: { exposure: 0.5, contrast: 0.1, saturation: 1.2, temperature: 0.1, tint: 0.0 },
+}));
+const lutId = 'a'.repeat(64);
+mkdirSync(path.join(gradeProject, 'media', 'luts'), { recursive: true });
+const lutSize = 17;
+const lutLines = [`TITLE "Invert HDR evidence"`, `LUT_3D_SIZE ${lutSize}`];
+for (let b = 0; b < lutSize; b += 1) {
+  for (let g = 0; g < lutSize; g += 1) {
+    for (let r = 0; r < lutSize; r += 1) {
+      lutLines.push([1 - r / (lutSize - 1), 1 - g / (lutSize - 1), 1 - b / (lutSize - 1)]
+        .map((value) => value.toFixed(6)).join(' '));
+    }
+  }
+}
+writeFileSync(path.join(gradeProject, 'media', 'luts', `${lutId}.cube`), `${lutLines.join('\n')}\n`);
+gradeEngine.apply(JSON.stringify({
+  type: 'setLut',
+  clipIds: [gradeClip.id],
+  lut: { id: lutId, name: 'Invert evidence', intensity: 1.0 },
+}));
+const graded = exportOnce(gradeEngine, path.join(outDir, 'production_hdr10_grade_lut.mp4'), true);
+console.log(JSON.stringify({ gradeLutHdrExport: graded }, null, 2));
+
 // HLG input → PQ HDR10 output policy.
 const hlgEngine = new Engine();
 hlgEngine.newProjectAt(path.join(outDir, 'hdr-hlg.opentake'));
@@ -303,5 +366,5 @@ console.log(JSON.stringify({ falseHdrRejected, falseHdrMessage }));
 
 writeFileSync(
   path.join(outDir, 'production-export.json'),
-  JSON.stringify({ hdr, sdr, overlays, transformed, keyframed, masked, hlg, falseHdrRejected, falseHdrMessage }, null, 2),
+  JSON.stringify({ hdr, sdr, overlays, transformed, keyframed, masked, cropped, graded, hlg, falseHdrRejected, falseHdrMessage }, null, 2),
 );
