@@ -434,3 +434,26 @@ Track.volume = 1     // 0..2，默认 1；与 clip.volume、clip 音量关键帧
 - export 测试：mask alpha 滤镜、blend 全帧与回退、track volume 音频链；真实导出/像素抽样。
 - Host 测试：新操作/工具/状态字段。
 - UI：检查器 mask/blend 控件、轨道音量滑块；截图验证。
+
+## 17. Phase 17 扩展契约：Motion 模板片段
+
+不引入完整 Motion 文档编辑器；提供可编辑参数的 Motion 模板片段，用浏览器 Canvas 2D 逐帧渲染，复用 Lottie 的 PNG 序列导出管线。
+
+```js
+Clip.motion = {
+  template: 'title' | 'lowerThird' | 'callout',
+  text: string,
+  subtitle?: string,
+  color?: string,        // #rrggbb
+  accentColor?: string,  // #rrggbb
+  fontSize?: number,     // 18..200
+  align?: 'left'|'center'|'right',
+  background?: boolean,
+}
+```
+
+- Clip type `motion`：video 轨，`mediaId:null`、`trimStartFrame:0`、`speed:1`，无音频，不参与转场。
+- 操作：`add-motion {clipId?, startFrame, durationFrames, motion, trackId?}`（默认专用 Motion 轨/空闲视频轨）、`update-motion {clipId, motion patch}`。
+- 导出：浏览器把每个 motion clip 渲染为 `<root>/lottie/<clipId>/%05d.png`（透明），ffmpeg 序列合成，与 lottie 相同的 alpha/效果/transform 管线；缺帧报 `motion-unrendered` 或复用 `lottie-unrendered`。
+- 预览：Canvas 2D 模板绘制，支持 transform/crop/mask/effects/opacity/fades；不要求 lottie 播放器。
+- UI：模板选择（title/lowerThird/callout）、文本/副标题/颜色/字号/对齐/背景、时长，添加到播放头；检查器可编辑。
