@@ -6,18 +6,17 @@ use serde::Deserialize;
 
 use opentake_core::EditCommand;
 use opentake_domain::{
-    AnimPair, AudioDenoise, ChromaKey, Clip, ClipType, ColorGrade, Crop, Effect, Interpolation, Keyframe,
-    KeyframeTrack, LoudnessNormalization, LutReference, Mask, StabilizationTrack, TextStyle,
-    Transform, TransitionKind,
+    AnimPair, AudioDenoise, ChromaKey, Clip, ClipType, ColorGrade, Crop, Effect, Interpolation,
+    Keyframe, KeyframeTrack, LoudnessNormalization, LutReference, Mask, StabilizationTrack,
+    TextStyle, Transform, TransitionKind,
 };
 use opentake_ops::command::{
     NewTrackClipMode, PasteClipEntry, PlaceMediaTarget, ProjectTimelineSettings, UnplacedClipEntry,
 };
 use opentake_ops::{
-    CaptionEntry, ClipEntry, ClipMove, ClipProperties, FrameRange, KeyframePayload, KeyframeProperty,
-    KeyframeValue, RenameEntry, TextAutoTrackEntry, TextEntry,
+    CaptionEntry, ClipEntry, ClipMove, ClipProperties, FrameRange, KeyframePayload,
+    KeyframeProperty, KeyframeValue, RenameEntry, TextAutoTrackEntry, TextEntry,
 };
-
 
 // MARK: - EditRequest (serde-friendly mirror of EditCommand)
 
@@ -1025,4 +1024,3 @@ impl KeyframeValueDto {
         }
     }
 }
-

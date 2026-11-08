@@ -93,6 +93,18 @@ check('native-editor prototype tests pass', () => {
   return `${pass} passed, 0 failed`;
 });
 
+check('native Inspector/Export/Settings panels exist in source and bundle', () => {
+  const components = fs.readFileSync(path.join(ROOT, 'web/src/native/components.js'), 'utf8');
+  for (const marker of ['open-inspector', 'open-export', 'open-settings', 'data-otn-panel', 'hdr10', 'duckMusic']) {
+    if (!components.includes(marker)) throw new Error(`components.js missing ${marker}`);
+  }
+  const bundle = fs.readFileSync(path.join(PLUGIN, 'web/native-editor/native-editor.js'), 'utf8');
+  for (const marker of ['open-inspector', 'open-export', 'open-settings', 'data-otn-panel']) {
+    if (!bundle.includes(marker)) throw new Error(`served bundle is stale (missing ${marker})`);
+  }
+  return 'Inspector + Export + Settings panels present in source and served bundle';
+});
+
 let browser = null;
 if (args.chrome && fs.existsSync(CHROME)) {
   try {

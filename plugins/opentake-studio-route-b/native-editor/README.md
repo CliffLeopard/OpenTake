@@ -21,6 +21,14 @@ Bounded milestone implemented:
   through `apply({type:"moveClips", ...})`.
 - Preview: `/engine/preview/frame`, frame slider/step controls, revision-busted
   URLs.
+- Inspector: selected clip/track properties, opacity/volume/transform edits,
+  optional text content, and track mute/hide/sync-lock via `/engine/apply`
+  (`setClipProperties` / `setTrackProps`).
+- Export: codec, quality, bit depth, frame range, duck-music and HDR10 controls
+  invoking the existing `export_video` IPC; progress polling via
+  `/engine/export/status`; summary/error display.
+- Settings: engine info, storage categories (cache clear), search/transcription
+  model status and search-index status from existing `invoke` commands.
 - Lifecycle: explicit `unmount()`, subscription teardown, optional timeline/media
   polling, AbortSignal ownership in `entry.js`, no global `document`/`head` writes.
 
@@ -49,15 +57,17 @@ Bounded milestone implemented:
 node --test plugins/opentake-studio-route-b/native-editor/test/native-editor.test.mjs
 ```
 
-Current result: 10 tests pass (IPC routes/payloads, errors, store lifecycle,
+Current result: 14 tests pass (IPC routes/payloads, errors, store lifecycle,
 move/undo, failure retention, locale, CSS isolation, mount/unmount, entry abort,
-defensive DTO helpers, served bundle production contract).
+defensive DTO helpers, served bundle production contract, inspector/track apply
+commands, export request shape/progress, settings/storage mutation, locale key
+parity).
 
 ```bash
 node --test plugins/opentake-studio-route-b/test/ui-mount.test.mjs
 ```
 
-The DSH shell harness now has 11 passing tests, including the native/iframe
+The DSH shell harness still has 11 passing tests, including the native/iframe
 toggle, default iframe body and native host presence, dictionary parity and
 bundle URL.
 
@@ -68,7 +78,7 @@ node plugins/opentake-studio-route-b/native-editor/build-bundle.mjs
 ```
 
 Output: `plugins/opentake-studio-route-b/web/native-editor/native-editor.js`
-(ES module, React 18 + ReactDOM bundled, production build, ~230 KB / ~62 KB
+(ES module, React 18 + ReactDOM bundled, production build, ~256 KB / ~67.5 KB
 gzip). The existing Host static route serves it as:
 
 ```
@@ -122,32 +132,38 @@ requests and unmounts React/ShadowRoot resources.
 
 ## Live CDP verification
 
-Verified against a temporary DSH web profile on branch `feat/dsh-rust-engine`
-(authenticated URL via `/connect?token=...`, headless Chrome 157, CDP on
-127.0.0.1:9444):
+Verified against the authenticated DSH Web GUI at **http://127.0.0.1:56474/**
+(headless Chrome CDP on 9333, branch `feat/dsh-rust-engine`):
 
-- Opened the `OpenTake（原生）` panel; engine status showed ready.
-- Clicked `原生预览`: ShadowRoot mounted (`children=2`, style + React root),
-  no `process is not defined` after the production `NODE_ENV` define.
-- Home rendered (engine status, project path, new/open, media count).
-- Created/opened a project and clicked `编辑器`: media card, one timeline track
-  and one clip rendered.
-- Selected a clip and clicked `右移`: engine timeline `startFrame` changed
-  0 → 1 and the clip's timeline style changed; `undo`/`redo` actions exist.
-- Preview `<img>` loaded `/engine/preview/frame?frame=1...` with
-  `complete=true`, `naturalWidth=1280`, `naturalHeight=720`; the route returned
-  `200 image/png` (177,515 bytes) and the color-bar image rendered.
-- Toggled back to `Iframe 编辑器`: iframe display `block`, native host `none`,
-  ShadowRoot children `0`; toggled native again and remounted cleanly.
-- Only DSH's pre-existing `Failed to apply window size` console message
-  appeared; no native-editor exceptions.
-- Screenshots: `/tmp/native-editor-live-home.png`,
-  `/tmp/native-editor-live4.png`, plus `/tmp/live-preview.png`.
+- Opened `OpenTake（原生）` and switched to `原生预览`; ShadowRoot mounted with
+  style + React root and no native exceptions.
+- Opened `/tmp/routeb-native-panels.opentake` (created through the live engine
+  IPC with a local color-bar PNG), one video track/clip.
+- Inspector: selected the clip and changed opacity through the native field;
+  the live `/engine/timeline` returned `opacity: 0.42`. Track mute toggled in
+  the native inspector; live timeline returned `muted: true`.
+- Export: opened the native panel, set output path `/tmp/routeb-native-live-export.mp4`,
+  h264/720p/8-bit, range start 0/end 1; the live export completed and returned
+  `{width:1280,height:720,fps:30,frameCount:1,hasAudio:false,hdr10:false}`.
+  CDP Network captured the exact request body:
+  `{"cmd":"export_video","args":{"req":{"outPath":"/tmp/routeb-native-live-export.mp4","codec":"h264","quality":"720p","rangeStartFrame":0,"rangeEndFrame":1,"bitDepth":8,"duckMusic":false,"hdr10":false},"operationId":"native-export"}}`.
+- Settings: opened the native settings sheet; live storage showed `thumbnails
+  210 KB`, search model `ready · siglip2-base-patch16-256`, transcription
+  `not configured`, and search-index JSON.
+- Fallback: switched back to `Iframe 编辑器`; iframe `display:block`, native host
+  `display:none`, ShadowRoot children 0. Then toggled native again and it
+  remounted cleanly.
+- No native-editor exceptions; only DSH's pre-existing
+  `Failed to apply window size` console message.
+- Screenshot: `/tmp/native-editor-export-live.png` (native export sheet over
+  the native editor). Inspector/settings behavior is recorded above as live
+  engine/UI values; the earlier home/editor screenshots remain under `/tmp`.
 
 ## Remaining integration notes
 
 - React/ReactDOM are bundled (not externalized) in the served artifact, so the
-  shell does not depend on a second React module-table entry.
+  shell does not depend on a second React module-table entry; the rebuilt bundle
+  is ~256 KB / ~67.5 KB gzip.
 - The toggle is opt-in; iframe remains default until the native milestone is
   accepted. Do not switch the default without a follow-up.
 - DSH theme changes are inherited through tokens; there is no explicit live

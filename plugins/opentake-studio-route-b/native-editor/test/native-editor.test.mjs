@@ -58,6 +58,20 @@ function makeFetch(routes = {}) {
     if (path.endsWith('/engine/timeline')) return jsonResponse(SNAPSHOT);
     if (path.endsWith('/engine/media')) return jsonResponse(MEDIA);
     if (path.endsWith('/engine/apply')) return jsonResponse({ changed: true, actionName: 'Move Clips', timelineVersion: 5 });
+    if (path.endsWith('/engine/export/status')) return jsonResponse({ active: false, done: 120, total: 120, operationId: 'native-export' });
+    if (path.endsWith('/engine/invoke')) {
+      let payload = {};
+      try { payload = JSON.parse(init.body); } catch { payload = {}; }
+      const { cmd, args = {} } = payload;
+      if (cmd === 'storage_usage') return jsonResponse({ totalBytes: 2048, cacheRoot: '/tmp/cache', categories: [{ id: 'thumbnails', bytes: 1024, path: '/tmp/cache' }, { id: 'other', bytes: 1024, path: '/tmp/cache' }] });
+      if (cmd === 'storage_clear') return jsonResponse({ totalBytes: 0, cacheRoot: '/tmp/cache', categories: [] });
+      if (cmd === 'search_model_status') return jsonResponse({ visualAvailable: false, model: 'siglip2', detail: 'model_not_installed' });
+      if (cmd === 'transcribe_model_status') return jsonResponse({ installed: false, model: '', bytes: 0 });
+      if (cmd === 'search_index_status') return jsonResponse({ ready: false, indexed: 0 });
+      if (cmd === 'export_video') return jsonResponse({ outputFile: args.req?.outPath ?? '/tmp/out.mp4', fps: 30, durationFrames: 120 });
+      if (cmd === 'cancel_export') return jsonResponse(null);
+      return jsonResponse({ error: { code: 'unknown-command', message: `mock invoke ${cmd}` } }, 400);
+    }
     if (path.endsWith('/engine/undo')) return jsonResponse({ changed: true, actionName: 'Undo' });
     if (path.endsWith('/engine/redo')) return jsonResponse({ changed: true, actionName: 'Redo' });
     if (path.endsWith('/engine/new')) return jsonResponse(SNAPSHOT);
@@ -354,4 +368,111 @@ test('served native bundle exists and is a production self-contained module', ()
   assert.doesNotMatch(source, /process\.env/);
   assert.doesNotMatch(source, /__TAURI_INTERNALS__/);
   assert.doesNotMatch(source, /@tauri-apps/);
+});
+
+test('native inspector and track edits use the exact engine apply commands', async () => {
+  const { fetchImpl, calls } = makeFetch();
+  const store = createNativeEditorStore({
+    client: createEngineClient({ fetchImpl }),
+    setIntervalImpl: () => 1,
+    clearIntervalImpl: () => {},
+  });
+  await store.initialize();
+  store.selectClip('clip-1');
+  await store.setClipProperties('clip-1', {
+    opacity: 0.5,
+    volume: 0.4,
+    transform: { centerX: 0.5, centerY: 0.5, width: 0.8, height: 0.8, rotation: 12, flipHorizontal: false, flipVertical: false },
+  });
+  const clipCall = calls.filter((call) => call.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(clipCall.init.body), {
+    command: {
+      type: 'setClipProperties',
+      clipIds: ['clip-1'],
+      properties: {
+        opacity: 0.5,
+        volume: 0.4,
+        transform: { centerX: 0.5, centerY: 0.5, width: 0.8, height: 0.8, rotation: 12, flipHorizontal: false, flipVertical: false },
+      },
+    },
+  });
+  await store.setTrackProperties(0, { muted: true, hidden: false });
+  const trackCall = calls.filter((call) => call.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(trackCall.init.body), {
+    command: { type: 'setTrackProps', trackIndex: 0, muted: true, hidden: false },
+  });
+});
+
+test('native export sends the existing invoke request shape and exposes progress state', async () => {
+  const { fetchImpl, calls } = makeFetch();
+  const timers = [];
+  const cleared = [];
+  const store = createNativeEditorStore({
+    client: createEngineClient({ fetchImpl }),
+    setIntervalImpl: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    clearIntervalImpl: (id) => { cleared.push(id); },
+  });
+  await store.initialize();
+  const summary = await store.exportVideo({
+    outPath: '/tmp/native-export.mp4',
+    codec: 'h265',
+    quality: '4k',
+    bitDepth: 10,
+    rangeStartFrame: 3,
+    rangeEndFrame: 99,
+    duckMusic: true,
+    hdr10: true,
+  });
+  assert.equal(summary.outputFile, '/tmp/native-export.mp4');
+  const exportCall = calls.find((call) => call.url.endsWith('/engine/invoke'));
+  assert.deepEqual(JSON.parse(exportCall.init.body), {
+    cmd: 'export_video',
+    args: {
+      operationId: 'native-export',
+      req: {
+        outPath: '/tmp/native-export.mp4',
+        codec: 'h265',
+        quality: '4k',
+        rangeStartFrame: 3,
+        rangeEndFrame: 99,
+        bitDepth: 10,
+        duckMusic: true,
+        hdr10: true,
+      },
+    },
+  });
+  assert.equal(store.getSnapshot().exportState.active, false);
+  assert.equal(store.getSnapshot().exportState.phase, 'complete');
+  assert.equal(timers.length, 1);
+  assert.equal(cleared.length, 1);
+});
+
+test('native settings loads storage/model status and clears a cache category', async () => {
+  const { fetchImpl, calls } = makeFetch();
+  const store = createNativeEditorStore({
+    client: createEngineClient({ fetchImpl }),
+    setIntervalImpl: () => 1,
+    clearIntervalImpl: () => {},
+  });
+  await store.refreshSettings();
+  const settings = store.getSnapshot().settings;
+  assert.equal(settings.storage.totalBytes, 2048);
+  assert.equal(settings.search.visualAvailable, false);
+  assert.equal(settings.transcribe.installed, false);
+  assert.deepEqual(settings.searchIndex, { ready: false, indexed: 0 });
+  const commands = calls.filter((call) => call.url.endsWith('/engine/invoke')).map((call) => JSON.parse(call.init.body).cmd);
+  assert.deepEqual(commands, ['storage_usage', 'search_model_status', 'transcribe_model_status', 'search_index_status']);
+  await store.clearStorage(['thumbnails']);
+  const clearCall = calls.filter((call) => call.url.endsWith('/engine/invoke')).at(-1);
+  assert.deepEqual(JSON.parse(clearCall.init.body), { cmd: 'storage_clear', args: { categories: ['thumbnails'], modelsConfirmed: false } });
+  assert.equal(store.getSnapshot().settings.storage.totalBytes, 0);
+});
+
+test('native locale dictionaries keep inspector/export/settings keys in parity', async () => {
+  const { TRANSLATIONS } = await import('../../../../web/src/native/locale.js');
+  assert.deepEqual(Object.keys(TRANSLATIONS.en).sort(), Object.keys(TRANSLATIONS.zh).sort());
+  for (const key of ['inspector', 'export', 'settings', 'opacity', 'volume', 'positionX', 'hdr10', 'storage', 'searchModel']) {
+    assert.equal(typeof TRANSLATIONS.en[key], 'string', key);
+    assert.equal(typeof TRANSLATIONS.zh[key], 'string', key);
+  }
 });

@@ -10,45 +10,63 @@ use napi::bindgen_prelude::*;
 
 mod edit_request;
 
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use edit_request::EditRequest;
 use napi_derive::napi;
-use opentake_core::dto::{handle_get_timeline, handle_project_new, handle_project_open, handle_project_save, EditResultDto, TimelineSnapshotDto};
+use opentake_core::dto::{
+    handle_get_timeline, handle_project_new, handle_project_open, handle_project_save,
+    EditResultDto, TimelineSnapshotDto,
+};
 use opentake_core::session::ProbedMedia;
+use opentake_domain::{AudioDenoise, ClipType, DenoiseMode, MediaManifestEntry, MediaSource};
+use opentake_media::analysis::{
+    analyze_loudness, analyze_stabilization, denoise_interleaved, track_translation_motion,
+    LoudnessNormalizationConfig, StabilizationConfig,
+};
+use opentake_media::decode::pcm::{PcmBuffer, PcmFormat, PcmSpec};
+use opentake_media::encode::{mix_clips, ClipAudio, MIX_SAMPLE_RATE};
+use opentake_media::frame::RgbaFrame;
+use opentake_media::library::{FavoriteRequest, LibraryStore};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use opentake_media::search::OrtEmbedder as SiglipEmbedder;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+use opentake_media::search::TractEmbedder as SiglipEmbedder;
+use opentake_media::search::{
+    config as search_config, embed_store,
+    embedder::Embedder,
+    indexer::{index_image, index_video, needs_index, CancelToken},
+    model_download, ranker, SamplerOptions,
+};
+use opentake_media::MediaCancelToken;
 use opentake_render::{
-    gpu::{upload_rgba, Compositor, CosmicTextRasterizer, GpuTexture, RenderDevice, TextRasterRequest, TextRasterizer, TextureResolver},
-    hdr::{pq_eotf, Hdr10Metadata, Hdr10OutputSpec, Hdr10Writer, LinearCompositor, LinearFrame, LinearLayer, LinearPrimaries, LinearTransfer},
+    gpu::{
+        upload_rgba, Compositor, CosmicTextRasterizer, GpuTexture, RenderDevice, TextRasterRequest,
+        TextRasterizer, TextureResolver,
+    },
+    hdr::{
+        pq_eotf, Hdr10Metadata, Hdr10OutputSpec, Hdr10Writer, LayerTransform, LinearCompositor,
+        LinearFrame, LinearPrimaries, LinearTransfer, TransformedLinearLayer,
+    },
     plan::{try_build_render_plan, RenderSize, TextureSource},
     source::{DecodedFrame, SourceMetrics},
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
+use std::path::{Path as FsPath, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::num::NonZeroUsize;
-use std::rc::Rc;
-use opentake_domain::{AudioDenoise, ClipType, DenoiseMode, MediaManifestEntry, MediaSource};
-use opentake_media::encode::{mix_clips, ClipAudio, MIX_SAMPLE_RATE};
-use opentake_media::analysis::{analyze_loudness, analyze_stabilization, denoise_interleaved, track_translation_motion, LoudnessNormalizationConfig, StabilizationConfig};
-use opentake_media::MediaCancelToken;
-use opentake_media::library::{FavoriteRequest, LibraryStore};
-use opentake_media::decode::pcm::{PcmBuffer, PcmFormat, PcmSpec};
-use opentake_media::frame::RgbaFrame;
-use opentake_media::search::{
-    config as search_config, embed_store, embedder::Embedder, indexer::{index_image, index_video, needs_index, CancelToken}, model_download, ranker, SamplerOptions,
-};
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use opentake_media::search::OrtEmbedder as SiglipEmbedder;
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-use opentake_media::search::TractEmbedder as SiglipEmbedder;
-use std::path::{Path as FsPath, PathBuf};
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|error| Error::from_reason(error.to_string()))
 }
 
-fn resolve_media_path(entry: &MediaManifestEntry, project_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+fn resolve_media_path(
+    entry: &MediaManifestEntry,
+    project_dir: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
     match &entry.source {
         MediaSource::External { absolute_path } => Some(std::path::PathBuf::from(absolute_path)),
         MediaSource::Project { relative_path } => project_dir.map(|root| root.join(relative_path)),
@@ -57,7 +75,11 @@ fn resolve_media_path(entry: &MediaManifestEntry, project_dir: Option<&std::path
 
 fn lottie_document_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
     let bytes = std::fs::read(path).ok()?;
-    if path.extension().and_then(|value| value.to_str()).is_none_or(|value| !value.eq_ignore_ascii_case("lottie")) {
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_none_or(|value| !value.eq_ignore_ascii_case("lottie"))
+    {
         return Some(bytes);
     }
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
@@ -79,8 +101,14 @@ fn lottie_probe(path: &std::path::Path) -> Option<ProbedMedia> {
     let width = value.get("w")?.as_i64()? as i32;
     let height = value.get("h")?.as_i64()? as i32;
     let frame_rate = value.get("fr")?.as_f64()?.max(1.0);
-    let start = value.get("ip").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-    let end = value.get("op").and_then(serde_json::Value::as_f64).unwrap_or(frame_rate);
+    let start = value
+        .get("ip")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let end = value
+        .get("op")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(frame_rate);
     Some(ProbedMedia {
         duration_secs: ((end - start) / frame_rate).max(0.0),
         width: Some(width),
@@ -92,7 +120,10 @@ fn lottie_probe(path: &std::path::Path) -> Option<ProbedMedia> {
 }
 
 fn probe_to_probed(path: &std::path::Path) -> Option<ProbedMedia> {
-    let extension = path.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
     if extension.as_deref() == Some("json") || extension.as_deref() == Some("lottie") {
         return lottie_probe(path);
     }
@@ -151,11 +182,13 @@ fn media_list_json(core: &opentake_core::AppCore) -> serde_json::Value {
     let folders: Vec<serde_json::Value> = manifest
         .folders
         .iter()
-        .map(|folder| serde_json::json!({
-            "id": folder.id,
-            "name": folder.name,
-            "parentFolderId": folder.parent_folder_id,
-        }))
+        .map(|folder| {
+            serde_json::json!({
+                "id": folder.id,
+                "name": folder.name,
+                "parentFolderId": folder.parent_folder_id,
+            })
+        })
         .collect();
     serde_json::json!({ "items": items, "folders": folders, "skipped": [], "prewarm": [] })
 }
@@ -206,7 +239,8 @@ impl LottieState {
             self.documents.insert(path.to_path_buf(), composition);
         }
         let composition = self.documents.get(path)?;
-        let frame_count = ((composition.frames.end - composition.frames.start).ceil() as i64).max(1);
+        let frame_count =
+            ((composition.frames.end - composition.frames.start).ceil() as i64).max(1);
         let internal_frame = source_frame.rem_euclid(frame_count);
         let max_width = render_box.0.max(1) as f64;
         let max_height = render_box.1.max(1) as f64;
@@ -221,7 +255,8 @@ impl LottieState {
         );
         let frame = composition.frames.start + internal_frame as f64;
         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.scene_renderer.render(composition, frame, transform, 1.0)
+            self.scene_renderer
+                .render(composition, frame, transform, 1.0)
         }))
         .ok()?;
         if self.gpu_renderer.is_none() {
@@ -240,7 +275,11 @@ impl LottieState {
         }
         let texture = device.create_texture(&opentake_render::wgpu::TextureDescriptor {
             label: Some("route-b-lottie"),
-            size: opentake_render::wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: opentake_render::wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: opentake_render::wgpu::TextureDimension::D2,
@@ -266,7 +305,12 @@ impl LottieState {
                 },
             )
             .ok()?;
-        Some(Rc::new(GpuTexture { texture, view, width, height }))
+        Some(Rc::new(GpuTexture {
+            texture,
+            view,
+            width,
+            height,
+        }))
     }
 }
 
@@ -353,7 +397,13 @@ impl TextureResolver for BasicResolver<'_> {
             }
             TextureSource::Lottie { media_ref } => {
                 let (path, _) = self.media.get(media_ref)?;
-                return self.lottie.resolve(self.device, self.queue, path, source_frame, self.canvas);
+                return self.lottie.resolve(
+                    self.device,
+                    self.queue,
+                    path,
+                    source_frame,
+                    self.canvas,
+                );
             }
         };
         let (path, _) = self.media.get(media_ref)?;
@@ -432,12 +482,20 @@ fn composite_frame_decoded(
                 TextInfo {
                     content: content.clone(),
                     style: style.clone(),
-                    box_norm: (top_left.x, top_left.y, clip.transform.width, clip.transform.height),
+                    box_norm: (
+                        top_left.x,
+                        top_left.y,
+                        clip.transform.width,
+                        clip.transform.height,
+                    ),
                 },
             );
         }
     }
-    let metrics = ManifestMetrics { sizes, straight_alpha };
+    let metrics = ManifestMetrics {
+        sizes,
+        straight_alpha,
+    };
     let plan = try_build_render_plan(timeline, render_size, &metrics)?;
     let mut frame_plan = plan.frame(timeline, frame);
     if transparent {
@@ -446,7 +504,9 @@ fn composite_frame_decoded(
     RenderCache::get_or_init()?;
     RENDER_CACHE.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let cache = slot.as_mut().ok_or_else(|| "render cache unavailable".to_string())?;
+        let cache = slot
+            .as_mut()
+            .ok_or_else(|| "render cache unavailable".to_string())?;
         let mut resolver = BasicResolver {
             device: &cache.device.device,
             queue: &cache.device.queue,
@@ -461,12 +521,22 @@ fn composite_frame_decoded(
         };
         cache
             .compositor
-            .render_to_rgba(&cache.device.device, &cache.device.queue, render_size, &frame_plan, &mut resolver)
+            .render_to_rgba(
+                &cache.device.device,
+                &cache.device.queue,
+                render_size,
+                &frame_plan,
+                &mut resolver,
+            )
             .map_err(|error| error.to_string())
     })
 }
 
-fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Option<u32>) -> std::result::Result<serde_json::Value, String> {
+fn composite_frame_json(
+    core: &opentake_core::AppCore,
+    frame: i32,
+    max_size: Option<u32>,
+) -> std::result::Result<serde_json::Value, String> {
     let timeline = core.get_timeline().timeline;
     let longest = max_size.unwrap_or(960).max(2);
     let scale = (longest as f64 / timeline.width.max(1) as f64)
@@ -488,7 +558,9 @@ fn composite_frame_json(core: &opentake_core::AppCore, frame: i32, max_size: Opt
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(png.into_inner())
     );
-    Ok(serde_json::json!({ "width": rendered.width, "height": rendered.height, "dataUrl": data_url }))
+    Ok(
+        serde_json::json!({ "width": rendered.width, "height": rendered.height, "dataUrl": data_url }),
+    )
 }
 
 fn fill_audio<T: Copy>(
@@ -536,7 +608,11 @@ fn collect_audio_clips(
         }
         for clip in &track.clips {
             if let Some(sequence_id) = clip.nested_sequence_id.as_deref() {
-                if let Some(sequence) = timeline.nested_sequences.iter().find(|sequence| sequence.id == sequence_id) {
+                if let Some(sequence) = timeline
+                    .nested_sequences
+                    .iter()
+                    .find(|sequence| sequence.id == sequence_id)
+                {
                     collect_audio_clips(
                         &sequence.timeline,
                         frame_offset + clip.start_frame.max(0),
@@ -551,7 +627,10 @@ fn collect_audio_clips(
             if clip.media_type != ClipType::Audio {
                 continue;
             }
-            let Some(entry) = media_entries.iter().find(|entry| entry.id == clip.media_ref) else {
+            let Some(entry) = media_entries
+                .iter()
+                .find(|entry| entry.id == clip.media_ref)
+            else {
                 continue;
             };
             let Some(path) = resolve_media_path(entry, project_dir) else {
@@ -560,19 +639,32 @@ fn collect_audio_clips(
             let fps = timeline.fps.max(1) as f64;
             let start_secs = clip.trim_start_frame.max(0) as f64 / fps;
             let end_secs = start_secs + clip.duration_frames.max(1) as f64 / fps;
-            let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
-            let Ok(pcm) = opentake_media::extract_pcm(&path, &spec, Some((start_secs, end_secs))) else {
+            let spec = PcmSpec {
+                sample_rate: MIX_SAMPLE_RATE,
+                channels: 1,
+                format: PcmFormat::F32,
+            };
+            let Ok(pcm) = opentake_media::extract_pcm(&path, &spec, Some((start_secs, end_secs)))
+            else {
                 continue;
             };
             if pcm.samples_f32.is_empty() {
                 continue;
             }
             let start_frame = frame_offset + clip.start_frame.max(0);
-            let start_sample = ((start_frame as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+            let start_sample =
+                ((start_frame as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
             let sample_count = pcm.samples_f32.len();
-            let fade_in_samples = ((clip.fade_in_frames.max(0) as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
-            let fade_out_samples = ((clip.fade_out_frames.max(0) as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
-            let gains = if fade_in_samples == 0 && fade_out_samples == 0 && (clip.volume - 1.0).abs() < f64::EPSILON {
+            let fade_in_samples = ((clip.fade_in_frames.max(0) as f64 / fps)
+                * f64::from(MIX_SAMPLE_RATE))
+            .round() as usize;
+            let fade_out_samples = ((clip.fade_out_frames.max(0) as f64 / fps)
+                * f64::from(MIX_SAMPLE_RATE))
+            .round() as usize;
+            let gains = if fade_in_samples == 0
+                && fade_out_samples == 0
+                && (clip.volume - 1.0).abs() < f64::EPSILON
+            {
                 Vec::new()
             } else {
                 (0..sample_count)
@@ -592,11 +684,14 @@ fn collect_audio_clips(
                     })
                     .collect()
             };
-            out.push(ClipAudio { start_sample, samples: pcm.samples_f32, gains });
+            out.push(ClipAudio {
+                start_sample,
+                samples: pcm.samples_f32,
+                gains,
+            });
         }
     }
 }
-
 
 fn collect_audio_clips_with_roles(
     timeline: &opentake_domain::Timeline,
@@ -610,10 +705,16 @@ fn collect_audio_clips_with_roles(
         return;
     }
     for track in &timeline.tracks {
-        if track.muted { continue; }
+        if track.muted {
+            continue;
+        }
         for clip in &track.clips {
             if let Some(sequence_id) = clip.nested_sequence_id.as_deref() {
-                if let Some(sequence) = timeline.nested_sequences.iter().find(|sequence| sequence.id == sequence_id) {
+                if let Some(sequence) = timeline
+                    .nested_sequences
+                    .iter()
+                    .find(|sequence| sequence.id == sequence_id)
+                {
                     collect_audio_clips_with_roles(
                         &sequence.timeline,
                         frame_offset + clip.start_frame.max(0),
@@ -625,33 +726,76 @@ fn collect_audio_clips_with_roles(
                 }
                 continue;
             }
-            if clip.media_type != ClipType::Audio { continue; }
-            let Some(entry) = media_entries.iter().find(|entry| entry.id == clip.media_ref) else { continue; };
-            let Some(path) = resolve_media_path(entry, project_dir) else { continue; };
+            if clip.media_type != ClipType::Audio {
+                continue;
+            }
+            let Some(entry) = media_entries
+                .iter()
+                .find(|entry| entry.id == clip.media_ref)
+            else {
+                continue;
+            };
+            let Some(path) = resolve_media_path(entry, project_dir) else {
+                continue;
+            };
             let fps = timeline.fps.max(1) as f64;
             let start_secs = clip.trim_start_frame.max(0) as f64 / fps;
             let end_secs = start_secs + clip.duration_frames.max(1) as f64 / fps;
-            let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
-            let Ok(pcm) = opentake_media::extract_pcm(&path, &spec, Some((start_secs, end_secs))) else { continue; };
-            if pcm.samples_f32.is_empty() { continue; }
+            let spec = PcmSpec {
+                sample_rate: MIX_SAMPLE_RATE,
+                channels: 1,
+                format: PcmFormat::F32,
+            };
+            let Ok(pcm) = opentake_media::extract_pcm(&path, &spec, Some((start_secs, end_secs)))
+            else {
+                continue;
+            };
+            if pcm.samples_f32.is_empty() {
+                continue;
+            }
             let start_frame = frame_offset + clip.start_frame.max(0);
-            let start_sample = ((start_frame as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
+            let start_sample =
+                ((start_frame as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
             let sample_count = pcm.samples_f32.len();
-            let fade_in_samples = ((clip.fade_in_frames.max(0) as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
-            let fade_out_samples = ((clip.fade_out_frames.max(0) as f64 / fps) * f64::from(MIX_SAMPLE_RATE)).round() as usize;
-            let gains = if fade_in_samples == 0 && fade_out_samples == 0 && (clip.volume - 1.0).abs() < f64::EPSILON {
+            let fade_in_samples = ((clip.fade_in_frames.max(0) as f64 / fps)
+                * f64::from(MIX_SAMPLE_RATE))
+            .round() as usize;
+            let fade_out_samples = ((clip.fade_out_frames.max(0) as f64 / fps)
+                * f64::from(MIX_SAMPLE_RATE))
+            .round() as usize;
+            let gains = if fade_in_samples == 0
+                && fade_out_samples == 0
+                && (clip.volume - 1.0).abs() < f64::EPSILON
+            {
                 Vec::new()
             } else {
-                (0..sample_count).map(|index| {
-                    let fade_in = if fade_in_samples == 0 { 1.0 } else { (index as f64 / fade_in_samples as f64).clamp(0.0, 1.0) };
-                    let remaining = sample_count.saturating_sub(1).saturating_sub(index);
-                    let fade_out = if fade_out_samples == 0 { 1.0 } else { (remaining as f64 / fade_out_samples as f64).clamp(0.0, 1.0) };
-                    (clip.volume * fade_in * fade_out) as f32
-                }).collect()
+                (0..sample_count)
+                    .map(|index| {
+                        let fade_in = if fade_in_samples == 0 {
+                            1.0
+                        } else {
+                            (index as f64 / fade_in_samples as f64).clamp(0.0, 1.0)
+                        };
+                        let remaining = sample_count.saturating_sub(1).saturating_sub(index);
+                        let fade_out = if fade_out_samples == 0 {
+                            1.0
+                        } else {
+                            (remaining as f64 / fade_out_samples as f64).clamp(0.0, 1.0)
+                        };
+                        (clip.volume * fade_in * fade_out) as f32
+                    })
+                    .collect()
             };
             // Linked A/V audio is treated as voice; standalone audio as music.
             let is_voice = clip.link_group_id.is_some();
-            out.push((ClipAudio { start_sample, samples: pcm.samples_f32, gains }, is_voice));
+            out.push((
+                ClipAudio {
+                    start_sample,
+                    samples: pcm.samples_f32,
+                    gains,
+                },
+                is_voice,
+            ));
         }
     }
 }
@@ -747,8 +891,11 @@ fn decode_hdr_linear_frame(
 
 /// Preflight for the HDR10 production path: reject false-HDR before spawning
 /// the encoder. Every visible visual layer in the exported range must be an
-/// HDR PQ video layer in the supported subset; at least one HDR layer must be
-/// present, so an SDR-only timeline can never be tagged HDR10.
+/// HDR PQ video layer in the supported subset (static affine transform/opacity
+/// allowed; crops/masks/effects/grades/LUTs/keying/transitions/reverse/keyframe
+/// tracks and non-video overlays rejected). Audio clips are allowed and mixed
+/// separately. At least one HDR video layer must be present, so an SDR-only
+/// timeline can never be tagged HDR10.
 fn validate_hdr10_timeline(
     core: &opentake_core::AppCore,
     start_frame: i32,
@@ -765,99 +912,9 @@ fn validate_hdr10_timeline(
             if clip_end <= start_frame || clip_start >= end_frame {
                 continue;
             }
-            if clip.media_type != ClipType::Video {
-                return Err(format!(
-                    "HDR10 export currently supports HDR video layers only; found {:?}",
-                    clip.media_type
-                ));
-            }
-            if clip.nested_sequence_id.is_some() {
-                return Err("HDR10 export does not support nested sequences yet".to_string());
-            }
-            let entry = manifest
-                .entries
-                .iter()
-                .find(|entry| entry.id == clip.media_ref)
-                .ok_or_else(|| format!("HDR source media not found: {}", clip.media_ref))?;
-            let color = entry.color.as_ref().ok_or_else(|| {
-                format!(
-                    "HDR10 export requires source color metadata for {}",
-                    entry.name
-                )
-            })?;
-            if !color.is_hdr() {
-                return Err(format!(
-                    "HDR10 export requires HDR sources; {} is SDR",
-                    entry.name
-                ));
-            }
-            let transfer = color
-                .transfer
-                .as_deref()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if transfer != "smpte2084" && transfer != "pq" {
-                return Err(format!(
-                    "HDR10 export currently supports PQ sources only; {} uses {:?}",
-                    entry.name, color.transfer
-                ));
-            }
-            if color
-                .primaries
-                .as_deref()
-                .is_some_and(|primaries| !primaries.eq_ignore_ascii_case("bt2020"))
-            {
-                return Err(format!(
-                    "HDR10 export requires BT.2020 primaries; {} declares {:?}",
-                    entry.name, color.primaries
-                ));
-            }
-            if clip.transform != opentake_domain::Transform::default()
-                || !clip.crop.is_identity()
-                || !clip.masks.is_empty()
-                || !clip.effects.is_empty()
-                || clip.stabilization.is_some()
-                || clip.color_grade.is_some()
-                || clip.lut.is_some()
-                || clip.chroma_key.is_some()
-                || clip.transition_out.is_some()
-                || clip.reversed
-            {
-                return Err(
-                    "HDR10 export currently supports untransformed, ungraded HDR video layers only"
-                        .to_string(),
-                );
-            }
-            hdr_layers += 1;
-        }
-    }
-    if hdr_layers == 0 {
-        return Err(
-            "HDR10 export requires HDR video content in the selected range; refusing to tag SDR frames as HDR"
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
-/// Production HDR10 frame renderer for the currently supported subset: HDR
-/// video layers on visible tracks with identity transform/crop, no masks,
-/// effects, grades, LUTs, keying, transitions or reverse. SDR/text/image layers
-/// are rejected explicitly rather than silently tagged as HDR.
-fn render_hdr_linear_frame(
-    core: &opentake_core::AppCore,
-    frame: i32,
-    width: u32,
-    height: u32,
-) -> std::result::Result<LinearFrame, String> {
-    let snapshot = core.get_timeline();
-    let timeline = &snapshot.timeline;
-    let manifest = core.media();
-    let project_dir = core.project_dir();
-    let mut layers: Vec<(LinearFrame, f64)> = Vec::new();
-    for track in timeline.tracks.iter().filter(|track| !track.hidden) {
-        for clip in &track.clips {
-            if frame < clip.start_frame || frame >= clip.start_frame + clip.duration_frames {
+            if clip.media_type == ClipType::Audio {
+                // Audio is mixed separately into the HDR10 container; it is not
+                // a visual layer and must not fail the visual preflight.
                 continue;
             }
             if clip.media_type != ClipType::Video {
@@ -907,8 +964,7 @@ fn render_hdr_linear_frame(
                     entry.name, color.primaries
                 ));
             }
-            if clip.transform != opentake_domain::Transform::default()
-                || !clip.crop.is_identity()
+            if !clip.crop.is_identity()
                 || !clip.masks.is_empty()
                 || !clip.effects.is_empty()
                 || clip.stabilization.is_some()
@@ -917,9 +973,119 @@ fn render_hdr_linear_frame(
                 || clip.chroma_key.is_some()
                 || clip.transition_out.is_some()
                 || clip.reversed
+                || clip.opacity_track.is_some()
+                || clip.position_track.is_some()
+                || clip.scale_track.is_some()
+                || clip.rotation_track.is_some()
+                || clip.crop_track.is_some()
             {
                 return Err(
-                    "HDR10 export currently supports untransformed, ungraded HDR video layers only"
+                    "HDR10 export currently supports static affine/opacity HDR video layers only (no crop/masks/effects/grades/LUTs/keying/transitions/reverse/keyframes or non-video overlays)"
+                        .to_string(),
+                );
+            }
+            hdr_layers += 1;
+        }
+    }
+    if hdr_layers == 0 {
+        return Err(
+            "HDR10 export requires HDR video content in the selected range; refusing to tag SDR frames as HDR"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Production HDR10 frame renderer for the currently supported subset: HDR PQ
+/// video layers with static affine transform/opacity, no crop/masks/effects/
+/// grades/LUTs/keying/transitions/reverse/keyframe tracks. Audio clips are
+/// skipped here (mixed into the container separately). SDR/text/image layers are
+/// rejected explicitly rather than silently tagged as HDR.
+fn render_hdr_linear_frame(
+    core: &opentake_core::AppCore,
+    frame: i32,
+    width: u32,
+    height: u32,
+) -> std::result::Result<LinearFrame, String> {
+    let snapshot = core.get_timeline();
+    let timeline = &snapshot.timeline;
+    let manifest = core.media();
+    let project_dir = core.project_dir();
+    let mut layers: Vec<(LinearFrame, f64, LayerTransform)> = Vec::new();
+    for track in timeline.tracks.iter().filter(|track| !track.hidden) {
+        for clip in &track.clips {
+            if frame < clip.start_frame || frame >= clip.start_frame + clip.duration_frames {
+                continue;
+            }
+            if clip.media_type == ClipType::Audio {
+                // Audio is mixed separately into the HDR10 container; it is not
+                // a visual layer and must not fail the visual preflight.
+                continue;
+            }
+            if clip.media_type != ClipType::Video {
+                return Err(format!(
+                    "HDR10 export currently supports HDR video layers only; found {:?}",
+                    clip.media_type
+                ));
+            }
+            if clip.nested_sequence_id.is_some() {
+                return Err("HDR10 export does not support nested sequences yet".to_string());
+            }
+            let entry = manifest
+                .entries
+                .iter()
+                .find(|entry| entry.id == clip.media_ref)
+                .ok_or_else(|| format!("HDR source media not found: {}", clip.media_ref))?;
+            let color = entry.color.as_ref().ok_or_else(|| {
+                format!(
+                    "HDR10 export requires source color metadata for {}",
+                    entry.name
+                )
+            })?;
+            if !color.is_hdr() {
+                return Err(format!(
+                    "HDR10 export requires HDR sources; {} is SDR",
+                    entry.name
+                ));
+            }
+            let transfer = color
+                .transfer
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if transfer != "smpte2084" && transfer != "pq" {
+                return Err(format!(
+                    "HDR10 export currently supports PQ sources only; {} uses {:?}",
+                    entry.name, color.transfer
+                ));
+            }
+            if color
+                .primaries
+                .as_deref()
+                .is_some_and(|primaries| !primaries.eq_ignore_ascii_case("bt2020"))
+            {
+                return Err(format!(
+                    "HDR10 export requires BT.2020 primaries; {} declares {:?}",
+                    entry.name, color.primaries
+                ));
+            }
+            if !clip.crop.is_identity()
+                || !clip.masks.is_empty()
+                || !clip.effects.is_empty()
+                || clip.stabilization.is_some()
+                || clip.color_grade.is_some()
+                || clip.lut.is_some()
+                || clip.chroma_key.is_some()
+                || clip.transition_out.is_some()
+                || clip.reversed
+                || clip.opacity_track.is_some()
+                || clip.position_track.is_some()
+                || clip.scale_track.is_some()
+                || clip.rotation_track.is_some()
+                || clip.crop_track.is_some()
+            {
+                return Err(
+                    "HDR10 export currently supports static affine/opacity HDR video layers only (no crop/masks/effects/grades/LUTs/keying/transitions/reverse/keyframes or non-video overlays)"
                         .to_string(),
                 );
             }
@@ -929,7 +1095,16 @@ fn render_hdr_linear_frame(
             let source_frame = clip.trim_start_frame as f64
                 + (frame - clip.start_frame) as f64 * clip.speed.max(0.000_1);
             let linear = decode_hdr_linear_frame(&path, source_frame / fps, width, height)?;
-            layers.push((linear, clip.opacity.clamp(0.0, 1.0)));
+            let transform = LayerTransform {
+                center_x: clip.transform.center_x,
+                center_y: clip.transform.center_y,
+                width: clip.transform.width,
+                height: clip.transform.height,
+                rotation_degrees: clip.transform.rotation,
+                flip_horizontal: clip.transform.flip_horizontal,
+                flip_vertical: clip.transform.flip_vertical,
+            };
+            layers.push((linear, clip.opacity.clamp(0.0, 1.0), transform));
         }
     }
     if layers.is_empty() {
@@ -938,21 +1113,95 @@ fn render_hdr_linear_frame(
         ));
     }
     let compositor = LinearCompositor::new(width, height).map_err(|error| error.to_string())?;
-    let refs: Vec<LinearLayer<'_>> = layers
+    let refs: Vec<TransformedLinearLayer<'_>> = layers
         .iter()
-        .map(|(linear, opacity)| LinearLayer {
+        .map(|(linear, opacity, transform)| TransformedLinearLayer {
             frame: linear,
             opacity: *opacity as f32,
+            transform: *transform,
         })
         .collect();
     compositor
-        .composite([0.0, 0.0, 0.0, 1.0], &refs)
+        .composite_transformed([0.0, 0.0, 0.0, 1.0], &refs)
         .map_err(|error| error.to_string())
+}
+
+fn write_pcm_wav(pcm: &PcmBuffer, path: &FsPath) -> std::result::Result<(), String> {
+    use std::io::Write as _;
+    let data_len = pcm.samples_f32.len() * 2;
+    let mut bytes = Vec::with_capacity(44 + data_len);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&pcm.spec.sample_rate.to_le_bytes());
+    bytes.extend_from_slice(&(pcm.spec.sample_rate * 2).to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(data_len as u32).to_le_bytes());
+    for sample in &pcm.samples_f32 {
+        let value = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    let mut file =
+        std::fs::File::create(path).map_err(|error| format!("create HDR10 WAV: {error}"))?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("write HDR10 WAV: {error}"))?;
+    Ok(())
+}
+
+/// Mux the HDR10 video bitstream (copy, preserving VUI/SEI) with the AAC audio
+/// mixdown. The video temp file is produced by `Hdr10Writer`.
+fn mux_hdr10_audio(
+    video: &FsPath,
+    wav: &FsPath,
+    final_path: &FsPath,
+) -> std::result::Result<(), String> {
+    let status = StdCommand::new(hdr_source_ffmpeg())
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            &video.to_string_lossy(),
+            "-i",
+            &wav.to_string_lossy(),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            &final_path.to_string_lossy(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("spawn HDR10 audio mux: {error}"))?;
+    if !status.status.success() {
+        return Err(format!(
+            "HDR10 audio mux failed: {}",
+            String::from_utf8_lossy(&status.stderr).trim()
+        ));
+    }
+    Ok(())
 }
 
 struct HdrExport {
     writer: Hdr10Writer,
     metadata: Hdr10Metadata,
+    final_path: PathBuf,
+    video_temp_path: PathBuf,
+    audio_temp_path: PathBuf,
 }
 
 struct ExportSession {
@@ -1059,15 +1308,23 @@ fn search_manifest_total_bytes(manifest: &model_download::Manifest) -> i64 {
 /// pass whatever it configured. Verification always runs against the root.
 fn resolve_search_models_root(models_dir: &FsPath, manifest: &model_download::Manifest) -> PathBuf {
     let version_name = format!("{}-v{}", manifest.model, manifest.version);
-    let is_version_dir = models_dir.file_name().and_then(|name| name.to_str()) == Some(version_name.as_str());
+    let is_version_dir =
+        models_dir.file_name().and_then(|name| name.to_str()) == Some(version_name.as_str());
     if is_version_dir {
-        models_dir.parent().map(FsPath::to_path_buf).unwrap_or_else(|| models_dir.to_path_buf())
+        models_dir
+            .parent()
+            .map(FsPath::to_path_buf)
+            .unwrap_or_else(|| models_dir.to_path_buf())
     } else {
         models_dir.to_path_buf()
     }
 }
 
-fn search_capability_unavailable(manifest: &model_download::Manifest, models_dir: Option<&str>, detail: &str) -> SearchCapabilityDto {
+fn search_capability_unavailable(
+    manifest: &model_download::Manifest,
+    models_dir: Option<&str>,
+    detail: &str,
+) -> SearchCapabilityDto {
     SearchCapabilityDto {
         model: manifest.model.clone(),
         version: manifest.version,
@@ -1100,8 +1357,9 @@ fn decode_rgba_bytes(bytes: &[u8]) -> Result<RgbaFrame> {
 }
 
 fn decode_rgba_path(path: &FsPath) -> Result<RgbaFrame> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| Error::from_reason(format!("read search image {}: {error}", path.display())))?;
+    let bytes = std::fs::read(path).map_err(|error| {
+        Error::from_reason(format!("read search image {}: {error}", path.display()))
+    })?;
     decode_rgba_bytes(&bytes)
 }
 
@@ -1151,7 +1409,8 @@ impl Engine {
     pub fn new_project_at(&self, path: String) -> Result<String> {
         let path = std::path::PathBuf::from(path);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| Error::from_reason(error.to_string()))?;
         }
         self.core.new_project();
         self.core
@@ -1191,6 +1450,9 @@ impl Engine {
             let path = session.out_path;
             if let Some(hdr) = session.hdr.take() {
                 hdr.writer.abort();
+                let _ = std::fs::remove_file(&hdr.video_temp_path);
+                let _ = std::fs::remove_file(&hdr.audio_temp_path);
+                let _ = std::fs::remove_file(&hdr.final_path);
             }
             drop(session.encoder.take());
             let _ = std::fs::remove_file(path);
@@ -1203,7 +1465,14 @@ impl Engine {
         let media_entries = self.core.media().entries;
         let project_dir = self.core.project_dir();
         let mut clips: Vec<ClipAudio> = Vec::new();
-        collect_audio_clips(timeline, 0, 0, &media_entries, project_dir.as_deref(), &mut clips);
+        collect_audio_clips(
+            timeline,
+            0,
+            0,
+            &media_entries,
+            project_dir.as_deref(),
+            &mut clips,
+        );
         let Ok(mixed) = mix_clips(&clips) else {
             return None;
         };
@@ -1211,23 +1480,56 @@ impl Engine {
             return None;
         }
         Some(PcmBuffer {
-            spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 },
+            spec: PcmSpec {
+                sample_rate: MIX_SAMPLE_RATE,
+                channels: 1,
+                format: PcmFormat::F32,
+            },
             samples_f32: mixed,
         })
     }
 
-    fn mix_timeline_audio_ducked(&self, timeline: &opentake_domain::Timeline, reduction_db: f64, threshold_db: f64) -> Option<PcmBuffer> {
+    fn mix_timeline_audio_ducked(
+        &self,
+        timeline: &opentake_domain::Timeline,
+        reduction_db: f64,
+        threshold_db: f64,
+    ) -> Option<PcmBuffer> {
         let media_entries = self.core.media().entries;
         let project_dir = self.core.project_dir();
         let mut roles: Vec<(ClipAudio, bool)> = Vec::new();
-        collect_audio_clips_with_roles(timeline, 0, 0, &media_entries, project_dir.as_deref(), &mut roles);
-        let voice: Vec<ClipAudio> = roles.iter().filter(|(_, is_voice)| *is_voice).map(|(clip, _)| clip.clone()).collect();
-        let music: Vec<ClipAudio> = roles.iter().filter(|(_, is_voice)| !*is_voice).map(|(clip, _)| clip.clone()).collect();
+        collect_audio_clips_with_roles(
+            timeline,
+            0,
+            0,
+            &media_entries,
+            project_dir.as_deref(),
+            &mut roles,
+        );
+        let voice: Vec<ClipAudio> = roles
+            .iter()
+            .filter(|(_, is_voice)| *is_voice)
+            .map(|(clip, _)| clip.clone())
+            .collect();
+        let music: Vec<ClipAudio> = roles
+            .iter()
+            .filter(|(_, is_voice)| !*is_voice)
+            .map(|(clip, _)| clip.clone())
+            .collect();
         let voice_mix = mix_clips(&voice).ok()?;
         let music_mix = mix_clips(&music).ok()?;
-        if music_mix.is_empty() { return None; }
+        if music_mix.is_empty() {
+            return None;
+        }
         if voice_mix.is_empty() {
-            return Some(PcmBuffer { spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 }, samples_f32: music_mix });
+            return Some(PcmBuffer {
+                spec: PcmSpec {
+                    sample_rate: MIX_SAMPLE_RATE,
+                    channels: 1,
+                    format: PcmFormat::F32,
+                },
+                samples_f32: music_mix,
+            });
         }
         let sample_rate = MIX_SAMPLE_RATE as f64;
         let threshold = 10.0_f64.powf(threshold_db / 20.0);
@@ -1238,13 +1540,24 @@ impl Engine {
         let mut out = vec![0.0_f32; music_mix.len()];
         for index in 0..music_mix.len() {
             let voice_level = voice_mix.get(index).copied().unwrap_or(0.0).abs() as f64;
-            let target = if voice_level > threshold { reduction } else { 1.0 };
+            let target = if voice_level > threshold {
+                reduction
+            } else {
+                1.0
+            };
             let coefficient = if target < envelope { attack } else { release };
             envelope = coefficient * envelope + (1.0 - coefficient) * target;
             let voice_sample = voice_mix.get(index).copied().unwrap_or(0.0);
             out[index] = (voice_sample + music_mix[index] * envelope as f32).clamp(-1.0, 1.0);
         }
-        Some(PcmBuffer { spec: PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 }, samples_f32: out })
+        Some(PcmBuffer {
+            spec: PcmSpec {
+                sample_rate: MIX_SAMPLE_RATE,
+                channels: 1,
+                format: PcmFormat::F32,
+            },
+            samples_f32: out,
+        })
     }
 
     /// Start native cpal playback of the timeline mix at `start_frame`.
@@ -1282,7 +1595,17 @@ impl Engine {
             cpal::SampleFormat::F32 => device.build_output_stream(
                 &config,
                 move |data: &mut [f32], _| {
-                    fill_audio(data, channels, sample_rate, source_rate, start_sample, sample_len, &samples_cb, &position_cb, |sample| sample);
+                    fill_audio(
+                        data,
+                        channels,
+                        sample_rate,
+                        source_rate,
+                        start_sample,
+                        sample_len,
+                        &samples_cb,
+                        &position_cb,
+                        |sample| sample,
+                    );
                 },
                 error_callback,
                 None,
@@ -1290,7 +1613,17 @@ impl Engine {
             cpal::SampleFormat::I16 => device.build_output_stream(
                 &config,
                 move |data: &mut [i16], _| {
-                    fill_audio(data, channels, sample_rate, source_rate, start_sample, sample_len, &samples_cb, &position_cb, |sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+                    fill_audio(
+                        data,
+                        channels,
+                        sample_rate,
+                        source_rate,
+                        start_sample,
+                        sample_len,
+                        &samples_cb,
+                        &position_cb,
+                        |sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16,
+                    );
                 },
                 error_callback,
                 None,
@@ -1298,15 +1631,31 @@ impl Engine {
             cpal::SampleFormat::U16 => device.build_output_stream(
                 &config,
                 move |data: &mut [u16], _| {
-                    fill_audio(data, channels, sample_rate, source_rate, start_sample, sample_len, &samples_cb, &position_cb, |sample| ((sample.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16);
+                    fill_audio(
+                        data,
+                        channels,
+                        sample_rate,
+                        source_rate,
+                        start_sample,
+                        sample_len,
+                        &samples_cb,
+                        &position_cb,
+                        |sample| ((sample.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16,
+                    );
                 },
                 error_callback,
                 None,
             ),
-            other => return Err(Error::from_reason(format!("unsupported audio sample format: {other:?}"))),
+            other => {
+                return Err(Error::from_reason(format!(
+                    "unsupported audio sample format: {other:?}"
+                )))
+            }
         }
         .map_err(|error| Error::from_reason(format!("build audio output: {error}")))?;
-        stream.play().map_err(|error| Error::from_reason(format!("start audio output: {error}")))?;
+        stream
+            .play()
+            .map_err(|error| Error::from_reason(format!("start audio output: {error}")))?;
         *self.playback.borrow_mut() = Some(NativePlayback {
             stream,
             position,
@@ -1347,8 +1696,13 @@ impl Engine {
     #[napi]
     pub fn playback_audio_pause(&self) -> Result<bool> {
         let mut guard = self.playback.borrow_mut();
-        let Some(playback) = guard.as_mut() else { return Ok(false); };
-        playback.stream.pause().map_err(|error| Error::from_reason(error.to_string()))?;
+        let Some(playback) = guard.as_mut() else {
+            return Ok(false);
+        };
+        playback
+            .stream
+            .pause()
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         playback.paused = true;
         Ok(true)
     }
@@ -1356,8 +1710,13 @@ impl Engine {
     #[napi]
     pub fn playback_audio_resume(&self) -> Result<bool> {
         let mut guard = self.playback.borrow_mut();
-        let Some(playback) = guard.as_mut() else { return Ok(false); };
-        playback.stream.play().map_err(|error| Error::from_reason(error.to_string()))?;
+        let Some(playback) = guard.as_mut() else {
+            return Ok(false);
+        };
+        playback
+            .stream
+            .play()
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         playback.paused = false;
         Ok(true)
     }
@@ -1389,12 +1748,22 @@ impl Engine {
             .tracks
             .iter()
             .flat_map(|track| &track.clips)
-            .chain(timeline.nested_sequences.iter().flat_map(|sequence| sequence.timeline.tracks.iter().flat_map(|track| &track.clips)))
+            .chain(timeline.nested_sequences.iter().flat_map(|sequence| {
+                sequence
+                    .timeline
+                    .tracks
+                    .iter()
+                    .flat_map(|track| &track.clips)
+            }))
             .find(|clip| clip.id == clip_id)
             .cloned()
             .ok_or_else(|| Error::from_reason(format!("clip not found: {clip_id}")))?;
-        if !matches!(clip.media_type, ClipType::Audio | ClipType::Video) || clip.nested_sequence_id.is_some() {
-            return Err(Error::from_reason("denoise requires an ordinary audio-bearing clip"));
+        if !matches!(clip.media_type, ClipType::Audio | ClipType::Video)
+            || clip.nested_sequence_id.is_some()
+        {
+            return Err(Error::from_reason(
+                "denoise requires an ordinary audio-bearing clip",
+            ));
         }
         let config = AudioDenoise {
             mode: match mode.as_deref() {
@@ -1404,7 +1773,9 @@ impl Engine {
             strength: strength.unwrap_or(0.5).clamp(0.0, 1.0),
             preview_enabled: preview_enabled.unwrap_or(true),
         };
-        config.validate().map_err(|error| Error::from_reason(format!("denoise_invalid_config: {error}")))?;
+        config
+            .validate()
+            .map_err(|error| Error::from_reason(format!("denoise_invalid_config: {error}")))?;
         let entry = self
             .core
             .media()
@@ -1418,15 +1789,28 @@ impl Engine {
         let fps = timeline.fps.max(1) as f64;
         let start = clip.trim_start_frame.max(0) as f64 / fps;
         let end = start + clip.duration_frames.max(1) as f64 / fps;
-        let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
+        let spec = PcmSpec {
+            sample_rate: MIX_SAMPLE_RATE,
+            channels: 1,
+            format: PcmFormat::F32,
+        };
         let pcm = opentake_media::extract_pcm(&path, &spec, Some((start, end)))
             .map_err(|error| Error::from_reason(format!("denoise_unreadable_audio: {error}")))?;
         if pcm.samples_f32.is_empty() {
-            return Err(Error::from_reason("denoise_unreadable_audio: empty PCM window"));
+            return Err(Error::from_reason(
+                "denoise_unreadable_audio: empty PCM window",
+            ));
         }
         let cancel = MediaCancelToken::new();
-        denoise_interleaved(&pcm.samples_f32, 1, pcm.spec.sample_rate, config, &cancel, None)
-            .map_err(|error| Error::from_reason(error.to_string()))?;
+        denoise_interleaved(
+            &pcm.samples_f32,
+            1,
+            pcm.spec.sample_rate,
+            config,
+            &cancel,
+            None,
+        )
+        .map_err(|error| Error::from_reason(error.to_string()))?;
         json(&config)
     }
 
@@ -1444,12 +1828,22 @@ impl Engine {
             .tracks
             .iter()
             .flat_map(|track| &track.clips)
-            .chain(timeline.nested_sequences.iter().flat_map(|sequence| sequence.timeline.tracks.iter().flat_map(|track| &track.clips)))
+            .chain(timeline.nested_sequences.iter().flat_map(|sequence| {
+                sequence
+                    .timeline
+                    .tracks
+                    .iter()
+                    .flat_map(|track| &track.clips)
+            }))
             .find(|clip| clip.id == clip_id)
             .cloned()
             .ok_or_else(|| Error::from_reason(format!("clip not found: {clip_id}")))?;
-        if !matches!(clip.media_type, ClipType::Audio | ClipType::Video) || clip.nested_sequence_id.is_some() {
-            return Err(Error::from_reason("loudness requires an ordinary audio-bearing clip"));
+        if !matches!(clip.media_type, ClipType::Audio | ClipType::Video)
+            || clip.nested_sequence_id.is_some()
+        {
+            return Err(Error::from_reason(
+                "loudness requires an ordinary audio-bearing clip",
+            ));
         }
         let entry = self
             .core
@@ -1464,11 +1858,17 @@ impl Engine {
         let fps = timeline.fps.max(1) as f64;
         let start = clip.trim_start_frame.max(0) as f64 / fps;
         let end = start + clip.duration_frames.max(1) as f64 / fps;
-        let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
+        let spec = PcmSpec {
+            sample_rate: MIX_SAMPLE_RATE,
+            channels: 1,
+            format: PcmFormat::F32,
+        };
         let pcm = opentake_media::extract_pcm(&path, &spec, Some((start, end)))
             .map_err(|error| Error::from_reason(error.to_string()))?;
         if pcm.samples_f32.is_empty() {
-            return Err(Error::from_reason("loudness_unreadable_audio: empty PCM window"));
+            return Err(Error::from_reason(
+                "loudness_unreadable_audio: empty PCM window",
+            ));
         }
         let config = LoudnessNormalizationConfig {
             target_lufs: target_lufs.unwrap_or(-16.0),
@@ -1496,12 +1896,20 @@ impl Engine {
             .tracks
             .iter()
             .flat_map(|track| &track.clips)
-            .chain(timeline.nested_sequences.iter().flat_map(|sequence| sequence.timeline.tracks.iter().flat_map(|track| &track.clips)))
+            .chain(timeline.nested_sequences.iter().flat_map(|sequence| {
+                sequence
+                    .timeline
+                    .tracks
+                    .iter()
+                    .flat_map(|track| &track.clips)
+            }))
             .find(|clip| clip.id == clip_id)
             .cloned()
             .ok_or_else(|| Error::from_reason(format!("clip not found: {clip_id}")))?;
         if clip.media_type != ClipType::Video || clip.nested_sequence_id.is_some() {
-            return Err(Error::from_reason("stabilization requires an ordinary video clip"));
+            return Err(Error::from_reason(
+                "stabilization requires an ordinary video clip",
+            ));
         }
         let entry = self
             .core
@@ -1524,22 +1932,36 @@ impl Engine {
             let relative = if sample_count <= 1 {
                 0
             } else {
-                ((index as f64 * last_frame as f64 / (sample_count - 1) as f64).round() as i32).clamp(0, last_frame)
+                ((index as f64 * last_frame as f64 / (sample_count - 1) as f64).round() as i32)
+                    .clamp(0, last_frame)
             };
             let time = source_start + relative as f64 * clip.speed.max(0.0001) / fps;
-            let Ok((_, rgba)) = media.decode_frame(&path, &opentake_media::decode::FrameRequest {
-                time_secs: time,
-                max_size: (320, 180),
-                tolerance_secs: 0.1,
-                apply_rotation: true,
-            }) else { continue };
-            frames.push((relative, opentake_media::RgbaFrame::new(rgba.width, rgba.height, rgba.rgba)));
+            let Ok((_, rgba)) = media.decode_frame(
+                &path,
+                &opentake_media::decode::FrameRequest {
+                    time_secs: time,
+                    max_size: (320, 180),
+                    tolerance_secs: 0.1,
+                    apply_rotation: true,
+                },
+            ) else {
+                continue;
+            };
+            frames.push((
+                relative,
+                opentake_media::RgbaFrame::new(rgba.width, rgba.height, rgba.rgba),
+            ));
         }
         let cancel = MediaCancelToken::new();
         let motion = track_translation_motion(&frames, &cancel)
             .map_err(|error| Error::from_reason(error.to_string()))?;
-        let track = analyze_stabilization(&motion, clip.media_ref.clone(), StabilizationConfig::default(), &cancel)
-            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let track = analyze_stabilization(
+            &motion,
+            clip.media_ref.clone(),
+            StabilizationConfig::default(),
+            &cancel,
+        )
+        .map_err(|error| Error::from_reason(error.to_string()))?;
         json(&track)
     }
 
@@ -1564,10 +1986,13 @@ impl Engine {
             "4k" => opentake_render::ExportResolution::R4k,
             _ => opentake_render::ExportResolution::R1080p,
         };
-        let render_size = opentake_render::export_render_size((timeline.width, timeline.height), resolution);
+        let render_size =
+            opentake_render::export_render_size((timeline.width, timeline.height), resolution);
         let timeline_frames = timeline.total_frames().max(1);
         let start_frame = range_start.unwrap_or(0).clamp(0, timeline_frames - 1);
-        let end_frame = range_end.unwrap_or(timeline_frames).clamp(start_frame + 1, timeline_frames);
+        let end_frame = range_end
+            .unwrap_or(timeline_frames)
+            .clamp(start_frame + 1, timeline_frames);
         let total = end_frame - start_frame;
         if hdr10 {
             validate_hdr10_timeline(&self.core, start_frame, end_frame)
@@ -1584,24 +2009,21 @@ impl Engine {
                 "HDR10 export requires codec h265 (Main10)",
             ));
         }
-        let mut preset = opentake_media::ExportPreset::new(video_codec, opentake_media::ExportResolution::P1080);
+        let mut preset =
+            opentake_media::ExportPreset::new(video_codec, opentake_media::ExportResolution::P1080);
         if bit_depth == Some(10) || hdr10 {
             preset = preset.with_bit_depth(10);
         }
         let out = std::path::PathBuf::from(&out_path);
         if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| Error::from_reason(error.to_string()))?;
         }
         let audio = if duck_music == Some(true) {
             self.mix_timeline_audio_ducked(&timeline, 12.0, -30.0)
         } else {
             self.mix_timeline_audio(&timeline)
         };
-        if hdr10 && audio.is_some() {
-            return Err(Error::from_reason(
-                "HDR10 export does not yet mix audio; mute audio or export SDR/H.265 10-bit",
-            ));
-        }
         let encoder = if hdr10 {
             None
         } else {
@@ -1618,8 +2040,11 @@ impl Engine {
         };
         let hdr = if hdr10 {
             let metadata = hdr10_output_metadata();
+            let token = uuid::Uuid::new_v4();
+            let video_temp_path = out.with_file_name(format!(".opentake-hdr10-{token}.mp4"));
+            let audio_temp_path = out.with_file_name(format!(".opentake-hdr10-{token}.wav"));
             let spec = Hdr10OutputSpec {
-                out: out.to_string_lossy().into_owned(),
+                out: video_temp_path.to_string_lossy().into_owned(),
                 width: render_size.width,
                 height: render_size.height,
                 fps: timeline.fps,
@@ -1631,6 +2056,9 @@ impl Engine {
                 writer: Hdr10Writer::start(spec)
                     .map_err(|error| Error::from_reason(error.to_string()))?,
                 metadata,
+                final_path: out.clone(),
+                video_temp_path,
+                audio_temp_path,
             })
         } else {
             None
@@ -1673,21 +2101,25 @@ impl Engine {
     #[napi]
     pub fn export_step(&self, frames: u32) -> Result<String> {
         let mut guard = self.export.borrow_mut();
-        let session = guard.as_mut().ok_or_else(|| Error::from_reason("no export session"))?;
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("no export session"))?;
         let size = opentake_render::plan::RenderSize::new(session.width, session.height);
         let end = (session.next_frame + frames as i32).min(session.end_frame);
         while session.next_frame < end {
             let frame = session.next_frame;
             if let Some(hdr) = session.hdr.as_mut() {
-                let linear = render_hdr_linear_frame(&self.core, frame, session.width, session.height)
-                    .map_err(Error::from_reason)?;
+                let linear =
+                    render_hdr_linear_frame(&self.core, frame, session.width, session.height)
+                        .map_err(Error::from_reason)?;
                 hdr.writer
                     .write_frame(&linear)
                     .map_err(|error| Error::from_reason(error.to_string()))?;
             } else {
                 let decoded = composite_frame_decoded(&self.core, frame, size, session.transparent)
                     .map_err(|message| Error::from_reason(message))?;
-                let rgba = opentake_media::RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
+                let rgba =
+                    opentake_media::RgbaFrame::new(decoded.width, decoded.height, decoded.rgba);
                 session
                     .encoder
                     .as_mut()
@@ -1697,7 +2129,9 @@ impl Engine {
             }
             session.next_frame += 1;
         }
-        json(&serde_json::json!({ "done": session.next_frame - session.start_frame, "total": session.total }))
+        json(
+            &serde_json::json!({ "done": session.next_frame - session.start_frame, "total": session.total }),
+        )
     }
 
     /// Finish the active export and return the UI ExportSummary JSON.
@@ -1709,18 +2143,44 @@ impl Engine {
             .take()
             .ok_or_else(|| Error::from_reason("no export session"))?;
         if let Some(hdr) = session.hdr.take() {
-            let metadata = hdr.metadata;
-            let frames = hdr
-                .writer
+            let HdrExport {
+                writer,
+                metadata,
+                final_path,
+                video_temp_path,
+                audio_temp_path,
+            } = hdr;
+            let frames = writer
                 .finish()
                 .map_err(|error| Error::from_reason(error.to_string()))?;
+            let audio = session.audio.take();
+            let has_audio = audio.is_some();
+            if let Some(pcm) = audio {
+                write_pcm_wav(&pcm, &audio_temp_path).map_err(Error::from_reason)?;
+                mux_hdr10_audio(&video_temp_path, &audio_temp_path, &final_path)
+                    .map_err(Error::from_reason)?;
+                let _ = std::fs::remove_file(&video_temp_path);
+                let _ = std::fs::remove_file(&audio_temp_path);
+            } else {
+                std::fs::rename(&video_temp_path, &final_path)
+                    .or_else(|_| {
+                        std::fs::copy(&video_temp_path, &final_path).map(|_| {
+                            std::fs::remove_file(&video_temp_path)
+                                .map(|_| ())
+                                .unwrap_or(())
+                        })
+                    })
+                    .map_err(|error| {
+                        Error::from_reason(format!("finalize HDR10 output: {error}"))
+                    })?;
+            }
             return json(&serde_json::json!({
-                "outPath": session.out_path.to_string_lossy(),
+                "outPath": final_path.to_string_lossy(),
                 "width": session.width,
                 "height": session.height,
                 "fps": session.fps,
                 "frameCount": frames,
-                "hasAudio": false,
+                "hasAudio": has_audio,
                 "hdr10": true,
                 "metadata": {
                     "primaries": "bt2020",
@@ -1775,11 +2235,15 @@ impl Engine {
         duck_music: Option<bool>,
         hdr10: Option<bool>,
     ) -> Result<String> {
-        self.export_begin(out_path, codec, quality, None, None, bit_depth, duck_music, hdr10)?;
+        self.export_begin(
+            out_path, codec, quality, None, None, bit_depth, duck_music, hdr10,
+        )?;
         loop {
             let done = {
                 let guard = self.export.borrow();
-                let session = guard.as_ref().ok_or_else(|| Error::from_reason("no export session"))?;
+                let session = guard
+                    .as_ref()
+                    .ok_or_else(|| Error::from_reason("no export session"))?;
                 (session.next_frame, session.total)
             };
             if done.0 >= done.1 {
@@ -1841,7 +2305,12 @@ impl Engine {
     /// Generate a project-local low-resolution proxy for one video asset and
     /// persist it in the media manifest. Returns the UI MediaProxyResult JSON.
     #[napi]
-    pub fn create_media_proxy(&self, media_id: String, max_width: u32, max_height: u32) -> Result<String> {
+    pub fn create_media_proxy(
+        &self,
+        media_id: String,
+        max_width: u32,
+        max_height: u32,
+    ) -> Result<String> {
         let snapshot = self.core.get_timeline();
         let project_dir = self
             .core
@@ -1853,12 +2322,20 @@ impl Engine {
             .iter()
             .flat_map(|track| track.clips.iter())
             .find(|clip| clip.media_ref == media_id)
-            .and_then(|clip| self.core.media().entries.iter().find(|entry| entry.id == clip.media_ref).cloned())
+            .and_then(|clip| {
+                self.core
+                    .media()
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == clip.media_ref)
+                    .cloned()
+            })
             .ok_or_else(|| Error::from_reason(format!("media not found: {media_id}")))?;
         let source = resolve_media_path(&entry, Some(&project_dir))
             .ok_or_else(|| Error::from_reason("media source path is unavailable"))?;
         let proxy_dir = project_dir.join("media").join("proxies");
-        std::fs::create_dir_all(&proxy_dir).map_err(|error| Error::from_reason(error.to_string()))?;
+        std::fs::create_dir_all(&proxy_dir)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         let leaf = format!("{}.mp4", media_id);
         let output = proxy_dir.join(&leaf);
         let _ = std::fs::remove_file(&output);
@@ -1880,7 +2357,12 @@ impl Engine {
             height: result.height,
         };
         self.core
-            .set_media_proxy_for_project(snapshot.project_epoch, &project_dir, &media_id, Some(proxy))
+            .set_media_proxy_for_project(
+                snapshot.project_epoch,
+                &project_dir,
+                &media_id,
+                Some(proxy),
+            )
             .map_err(|error| Error::from_reason(error.to_string()))?;
         json(&serde_json::json!({
             "assetId": media_id,
@@ -1894,10 +2376,24 @@ impl Engine {
     /// Remove one asset's proxy and delete the generated file.
     #[napi]
     pub fn remove_media_proxy(&self, media_id: String) -> bool {
-        let Some(project_dir) = self.core.project_dir() else { return false };
+        let Some(project_dir) = self.core.project_dir() else {
+            return false;
+        };
         let snapshot = self.core.get_timeline();
-        let Some(entry) = self.core.media().entries.iter().find(|entry| entry.id == media_id).cloned() else { return false };
-        let proxy_path = entry.proxy.as_ref().map(|proxy| project_dir.join(&proxy.relative_path));
+        let Some(entry) = self
+            .core
+            .media()
+            .entries
+            .iter()
+            .find(|entry| entry.id == media_id)
+            .cloned()
+        else {
+            return false;
+        };
+        let proxy_path = entry
+            .proxy
+            .as_ref()
+            .map(|proxy| project_dir.join(&proxy.relative_path));
         let result = self
             .core
             .set_media_proxy_for_project(snapshot.project_epoch, &project_dir, &media_id, None)
@@ -1949,7 +2445,10 @@ impl Engine {
             composite_frame_decoded(
                 &self.core,
                 frame,
-                RenderSize::new(snapshot.timeline.width.max(2) as u32, snapshot.timeline.height.max(2) as u32),
+                RenderSize::new(
+                    snapshot.timeline.width.max(2) as u32,
+                    snapshot.timeline.height.max(2) as u32,
+                ),
                 false,
             )
             .map_err(|message| Error::from_reason(message))?
@@ -1957,8 +2456,13 @@ impl Engine {
         let directory = project_dir
             .as_ref()
             .map(|root| root.join("media").join("captures"))
-            .unwrap_or_else(|| std::env::temp_dir().join("opentake-route-b").join("captures"));
-        std::fs::create_dir_all(&directory).map_err(|error| Error::from_reason(error.to_string()))?;
+            .unwrap_or_else(|| {
+                std::env::temp_dir()
+                    .join("opentake-route-b")
+                    .join("captures")
+            });
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         let file = directory.join(format!("{}.png", uuid::Uuid::new_v4()));
         let image = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba)
             .ok_or_else(|| Error::from_reason("invalid capture buffer"))?;
@@ -1989,11 +2493,9 @@ impl Engine {
         let project_dir = self.core.project_dir();
         let body = match format.as_str() {
             "edl" => opentake_project::export_edl(&snapshot.timeline, &manifest),
-            "otio" => opentake_project::export_otio(
-                &snapshot.timeline,
-                &manifest,
-                project_dir.as_deref(),
-            ),
+            "otio" => {
+                opentake_project::export_otio(&snapshot.timeline, &manifest, project_dir.as_deref())
+            }
             "fcpxml" => opentake_project::export_fcpxml(
                 &snapshot.timeline,
                 &manifest,
@@ -2029,10 +2531,9 @@ impl Engine {
     #[napi]
     pub fn toggle_favorite(&self, media_id: String, favorite: bool) -> Result<String> {
         let snapshot = self.core.get_timeline();
-        let project_dir = self
-            .core
-            .project_dir()
-            .ok_or_else(|| Error::from_reason("save the project before changing global favorites"))?;
+        let project_dir = self.core.project_dir().ok_or_else(|| {
+            Error::from_reason("save the project before changing global favorites")
+        })?;
         let entry = self
             .core
             .media()
@@ -2041,12 +2542,17 @@ impl Engine {
             .find(|entry| entry.id == media_id)
             .cloned()
             .ok_or_else(|| Error::from_reason(format!("media asset not found: {media_id}")))?;
-        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let store = self
+            .library
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("global library unavailable"))?;
         if favorite {
             let source = resolve_media_path(&entry, Some(&project_dir))
                 .ok_or_else(|| Error::from_reason("media source could not be resolved"))?;
             if !source.is_file() {
-                return Err(Error::from_reason("media source is offline; relink before favoriting"));
+                return Err(Error::from_reason(
+                    "media source is offline; relink before favoriting",
+                ));
             }
             let kind = match entry.kind {
                 ClipType::Video => "video",
@@ -2077,7 +2583,12 @@ impl Engine {
                 )
                 .map_err(|error| Error::from_reason(error.to_string()))?;
             self.core
-                .set_media_favorite_for_project(snapshot.project_epoch, &project_dir, &[media_id.clone()], true)
+                .set_media_favorite_for_project(
+                    snapshot.project_epoch,
+                    &project_dir,
+                    &[media_id.clone()],
+                    true,
+                )
                 .map_err(|error| Error::from_reason(error.to_string()))?;
         } else {
             let manifest = self.core.media();
@@ -2086,10 +2597,20 @@ impl Engine {
                 let _ = store.remove(&id);
             }
             self.core
-                .set_media_global_favorite_for_project(snapshot.project_epoch, &project_dir, &media_id, None)
+                .set_media_global_favorite_for_project(
+                    snapshot.project_epoch,
+                    &project_dir,
+                    &media_id,
+                    None,
+                )
                 .map_err(|error| Error::from_reason(error.to_string()))?;
             self.core
-                .set_media_favorite_for_project(snapshot.project_epoch, &project_dir, &[media_id], false)
+                .set_media_favorite_for_project(
+                    snapshot.project_epoch,
+                    &project_dir,
+                    &[media_id],
+                    false,
+                )
                 .map_err(|error| Error::from_reason(error.to_string()))?;
         }
         json(&media_list_json(&self.core))
@@ -2098,7 +2619,10 @@ impl Engine {
     /// Global library entries (optionally filtered; empty string = all).
     #[napi]
     pub fn library_list(&self, category: Option<String>) -> Result<String> {
-        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let store = self
+            .library
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("global library unavailable"))?;
         let entries = match category.as_deref() {
             Some(value) if !value.is_empty() => store.entries_in_category(Some(value)),
             _ => store.entries(),
@@ -2109,8 +2633,17 @@ impl Engine {
 
     /// Favorite a source file into the global library.
     #[napi]
-    pub fn library_favorite(&self, source: String, kind: String, category: Option<String>, thumb: Option<String>) -> Result<String> {
-        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+    pub fn library_favorite(
+        &self,
+        source: String,
+        kind: String,
+        category: Option<String>,
+        thumb: Option<String>,
+    ) -> Result<String> {
+        let store = self
+            .library
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("global library unavailable"))?;
         let path = std::path::PathBuf::from(&source);
         let favorited_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2131,14 +2664,22 @@ impl Engine {
     /// Remove one library entry by content id.
     #[napi]
     pub fn library_unfavorite(&self, id: String) -> Result<bool> {
-        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
-        store.remove(&id).map_err(|error| Error::from_reason(error.to_string()))
+        let store = self
+            .library
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        store
+            .remove(&id)
+            .map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Update one entry's category; returns the updated entry or null.
     #[napi]
     pub fn library_categorize(&self, id: String, category: Option<String>) -> Result<String> {
-        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let store = self
+            .library
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("global library unavailable"))?;
         let updated = store
             .set_category(&id, category.filter(|value| !value.is_empty()))
             .map_err(|error| Error::from_reason(error.to_string()))?;
@@ -2148,7 +2689,10 @@ impl Engine {
     /// Rename a library category (empty target = uncategorized); returns count.
     #[napi]
     pub fn library_rename(&self, from: String, to: Option<String>) -> Result<u32> {
-        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let store = self
+            .library
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("global library unavailable"))?;
         let count = store
             .rename_category(&from, to.filter(|value| !value.is_empty()))
             .map_err(|error| Error::from_reason(error.to_string()))?;
@@ -2158,15 +2702,25 @@ impl Engine {
     /// Delete one library entry; returns whether it existed.
     #[napi]
     pub fn library_delete(&self, id: String) -> Result<bool> {
-        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
-        store.remove(&id).map_err(|error| Error::from_reason(error.to_string()))
+        let store = self
+            .library
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        store
+            .remove(&id)
+            .map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Import one global-library entry into the current project as a new asset.
     #[napi]
     pub fn library_import_to_project(&self, id: String) -> Result<String> {
-        let store = self.library.as_ref().ok_or_else(|| Error::from_reason("global library unavailable"))?;
-        let entries = store.entries().map_err(|error| Error::from_reason(error.to_string()))?;
+        let store = self
+            .library
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("global library unavailable"))?;
+        let entries = store
+            .entries()
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         let entry = entries
             .into_iter()
             .find(|entry| entry.id == id)
@@ -2188,17 +2742,27 @@ impl Engine {
             .core
             .import_media_file(&path, name, &probed)
             .map_err(|error| Error::from_reason(error.to_string()))?;
-        json(&serde_json::json!({ "id": imported.id, "name": imported.name, "path": path.to_string_lossy() }))
+        json(
+            &serde_json::json!({ "id": imported.id, "name": imported.name, "path": path.to_string_lossy() }),
+        )
     }
 
     /// Composite one frame and return a JPEG data URL (playback transport).
     #[napi]
-    pub fn composite_frame_jpeg(&self, frame: i32, max_size: Option<i32>, quality: Option<u32>) -> Result<String> {
+    pub fn composite_frame_jpeg(
+        &self,
+        frame: i32,
+        max_size: Option<i32>,
+        quality: Option<u32>,
+    ) -> Result<String> {
         let snapshot = self.core.get_timeline();
         let decoded = composite_frame_decoded(
             &self.core,
             frame,
-            RenderSize::new(snapshot.timeline.width.max(2) as u32, snapshot.timeline.height.max(2) as u32),
+            RenderSize::new(
+                snapshot.timeline.width.max(2) as u32,
+                snapshot.timeline.height.max(2) as u32,
+            ),
             false,
         )
         .map_err(|message| Error::from_reason(message))?;
@@ -2222,16 +2786,22 @@ impl Engine {
 
     /// Export the whole timeline audio mixdown to M4A (AAC) or MP3.
     #[napi]
-    pub fn export_audio(&self, out_path: String, format: String, duck_music: Option<bool>) -> Result<String> {
+    pub fn export_audio(
+        &self,
+        out_path: String,
+        format: String,
+        duck_music: Option<bool>,
+    ) -> Result<String> {
         let timeline = self.core.get_timeline().timeline;
         let pcm = (if duck_music == Some(true) {
             self.mix_timeline_audio_ducked(&timeline, 12.0, -30.0)
         } else {
             self.mix_timeline_audio(&timeline)
         })
-            .ok_or_else(|| Error::from_reason("timeline has no audible audio"))?;
+        .ok_or_else(|| Error::from_reason("timeline has no audible audio"))?;
         let directory = std::env::temp_dir().join("opentake-route-b").join("audio");
-        std::fs::create_dir_all(&directory).map_err(|error| Error::from_reason(error.to_string()))?;
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         let wav = directory.join(format!("{}.wav", uuid::Uuid::new_v4()));
         let data_len = pcm.samples_f32.len() * 2;
         let mut bytes = Vec::with_capacity(44 + data_len);
@@ -2254,7 +2824,8 @@ impl Engine {
         std::fs::write(&wav, bytes).map_err(|error| Error::from_reason(error.to_string()))?;
         let out = std::path::PathBuf::from(&out_path);
         if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| Error::from_reason(error.to_string()))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| Error::from_reason(error.to_string()))?;
         }
         let mp3 = format.eq_ignore_ascii_case("mp3");
         let codec = if mp3 { "libmp3lame" } else { "aac" };
@@ -2266,7 +2837,9 @@ impl Engine {
             .status()
             .map_err(|error| Error::from_reason(error.to_string()))?;
         if !status.success() {
-            return Err(Error::from_reason(format!("ffmpeg audio export exited {status}")));
+            return Err(Error::from_reason(format!(
+                "ffmpeg audio export exited {status}"
+            )));
         }
         json(&serde_json::json!({
             "outPath": out_path,
@@ -2283,7 +2856,8 @@ impl Engine {
             .mix_timeline_audio(&timeline)
             .ok_or_else(|| Error::from_reason("timeline has no audible audio"))?;
         let directory = std::env::temp_dir().join("opentake-route-b").join("audio");
-        std::fs::create_dir_all(&directory).map_err(|error| Error::from_reason(error.to_string()))?;
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         let file = directory.join(format!("{}.wav", uuid::Uuid::new_v4()));
         let data_len = pcm.samples_f32.len() * 2;
         let mut bytes = Vec::with_capacity(44 + data_len);
@@ -2448,23 +3022,37 @@ impl Engine {
             Ok(installed) => installed,
             Err(error) => {
                 let text = error.to_string();
-                let detail = if text.to_ascii_lowercase().contains("checksum") || text.to_ascii_lowercase().contains("sha") {
+                let detail = if text.to_ascii_lowercase().contains("checksum")
+                    || text.to_ascii_lowercase().contains("sha")
+                {
                     "checksum_mismatch"
-                } else if text.to_ascii_lowercase().contains("missing") || text.to_ascii_lowercase().contains("incomplete") {
+                } else if text.to_ascii_lowercase().contains("missing")
+                    || text.to_ascii_lowercase().contains("incomplete")
+                {
                     "model_not_installed"
                 } else {
                     "model_incomplete"
                 };
                 *self.search.borrow_mut() = None;
-                return json(&search_capability_unavailable(&manifest, Some(&models_dir), detail));
+                return json(&search_capability_unavailable(
+                    &manifest,
+                    Some(&models_dir),
+                    detail,
+                ));
             }
         };
 
         let tokenizer_json = installed.tokenizer_folder.join("tokenizer.json");
-        let embedder = match SiglipEmbedder::new(&installed.image_encoder, &installed.text_encoder, &tokenizer_json, manifest.spec()) {
+        let embedder = match SiglipEmbedder::new(
+            &installed.image_encoder,
+            &installed.text_encoder,
+            &tokenizer_json,
+            manifest.spec(),
+        ) {
             Ok(embedder) => embedder,
             Err(error) => {
-                let mut capability = search_capability_unavailable(&manifest, Some(&models_dir), "backend_error");
+                let mut capability =
+                    search_capability_unavailable(&manifest, Some(&models_dir), "backend_error");
                 capability.installed = true;
                 capability.message = Some(error.to_string());
                 *self.search.borrow_mut() = None;
@@ -2483,7 +3071,11 @@ impl Engine {
             detail: None,
             message: None,
         };
-        *self.search.borrow_mut() = Some(SearchState { cache_dir: cache, embedder, capability: capability.clone() });
+        *self.search.borrow_mut() = Some(SearchState {
+            cache_dir: cache,
+            embedder,
+            capability: capability.clone(),
+        });
         json(&capability)
     }
 
@@ -2495,14 +3087,21 @@ impl Engine {
             return json(&state.capability);
         }
         let manifest = search_config::manifest();
-        json(&search_capability_unavailable(&manifest, None, "models_dir_not_configured"))
+        json(&search_capability_unavailable(
+            &manifest,
+            None,
+            "models_dir_not_configured",
+        ))
     }
 
     /// Visual-index coverage over the caller's project asset list.
     #[napi]
     pub fn search_index_status(&self, assets_json: String) -> Result<String> {
         let assets = parse_search_assets(&assets_json)?;
-        let visual: Vec<&SearchAssetDto> = assets.iter().filter(|asset| is_visual_search_asset(asset)).collect();
+        let visual: Vec<&SearchAssetDto> = assets
+            .iter()
+            .filter(|asset| is_visual_search_asset(asset))
+            .collect();
         let state = self.search.borrow();
         let Some(state) = state.as_ref() else {
             return json(&SearchIndexStatusDto {
@@ -2539,7 +3138,10 @@ impl Engine {
     #[napi]
     pub fn search_index_start(&self, assets_json: String) -> Result<String> {
         let assets = parse_search_assets(&assets_json)?;
-        let visual: Vec<&SearchAssetDto> = assets.iter().filter(|asset| is_visual_search_asset(asset)).collect();
+        let visual: Vec<&SearchAssetDto> = assets
+            .iter()
+            .filter(|asset| is_visual_search_asset(asset))
+            .collect();
         let state = self.search.borrow();
         let Some(state) = state.as_ref() else {
             return json(&SearchIndexStatusDto {
@@ -2562,13 +3164,23 @@ impl Engine {
             }
             let result = if asset.kind == "image" {
                 decode_rgba_path(path).and_then(|frame| {
-                    index_image(&state.cache_dir, path, &frame, &state.embedder, &cancel).map_err(|error| Error::from_reason(error.to_string()))
+                    index_image(&state.cache_dir, path, &frame, &state.embedder, &cancel)
+                        .map_err(|error| Error::from_reason(error.to_string()))
                 })
             } else {
                 let probed = opentake_media::probe(path).ok();
-                let duration = asset.duration_secs.or_else(|| probed.as_ref().map(|probe| probe.duration_secs)).unwrap_or(0.0);
-                let width = asset.width.or_else(|| probed.as_ref().and_then(|probe| probe.width)).unwrap_or(1920);
-                let height = asset.height.or_else(|| probed.as_ref().and_then(|probe| probe.height)).unwrap_or(1080);
+                let duration = asset
+                    .duration_secs
+                    .or_else(|| probed.as_ref().map(|probe| probe.duration_secs))
+                    .unwrap_or(0.0);
+                let width = asset
+                    .width
+                    .or_else(|| probed.as_ref().and_then(|probe| probe.width))
+                    .unwrap_or(1920);
+                let height = asset
+                    .height
+                    .or_else(|| probed.as_ref().and_then(|probe| probe.height))
+                    .unwrap_or(1080);
                 index_video(
                     &state.cache_dir,
                     path,
@@ -2607,7 +3219,12 @@ impl Engine {
 
     /// Rank a text query against the caller's indexed visual assets.
     #[napi]
-    pub fn search_query(&self, query: String, assets_json: String, fps: Option<i32>) -> Result<String> {
+    pub fn search_query(
+        &self,
+        query: String,
+        assets_json: String,
+        fps: Option<i32>,
+    ) -> Result<String> {
         let assets = parse_search_assets(&assets_json)?;
         let state = self.search.borrow();
         let Some(state) = state.as_ref() else {
@@ -2653,7 +3270,12 @@ impl Engine {
     /// Rank an image query (base64 PNG/JPEG) against the caller's indexed
     /// visual assets.
     #[napi]
-    pub fn search_query_image(&self, image_base64: String, assets_json: String, fps: Option<i32>) -> Result<String> {
+    pub fn search_query_image(
+        &self,
+        image_base64: String,
+        assets_json: String,
+        fps: Option<i32>,
+    ) -> Result<String> {
         let assets = parse_search_assets(&assets_json)?;
         let state = self.search.borrow();
         let Some(state) = state.as_ref() else {
@@ -2695,11 +3317,18 @@ impl Engine {
 
 /// Load each indexed visual asset's `PALMEMB1` index and rank the query vector
 /// with the desktop ranker (best-per-shot, floor, limit, relative cutoff).
-fn search_rank(cache_dir: &FsPath, query: &[f32], assets: &[SearchAssetDto], fps: i32) -> Vec<SearchMomentDto> {
+fn search_rank(
+    cache_dir: &FsPath,
+    query: &[f32],
+    assets: &[SearchAssetDto],
+    fps: i32,
+) -> Vec<SearchMomentDto> {
     let mut indexes = Vec::new();
     for asset in assets.iter().filter(|asset| is_visual_search_asset(asset)) {
         let path = FsPath::new(&asset.path);
-        let Some(key) = embed_store::key(path) else { continue };
+        let Some(key) = embed_store::key(path) else {
+            continue;
+        };
         if let Ok(index) = embed_store::load(cache_dir, &key) {
             indexes.push((asset.id.clone(), index));
         }

@@ -45,14 +45,14 @@ const applied = JSON.parse(engine.apply(JSON.stringify({
     startFrame: 0,
     durationFrames,
     hasAudio: media.hasAudio === true,
-    addLinkedAudio: false,
+    addLinkedAudio: media.hasAudio === true,
   }],
 })));
 const timeline = applied.timeline.timeline;
 if (!timeline.tracks.some((track) => track.clips.length > 0)) throw new Error('clip insertion failed');
 
-function exportOnce(outPath, hdr10) {
-  const begin = JSON.parse(engine.exportBegin(
+function exportOnce(engineInstance, outPath, hdr10) {
+  const begin = JSON.parse(engineInstance.exportBegin(
     outPath,
     'h265',
     '1080p',
@@ -64,17 +64,56 @@ function exportOnce(outPath, hdr10) {
   ));
   let done = 0;
   while (done < begin.total) {
-    const step = JSON.parse(engine.exportStep(8));
+    const step = JSON.parse(engineInstance.exportStep(8));
     done = step.done;
   }
-  const summary = JSON.parse(engine.exportFinish());
+  const summary = JSON.parse(engineInstance.exportFinish());
   return { begin, summary };
 }
 
-const hdr = exportOnce(path.join(outDir, 'production_hdr10.mp4'), true);
+const hdr = exportOnce(engine, path.join(outDir, 'production_hdr10.mp4'), true);
+if (hdr.summary.hasAudio !== true) throw new Error('HDR10 export summary did not report the mixed audio stream');
 console.log(JSON.stringify({ hdr10Export: hdr }, null, 2));
-const sdr = exportOnce(path.join(outDir, 'production_sdr10.mp4'), false);
+const sdr = exportOnce(engine, path.join(outDir, 'production_sdr10.mp4'), false);
 console.log(JSON.stringify({ sdr10Export: sdr }, null, 2));
+
+// Affine transform + opacity HDR layer in the linear CPU compositor.
+const transformEngine = new Engine();
+transformEngine.newProjectAt(path.join(outDir, 'hdr-transform.opentake'));
+const transformCatalog = JSON.parse(transformEngine.importMedia([sourcePath]));
+const transformMedia = transformCatalog.items.find((item) => item.name.startsWith('hdr_source'));
+if (!transformMedia) throw new Error('transform HDR import failed');
+transformEngine.apply(JSON.stringify({ type: 'insertTrack', kind: 'video' }));
+const transformTimeline = JSON.parse(transformEngine.getTimeline()).timeline;
+const transformTrack = transformTimeline.tracks.find((track) => track.type === 'video');
+const transformApplied = JSON.parse(transformEngine.apply(JSON.stringify({
+  type: 'addClips',
+  entries: [{
+    mediaRef: transformMedia.id,
+    mediaType: 'video',
+    sourceClipType: 'video',
+    trackIndex: transformTimeline.tracks.indexOf(transformTrack),
+    startFrame: 0,
+    durationFrames: 60,
+    hasAudio: true,
+    addLinkedAudio: true,
+    transform: {
+      centerX: 0.25, centerY: 0.5, width: 0.5, height: 1.0,
+      rotation: 0, flipHorizontal: false, flipVertical: false,
+    },
+  }],
+})));
+const transformClip = transformApplied.timeline.timeline.tracks
+  .flatMap((track) => track.clips)
+  .find((clip) => clip.mediaType === 'video');
+if (!transformClip) throw new Error('transformed clip insertion failed');
+transformEngine.apply(JSON.stringify({
+  type: 'setClipProperties',
+  clipIds: [transformClip.id],
+  properties: { opacity: 0.75 },
+}));
+const transformed = exportOnce(transformEngine, path.join(outDir, 'production_hdr10_transformed.mp4'), true);
+console.log(JSON.stringify({ transformedHdrExport: transformed }, null, 2));
 
 // False-HDR guard: an SDR-only project must be rejected before any encoder is
 // spawned. Without this, tagging SDR pixels as HDR10 would be a false claim.
@@ -110,5 +149,5 @@ console.log(JSON.stringify({ falseHdrRejected, falseHdrMessage }));
 
 writeFileSync(
   path.join(outDir, 'production-export.json'),
-  JSON.stringify({ hdr, sdr, falseHdrRejected, falseHdrMessage }, null, 2),
+  JSON.stringify({ hdr, sdr, transformed, falseHdrRejected, falseHdrMessage }, null, 2),
 );

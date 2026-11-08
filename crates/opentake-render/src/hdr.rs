@@ -234,6 +234,67 @@ pub struct LinearLayer<'a> {
     pub opacity: f32,
 }
 
+/// Affine transform of a linear layer in normalized canvas coordinates.
+/// `center_x/center_y` are the layer centre; `width/height` are the layer's
+/// normalized size; rotation is clockwise degrees. This mirrors the subset of
+/// `opentake_domain::Transform` the HDR path supports.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerTransform {
+    pub center_x: f64,
+    pub center_y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub rotation_degrees: f64,
+    pub flip_horizontal: bool,
+    pub flip_vertical: bool,
+}
+
+impl Default for LayerTransform {
+    fn default() -> Self {
+        Self {
+            center_x: 0.5,
+            center_y: 0.5,
+            width: 1.0,
+            height: 1.0,
+            rotation_degrees: 0.0,
+            flip_horizontal: false,
+            flip_vertical: false,
+        }
+    }
+}
+
+/// A transformed full-frame-resolution linear source layer.
+#[derive(Clone, Copy, Debug)]
+pub struct TransformedLinearLayer<'a> {
+    pub frame: &'a LinearFrame,
+    pub opacity: f32,
+    pub transform: LayerTransform,
+}
+
+/// Bilinear sample from a straight-alpha linear frame; outside = transparent.
+fn sample_linear(frame: &LinearFrame, x: f64, y: f64) -> [f32; 4] {
+    if x < 0.0 || y < 0.0 || x > (frame.width - 1) as f64 || y > (frame.height - 1) as f64 {
+        return [0.0, 0.0, 0.0, 0.0];
+    }
+    let x0 = x.floor() as u32;
+    let y0 = y.floor() as u32;
+    let x1 = (x0 + 1).min(frame.width - 1);
+    let y1 = (y0 + 1).min(frame.height - 1);
+    let tx = (x - x0 as f64) as f32;
+    let ty = (y - y0 as f64) as f32;
+    let p00 = frame.pixel(x0, y0).unwrap_or([0.0, 0.0, 0.0, 0.0]);
+    let p10 = frame.pixel(x1, y0).unwrap_or([0.0, 0.0, 0.0, 0.0]);
+    let p01 = frame.pixel(x0, y1).unwrap_or([0.0, 0.0, 0.0, 0.0]);
+    let p11 = frame.pixel(x1, y1).unwrap_or([0.0, 0.0, 0.0, 0.0]);
+    let mut out = [0.0f32; 4];
+    for channel in 0..4 {
+        let top = p00[channel] * (1.0 - tx) + p10[channel] * tx;
+        let bottom = p01[channel] * (1.0 - tx) + p11[channel] * tx;
+        out[channel] = top * (1.0 - ty) + bottom * ty;
+    }
+    out
+}
+
 /// Reference CPU linear compositor (RGBA16F in, RGBA16F out).
 ///
 /// This is intentionally simple and deterministic: it composites full-frame
@@ -259,30 +320,89 @@ impl LinearCompositor {
         background: [f32; 4],
         layers: &[LinearLayer<'_>],
     ) -> Result<LinearFrame, HdrError> {
+        for layer in layers {
+            if layer.frame.width() != self.width || layer.frame.height() != self.height {
+                return Err(HdrError::from(
+                    "linear compositor full-frame API requires full-frame layers",
+                ));
+            }
+        }
+        let transformed: Vec<TransformedLinearLayer<'_>> = layers
+            .iter()
+            .map(|layer| TransformedLinearLayer {
+                frame: layer.frame,
+                opacity: layer.opacity,
+                transform: LayerTransform::default(),
+            })
+            .collect();
+        self.composite_transformed(background, &transformed)
+    }
+
+    /// Composite affine-transformed layers in scene-linear BT.2020. Sampling is
+    /// bilinear in linear light with straight-alpha source frames; the output is
+    /// straight alpha (premultiplied only for blending internally).
+    pub fn composite_transformed(
+        &self,
+        background: [f32; 4],
+        layers: &[TransformedLinearLayer<'_>],
+    ) -> Result<LinearFrame, HdrError> {
         let mut dst = vec![0_f32; self.width as usize * self.height as usize * 4];
         for pixel in dst.chunks_mut(4) {
             pixel.copy_from_slice(&background);
         }
         for layer in layers {
-            if layer.frame.width() != self.width || layer.frame.height() != self.height {
-                return Err(HdrError::from(
-                    "linear compositor currently requires full-frame layers",
-                ));
-            }
             if !(0.0..=1.0).contains(&layer.opacity) {
                 return Err(HdrError::from("layer opacity must be in [0,1]"));
             }
-            let src = layer.frame.to_f32();
-            for (dst_pixel, src_pixel) in dst.chunks_mut(4).zip(src.chunks(4)) {
-                let alpha = (src_pixel[3] * layer.opacity).clamp(0.0, 1.0);
-                if alpha <= 0.0 {
-                    continue;
+            let transform = layer.transform;
+            if !transform.width.is_finite()
+                || !transform.height.is_finite()
+                || transform.width <= 0.0
+                || transform.height <= 0.0
+                || !transform.center_x.is_finite()
+                || !transform.center_y.is_finite()
+                || !transform.rotation_degrees.is_finite()
+            {
+                return Err(HdrError::from("invalid layer transform"));
+            }
+            let rotation = transform.rotation_degrees.to_radians();
+            let (sin_t, cos_t) = rotation.sin_cos();
+            let frame_width = layer.frame.width() as f64;
+            let frame_height = layer.frame.height() as f64;
+            for py in 0..self.height {
+                for px in 0..self.width {
+                    let dx = (px as f64 + 0.5) - transform.center_x * self.width as f64;
+                    let dy = (py as f64 + 0.5) - transform.center_y * self.height as f64;
+                    // Inverse rotation, then normalize into the layer's local box.
+                    let rx = dx * cos_t + dy * sin_t;
+                    let ry = -dx * sin_t + dy * cos_t;
+                    let mut lx = rx / (transform.width * self.width as f64) + 0.5;
+                    let mut ly = ry / (transform.height * self.height as f64) + 0.5;
+                    if transform.flip_horizontal {
+                        lx = 1.0 - lx;
+                    }
+                    if transform.flip_vertical {
+                        ly = 1.0 - ly;
+                    }
+                    if !(0.0..=1.0).contains(&lx) || !(0.0..=1.0).contains(&ly) {
+                        continue;
+                    }
+                    let src = sample_linear(
+                        layer.frame,
+                        (lx * frame_width - 0.5).clamp(0.0, frame_width - 1.0),
+                        (ly * frame_height - 0.5).clamp(0.0, frame_height - 1.0),
+                    );
+                    let alpha = (src[3] * layer.opacity).clamp(0.0, 1.0);
+                    if alpha <= 0.0 {
+                        continue;
+                    }
+                    let base = ((py as usize * self.width as usize) + px as usize) * 4;
+                    for channel in 0..3 {
+                        dst[base + channel] =
+                            src[channel] * alpha + dst[base + channel] * (1.0 - alpha);
+                    }
+                    dst[base + 3] = alpha + dst[base + 3] * (1.0 - alpha);
                 }
-                for channel in 0..3 {
-                    dst_pixel[channel] =
-                        src_pixel[channel] * alpha + dst_pixel[channel] * (1.0 - alpha);
-                }
-                dst_pixel[3] = alpha + dst_pixel[3] * (1.0 - alpha);
             }
         }
         LinearFrame::from_f32(
@@ -912,6 +1032,77 @@ mod tests {
         let white_raw = linear_frame_to_yuv420p10le(&white).unwrap();
         assert_eq!(u16::from_le_bytes([white_raw[0], white_raw[1]]), 940);
         assert!(Hdr10OutputSpec { width: 65, ..spec }.validate().is_err());
+    }
+
+    #[test]
+    fn transformed_layers_support_scale_offset_opacity_and_rotation() {
+        // 2x2 source: top row red-ish, bottom row green-ish.
+        let source = LinearFrame::from_f32(
+            2,
+            2,
+            &[
+                1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+            ],
+            LinearPrimaries::Bt2020,
+            LinearTransfer::Linear,
+        )
+        .unwrap();
+        let compositor = LinearCompositor::new(4, 4).unwrap();
+        // Half-width layer at the left: outside the box must stay black.
+        let out = compositor
+            .composite_transformed(
+                [0.0, 0.0, 0.0, 1.0],
+                &[TransformedLinearLayer {
+                    frame: &source,
+                    opacity: 1.0,
+                    transform: LayerTransform {
+                        center_x: 0.25,
+                        center_y: 0.5,
+                        width: 0.5,
+                        height: 1.0,
+                        rotation_degrees: 0.0,
+                        flip_horizontal: false,
+                        flip_vertical: false,
+                    },
+                }],
+            )
+            .unwrap();
+        let inside = out.pixel(1, 1).unwrap();
+        let outside = out.pixel(3, 1).unwrap();
+        assert_eq!(outside, [0.0, 0.0, 0.0, 1.0]);
+        assert!(inside[0] > 0.5 || inside[1] > 0.5, "inside={inside:?}");
+        // 50% opacity over black halves the linear value.
+        let out = compositor
+            .composite_transformed(
+                [0.0, 0.0, 0.0, 1.0],
+                &[TransformedLinearLayer {
+                    frame: &source,
+                    opacity: 0.5,
+                    transform: LayerTransform {
+                        center_x: 0.5,
+                        center_y: 0.5,
+                        ..LayerTransform::default()
+                    },
+                }],
+            )
+            .unwrap();
+        let center = out.pixel(2, 2).unwrap();
+        assert!(center[0] > 0.05 && center[0] < 0.8, "center={center:?}");
+        // A 90° rotation still keeps the layer inside the canvas and composited.
+        let out = compositor
+            .composite_transformed(
+                [0.0, 0.0, 0.0, 1.0],
+                &[TransformedLinearLayer {
+                    frame: &source,
+                    opacity: 1.0,
+                    transform: LayerTransform {
+                        rotation_degrees: 90.0,
+                        ..LayerTransform::default()
+                    },
+                }],
+            )
+            .unwrap();
+        assert!(out.to_f32().iter().any(|value| *value > 0.2));
     }
 
     #[test]

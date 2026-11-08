@@ -105,6 +105,14 @@ export function createEngineClient({ base = '/opentake-studio-route-b', fetchImp
       }
       return request('/engine/apply', { method: 'POST', body: { command } });
     },
+    invoke: (cmd, args = {}) => {
+      if (typeof cmd !== 'string' || cmd.length === 0) throw new TypeError('invoke requires a command name');
+      if (args === null || typeof args !== 'object' || Array.isArray(args)) {
+        throw new TypeError('invoke args must be an object');
+      }
+      return request('/engine/invoke', { method: 'POST', body: { cmd, args } });
+    },
+    exportStatus: () => request('/engine/export/status'),
     undo: () => request('/engine/undo', { method: 'POST' }),
     redo: () => request('/engine/redo', { method: 'POST' }),
     previewUrl: (frame, { revision = 0, format = 'png' } = {}) => {

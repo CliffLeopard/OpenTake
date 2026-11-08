@@ -103,6 +103,7 @@ export function createNativeEditorStore({
   const translator = createTranslator(locale);
   let state = {
     view: 'home',
+    panel: 'editor',
     locale: translator.locale,
     theme: 'system',
     ready: false,
@@ -119,9 +120,20 @@ export function createNativeEditorStore({
     projectPath: null,
     engine: { connected: false, loaded: false, error: null },
     pollIntervalMs,
+    settings: null,
+    settingsLoading: false,
+    exportState: {
+      active: false,
+      phase: 'idle',
+      done: 0,
+      total: 0,
+      error: null,
+      summary: null,
+    },
   };
   const listeners = new Set();
   let timer = null;
+  let exportTimer = null;
 
   function notify() {
     for (const listener of [...listeners]) {
@@ -301,6 +313,172 @@ export function createNativeEditorStore({
     }
   }
 
+  async function setClipProperties(clipId, properties) {
+    if (typeof clipId !== 'string' || clipId.length === 0) {
+      update({ error: 'a selected clip is required' });
+      return null;
+    }
+    if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) {
+      update({ error: 'clip properties must be an object' });
+      return null;
+    }
+    return apply({
+      type: 'setClipProperties',
+      clipIds: [clipId],
+      properties,
+    });
+  }
+
+  async function setTrackProperties(trackIndex, properties) {
+    if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+      update({ error: 'a valid track index is required' });
+      return null;
+    }
+    if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) {
+      update({ error: 'track properties must be an object' });
+      return null;
+    }
+    const command = { type: 'setTrackProps', trackIndex };
+    if (typeof properties.muted === 'boolean') command.muted = properties.muted;
+    if (typeof properties.hidden === 'boolean') command.hidden = properties.hidden;
+    if (typeof properties.syncLocked === 'boolean') command.syncLocked = properties.syncLocked;
+    if (command.muted === undefined && command.hidden === undefined && command.syncLocked === undefined) {
+      update({ error: 'no track property to change' });
+      return null;
+    }
+    return apply(command);
+  }
+
+  function openPanel(panel) {
+    const next = panel === 'export' || panel === 'settings' ? panel : 'editor';
+    update({ panel: next });
+    if (next === 'settings') void refreshSettings();
+  }
+
+  function closePanel() {
+    update({ panel: 'editor' });
+  }
+
+  async function refreshSettings() {
+    update({ settingsLoading: true, settings: state.settings });
+    const [storage, search, transcribe, index] = await Promise.allSettled([
+      client.invoke('storage_usage'),
+      client.invoke('search_model_status'),
+      client.invoke('transcribe_model_status'),
+      client.invoke('search_index_status'),
+    ]);
+    const errors = [];
+    function value(result) {
+      if (result.status === 'fulfilled') return result.value;
+      errors.push(errorMessage(result.reason));
+      return null;
+    }
+    update({
+      settingsLoading: false,
+      settings: {
+        storage: value(storage),
+        search: value(search),
+        transcribe: value(transcribe),
+        searchIndex: value(index),
+        error: errors.length > 0 ? errors[0] : null,
+      },
+    });
+  }
+
+  async function clearStorage(categories, { modelsConfirmed = false } = {}) {
+    const list = Array.isArray(categories) ? categories.filter((category) => typeof category === 'string') : [];
+    if (list.length === 0) return null;
+    try {
+      const usage = await client.invoke('storage_clear', { categories: list, modelsConfirmed: modelsConfirmed === true });
+      update({
+        settings: state.settings === null
+          ? state.settings
+          : { ...state.settings, storage: usage, error: null },
+      });
+      return usage;
+    } catch (error) {
+      update({ error: errorMessage(error) });
+      return null;
+    }
+  }
+
+  async function exportVideo(options = {}) {
+    if (state.exportState.active) {
+      update({ error: 'an export is already running' });
+      return null;
+    }
+    const outPath = typeof options.outPath === 'string' ? options.outPath : '';
+    if (outPath.length === 0) {
+      update({ error: 'export requires an output path' });
+      return null;
+    }
+    const codec = ['h264', 'h265', 'prores', 'prores4444'].includes(options.codec) ? options.codec : 'h264';
+    const quality = ['720p', '1080p', '4k'].includes(options.quality) ? options.quality : '1080p';
+    const req = {
+      outPath,
+      codec,
+      quality,
+      rangeStartFrame: Number.isInteger(options.rangeStartFrame) ? options.rangeStartFrame : null,
+      rangeEndFrame: Number.isInteger(options.rangeEndFrame) ? options.rangeEndFrame : null,
+      bitDepth: options.bitDepth === 10 ? 10 : 8,
+      duckMusic: options.duckMusic === true,
+      hdr10: options.hdr10 === true,
+    };
+    update({
+      exportState: { active: true, phase: 'starting', done: 0, total: 0, error: null, summary: null },
+    });
+    exportTimer = setIntervalImpl(async () => {
+      try {
+        const status = await client.exportStatus();
+        if (state.exportState.active && status !== null && typeof status === 'object') {
+          update({
+            exportState: {
+              ...state.exportState,
+              phase: status.active === false ? state.exportState.phase : 'running',
+              done: Number.isFinite(Number(status.done)) ? Number(status.done) : state.exportState.done,
+              total: Number.isFinite(Number(status.total)) ? Number(status.total) : state.exportState.total,
+            },
+          });
+        }
+      } catch {
+        // The export request itself reports the authoritative failure.
+      }
+    }, 500);
+    try {
+      const summary = await client.invoke('export_video', { req, operationId: 'native-export' });
+      update({
+        exportState: { active: false, phase: 'complete', done: state.exportState.done, total: state.exportState.total, error: null, summary },
+      });
+      return summary;
+    } catch (error) {
+      update({
+        exportState: {
+          active: false,
+          phase: 'error',
+          done: state.exportState.done,
+          total: state.exportState.total,
+          error: errorMessage(error),
+          summary: null,
+        },
+      });
+      return null;
+    } finally {
+      if (exportTimer !== null) {
+        clearIntervalImpl(exportTimer);
+        exportTimer = null;
+      }
+    }
+  }
+
+  async function cancelExport() {
+    try {
+      return await client.invoke('cancel_export');
+    } catch (error) {
+      update({ error: errorMessage(error) });
+      return null;
+    }
+  }
+
   function selectClip(clipId) {
     update({ selectedClipId: typeof clipId === 'string' && findClip(state.timeline, clipId) ? clipId : null });
   }
@@ -381,6 +559,10 @@ export function createNativeEditorStore({
 
   function dispose() {
     stopPolling();
+    if (exportTimer !== null) {
+      clearIntervalImpl(exportTimer);
+      exportTimer = null;
+    }
     listeners.clear();
   }
 
@@ -401,6 +583,14 @@ export function createNativeEditorStore({
     redo: () => history('redo'),
     selectClip,
     selectMedia,
+    setClipProperties,
+    setTrackProperties,
+    openPanel,
+    closePanel,
+    refreshSettings,
+    clearStorage,
+    exportVideo,
+    cancelExport,
     setFrame,
     moveSelected,
     setView,
