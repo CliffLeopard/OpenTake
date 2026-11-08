@@ -28,6 +28,9 @@ by the DSH Host through N-API.
 - Lottie import supports both bodymovin `.json` and `.lottie` ZIP containers
   (`animations/*.json` extraction); a simple zipped shape renders in the
   composite.
+- Nested/compound sequences are supported through the extracted `EditRequest`
+  (`createNestedSequence`): verified a 60-frame nested clip composites and
+  exports to 1280x720 H.264. Nested audio is not yet mixed into export.
 - Global library list/favorite/categorize/rename/delete and import-to-project are
   bridged through `opentake-media::library::LibraryStore`; favorite/list/import
   were verified.
