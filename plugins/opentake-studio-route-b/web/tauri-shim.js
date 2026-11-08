@@ -69,6 +69,9 @@
       const version = body && typeof body.timelineVersion === 'number' ? body.timelineVersion : null;
       emitToListeners('timeline_changed', version === null ? {} : { version });
     }
+    if (cmd === 'import_media' || cmd === 'import_folder') {
+      emitToListeners('media_changed', {});
+    }
     if (cmd === 'project_saved') {
       emitToListeners('project_saved', { path: typeof body === 'string' ? body : null });
     }

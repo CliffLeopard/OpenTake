@@ -10,14 +10,16 @@ No Tauri window, no sidecar process, no MCP bridge.
 
 - `crates/opentake-node` builds a Node-API 8 addon exposing the OpenTake
   `AppCore` (project new/open/save, timeline snapshot, `apply(EditRequest)`,
-  undo/redo).
+  undo/redo) plus media probe/import/list through `opentake-media`.
 - The DSH Host loads `native/<platform>-<arch>/opentake_engine_v2.node` and
   exposes `/opentake-studio-route-b/engine/*` + `opentake_route_b_*` tools.
 - The existing Vite-built React editor (`web/`) is served at
   `.../app/`, with a Tauri shim that forwards `invoke` to the Rust engine.
 - Verified in DSH: plugin panel opens the full OpenTake home + editor, creating
   a new project through the UI drives the Rust engine; `edit_apply`/undo/redo
-  work from Host tools.
+  work from Host tools. Media can be imported (ffprobe metadata), shown in the
+  media panel, double-clicked onto the timeline, and the direct video preview
+  plays inside DSH.
 
 ## Build
 
@@ -36,9 +38,10 @@ each platform.
 
 ## Current limits
 
-- Only the core editing commands are exposed; media import/probe, preview
-  compositing, export, transcription/search/generation, motion documents and
-  account/update surfaces still need their Rust command bridges.
+- Media import/probe/list and direct video preview work; the GPU
+  `composite_frame` / native playback bridge, thumbnails, export,
+  transcription/search/generation, motion documents and account/update
+  surfaces still need their Rust command bridges.
 - The Tauri file dialogs are stubbed to `/tmp/opentake-route-b/demo.opentake`;
   native DSH dialogs are a later milestone.
 - The iframe is a stepping stone; a native DSH React mount is the target.

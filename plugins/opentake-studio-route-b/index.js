@@ -24,7 +24,7 @@ const VERSION = '0.1.0';
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v3.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v4.node');
 }
 
 function loadAddon() {
@@ -207,7 +207,11 @@ export function apply(ctx) {
       case 'check_path_exists':
         return typeof args.path === 'string' && existsSync(args.path);
       case 'get_media':
-        return { items: [], folders: [] };
+        return JSON.parse(state.engine.mediaList());
+      case 'import_media': {
+        const paths = Array.isArray(args.paths) ? args.paths.filter((value) => typeof value === 'string') : [];
+        return JSON.parse(state.engine.importMedia(paths));
+      }
       case 'home_projects_sync':
         return [];
       case 'home_project_register':
@@ -275,6 +279,16 @@ export function apply(ctx) {
       }
       if (sub === '/engine/timeline' && req.method === 'GET') {
         sendJson(res, 200, JSON.parse(ensureEngine().getTimeline()));
+        return;
+      }
+      if (sub === '/engine/media' && req.method === 'GET') {
+        sendJson(res, 200, JSON.parse(ensureEngine().mediaList()));
+        return;
+      }
+      if (sub === '/engine/import-media' && req.method === 'POST') {
+        const body = await readJson(req, 4 * 1024 * 1024);
+        const paths = Array.isArray(body.paths) ? body.paths.filter((value) => typeof value === 'string') : [];
+        sendJson(res, 200, JSON.parse(ensureEngine().importMedia(paths)));
         return;
       }
       if (sub === '/engine/new' && req.method === 'POST') {
@@ -353,6 +367,31 @@ export function apply(ctx) {
     { type: 'object', properties: {}, additionalProperties: false },
     async () => {
       const value = info();
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_media',
+    'Read the OpenTake Rust engine media catalog (MediaList JSON).',
+    { type: 'object', properties: {}, additionalProperties: false },
+    async () => {
+      const value = JSON.parse(ensureEngine().mediaList());
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_import_media',
+    'Probe and import local media files into the OpenTake Rust engine; returns the updated catalog.',
+    {
+      type: 'object',
+      properties: { paths: { type: 'array', items: { type: 'string' } } },
+      required: ['paths'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().importMedia(args.paths));
       return { text: JSON.stringify(value), data: value };
     },
   );
