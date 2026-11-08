@@ -1,6 +1,6 @@
 # OpenTake Studio：完整功能复刻差距与路线
 
-状态：Phase 1–2 已实现（媒体库 Host/UI 已入）· 2026-11-08 · 分支 `feat/dsh-native-studio`
+状态：Phase 1–6 已实现，剩余项见 §3 · 2026-11-08 · 分支 `feat/dsh-native-studio`
 
 当前 `plugins/opentake-studio` 是**纯 DSH 原生编辑器 MVP**（工程、媒体、时间线、预览、文本、基础导出、15 个 Agent 工具），
 不是 Rust/Tauri 版 OpenTake 的完整功能复刻。本文是“完整功能”的验收清单与路线，避免把 MVP 当成完成。
@@ -29,8 +29,12 @@ Rust/Tauri 版包含：
 | 预览 | Canvas 合成、视频/图片/文本、播放/暂停/seek/音量/循环（近似） |
 | 检查器 | 音量、不透明度、位置/大小/旋转、文本样式 |
 | 导出 | H.264/AAC MP4、异步进度/取消、文本由浏览器 PNG 叠加、单工程单导出 |
-| Agent | 15 个原生工具，与 UI 共用服务 |
-| 测试 | 163 项（model/project/media/export/host） |
+| Agent | 30 个原生工具，与 UI 共用服务 |
+| 测试 | 299 项（model/project/media/export/captions/library/transcribe/generate/host） |
+| Phase 2 | 真 dissolve/wipe（静态不透明同轨）、静态旋转导出、H.265/ProRes/VP9 预设、轨道静音/隐藏/重命名/删除 |
+| Phase 3 | 全局媒体库（搜索/收藏/分类/标签/加入工程） |
+| Phase 4–5 | Whisper 兼容转写 + 字幕生成 + 工程检索；OpenAI 兼容图片/语音生成 |
+| Phase 6 | 裁剪、ProRes/WebM、H.264/H.265 预设 |
 
 ## 3. 未完成清单（按验收域；Phase 1 项已划掉）
 
@@ -42,10 +46,12 @@ Rust/Tauri 版包含：
 - ✅ SRT/VTT 导入导出、字幕片段编辑；逐词时间轴待 Phase 2
 - ✅ 吸附加标记/多选/复制粘贴/波纹删除/快照 undo
 - ✅ 旋转静态导出（关键帧旋转降级）
-- ❌ 多轨混合模式、画中画、遮罩/裁剪
+- ✅ 裁剪
+- ❌ 多轨混合模式/画中画、遮罩（非裁剪）、混合模式
 - ✅ 轨道静音/隐藏/重命名/删除 UI
 - ❌ 音频 ducking/增益自动化、独立轨道音量、5.1/采样率策略
 - ❌ 帧精确播放/丢帧策略/代理媒体/HDR/色彩管理
+- ✅ SRT/VTT 导入导出、字幕片段编辑（Phase 1）
 - ❌ 字幕组批量同步、逐词时间轴
 - ❌ 嵌套序列、多工程、分组、滚动编辑
 
