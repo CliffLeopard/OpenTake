@@ -29,6 +29,18 @@ Bounded milestone implemented:
   `/engine/export/status`; summary/error display.
 - Settings: engine info, storage categories (cache clear), search/transcription
   model status and search-index status from existing `invoke` commands.
+- Effects: engine registry (`grayscale`/`sepia`/`invert`) add/remove/enable and
+  amount via `setEffects`.
+- Captions: list caption clips, create with `addCaptions`, edit text/timing with
+  `setClipProperties` + `moveClips`.
+- Keyframes/masks: list/add/remove scalar keyframes (`opacity`/`volume`/
+  `rotation`), show pair/crop tracks, client-side interpolation readout; add
+  rectangle/ellipse masks with feather/invert via `setMasks`.
+- Playback: play/pause/stop/seek through existing `playback_start`,
+  `playback_pause`, `playback_seek`, `playback_stop` and
+  `/engine/playback/status`; preview frame follows playback.
+- Media import: path-entry import through `/engine/import-media` and media
+  library refresh.
 - Lifecycle: explicit `unmount()`, subscription teardown, optional timeline/media
   polling, AbortSignal ownership in `entry.js`, no global `document`/`head` writes.
 
@@ -57,11 +69,12 @@ Bounded milestone implemented:
 node --test plugins/opentake-studio-route-b/native-editor/test/native-editor.test.mjs
 ```
 
-Current result: 14 tests pass (IPC routes/payloads, errors, store lifecycle,
+Current result: 18 tests pass (IPC routes/payloads, errors, store lifecycle,
 move/undo, failure retention, locale, CSS isolation, mount/unmount, entry abort,
 defensive DTO helpers, served bundle production contract, inspector/track apply
-commands, export request shape/progress, settings/storage mutation, locale key
-parity).
+commands, export request shape/progress, settings/storage mutation, effects/
+masks/keyframes commands, caption create/update, media import + playback,
+locale key parity and keyframe/caption helpers).
 
 ```bash
 node --test plugins/opentake-studio-route-b/test/ui-mount.test.mjs
@@ -78,7 +91,7 @@ node plugins/opentake-studio-route-b/native-editor/build-bundle.mjs
 ```
 
 Output: `plugins/opentake-studio-route-b/web/native-editor/native-editor.js`
-(ES module, React 18 + ReactDOM bundled, production build, ~256 KB / ~67.5 KB
+(ES module, React 18 + ReactDOM bundled, production build, ~279 KB / ~72.6 KB
 gzip). The existing Host static route serves it as:
 
 ```
@@ -150,6 +163,20 @@ Verified against the authenticated DSH Web GUI at **http://127.0.0.1:56474/**
 - Settings: opened the native settings sheet; live storage showed `thumbnails
   210 KB`, search model `ready · siglip2-base-patch16-256`, transcription
   `not configured`, and search-index JSON.
+- Effects: added `grayscale` from the Inspector; live timeline returned
+  `effects:[{name:"grayscale",params:{amount:1},enabled:true}]`.
+- Masks: added an ellipse; live timeline returned `masks:[{shape:{kind:"circle",
+  center:{x:0.5,y:0.5},radius:{x:0.3,y:0.3}},feather:0,invert:false}]`.
+- Keyframes: added an opacity keyframe at frame 0; live timeline returned
+  `opacityTrack:{keyframes:[{frame:0,value:1,interpolationOut:"smooth"}]}`.
+- Captions: created `Native caption line` at 30+45 via `addCaptions`; live
+  timeline showed the text clip/caption group. Edited it to
+  `Edited native caption` at 40+50 through `setClipProperties` + `moveClips`.
+- Media import: imported a distinct local image through the native path field;
+  `/engine/media` grew from 1 to 2 items and the media panel rendered 2 cards.
+- Playback: play showed `data-otn-playback="playing"` and the UI frame advanced
+  (frame 59 while engine status frame 62); pause showed `paused`; stop returned
+  `idle`.
 - Fallback: switched back to `Iframe 编辑器`; iframe `display:block`, native host
   `display:none`, ShadowRoot children 0. Then toggled native again and it
   remounted cleanly.
@@ -183,12 +210,14 @@ shim and asset/dialog/event behavior are untouched.
 
 ## What is still iframe-only
 
-- Full editor: inspector/properties, effects, captions, keyframes, export,
-  settings, account/storage, motion studio, agent panel, library.
-- Playback engine and native compositor playback; this prototype only requests
-  preview frames.
-- Media import/drag/drop, native dialogs, save-as flows, project mismatch/update
-  dialogs, keyboard shortcuts, full menu/native window behavior.
+- Advanced inspector: color grade/LUT/chroma key, full text/caption styles,
+  advanced mask transforms/polygon pen, all keyframe properties/curves and
+  effect parameter coverage beyond `grayscale`/`sepia`/`invert`.
+- Full playback/pipeline parity, native audio edge cases, export dialogs.
+- Media file-picker/drag-drop, native dialogs, save-as flows, project
+  mismatch/update dialogs, keyboard shortcuts, full menu/window behavior.
+- Account/storage settings beyond the bounded status panel, motion studio,
+  agent panel, library.
 - Existing app stores, event sync and all Tauri-specific commands. The native
   prototype intentionally has its own small store and a bounded UI.
 - The existing iframe remains the only path that currently renders the complete
@@ -204,8 +233,14 @@ shim and asset/dialog/event behavior are untouched.
 - **Asset route:** `/engine/asset` currently accepts an absolute path and has no
   Range support; native thumbnails/video inherit that prototype-only security
   gap.
-- **Event model:** no push channel; the native store polls/refreshes rather than
-  using a real timeline/media event stream.
+- **Event model:** no push channel; the native store polls/refreshes and polls
+  playback status rather than using a real timeline/media event stream.
+- **Bounded panel behavior:** effects are limited to the engine registry;
+  captions use one default style and only content/timing edits; masks support
+  rectangle/polygon and ellipse plus feather/invert but not the pen tool or
+  advanced mask transforms; media import is path-entry only (no file picker or
+  drag/drop); playback preview follows a 200 ms status poll and may lag one or
+  two frames behind the engine clock.
 - **Bundle maintenance:** `web/native-editor/native-editor.js` is generated by
   `build-bundle.mjs`; rebuild it whenever `web/src/native/**` changes. The bundle
   is included in `files` via `web/**` and the explicit `web/native-editor/**`.

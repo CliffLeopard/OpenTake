@@ -18,7 +18,7 @@ claim matrix and boundary sections below.
 | `LinearFrame::to_sdr_rgba8` fallback | Implemented + tested | No — explicit BT.709/203-nit clip fallback, `tone_mapped = false` |
 | Production wgpu `Compositor` / `RenderLoop` | Unchanged | **No** — still `Rgba8Unorm` SDR; HDR sources are still tone-mapped at decode in `opentake-media::color` |
 | `opentake-export-pro` HDR10 writer (linear → PQ/BT.2020 → libx265 Main10 + metadata) | Implemented + real ffprobe/pixel evidence | **Yes** for the frames handed to it |
-| Addon production HDR path (`exportBegin`/`exportVideo(..., hdr10=true)`) | Implemented + real `.opentake` project → addon export → ffprobe evidence | **Yes for the supported subset** (HDR PQ video, static affine transform/opacity, mixed AAC audio; no crops/masks/effects/grades/LUTs/text/keyframes) |
+| Addon production HDR path (`exportBegin`/`exportVideo(..., hdr10=true)`) | Implemented + real `.opentake` project → addon export → ffprobe evidence | **Yes for the supported subset** (HDR PQ/HLG video, static/keyframed affine transform/opacity, basic rect/ellipse/polygon masks with feather/invert, SDR text/image overlays at 203-nit linear white, mixed AAC audio; no crops/effects/grades/LUTs or nested sequences) |
 | Host `hdr10` option (`export_video`, chunked `/engine/export`, agent export tool) | Implemented pass-through to the addon | **Yes** (forwards to addon; SDR default preserved) |
 | `opentake-export-pro` SDR 10-bit encoder (RGBA8 input, HDR tags) | Pre-existing policy path | No — 10-bit precision and metadata only; SDR pixels |
 | Shared `opentake_media::ExportPreset` / `VideoEncoder` | Not modified (coordination required) | No HDR claim |
@@ -100,22 +100,34 @@ When `hdr10 === true`:
 
 1. **Preflight (`validate_hdr10_timeline`)** rejects false-HDR before spawning an
    encoder. The selected range must contain at least one HDR PQ video layer, and
-   every visible visual layer must be a video with BT.2020/PQ color metadata and
-   no crop/masks/effects/color grade/LUT/chroma key/stabilization/transition/
-   reverse/nested sequence/visual keyframe tracks. Static affine transform,
-   opacity and audio clips are allowed. SDR, HLG, text/image layers and
-   unsupported effects are rejected with a descriptive error.
-2. Codec must be `h265`. The timeline audio is mixed exactly like SDR export
+   every visible visual layer must be a supported video with BT.2020/PQ color
+   metadata, or an SDR text/image overlay, with no crop/effects/color grade/
+   LUT/chroma key/stabilization/transition/reverse/nested sequence. Static or
+   keyframed affine transform/opacity, basic masks and audio clips are allowed.
+   SDR-only timelines, HLG and unsupported effects are rejected with a
+   descriptive error.
+2. SDR text and image overlays are rasterized/decoded to RGBA8, converted with
+   BT.709 OETF inverse → BT.2020 linear RGB and scaled so SDR white is 203 cd/m²
+   (`linear = OETF^-1(encoded) * 203/10000`), then composited over the HDR layers.
+   Keyframed transform/opacity is sampled per frame with `transform_at` /
+   `opacity_at`. Basic masks are mapped into the linear compositor: rect
+   (4-point polygon), ellipse, polygon and half-plane, with feather/invert and
+   whole-mask offset/scale/rotation; multiple masks intersect. HLG inputs
+   (`arib-std-b67`) use the HLG inverse OETF and are mapped to PQ/BT.2020 with
+   HLG peak = 1,000 cd/m² (0.1 in the 10,000-nit contract). Unsupported: crops,
+   effects/grades/LUTs, chroma key, stabilization, transitions, reverse and
+   nested sequences.
+3. Codec must be `h265`. The timeline audio is mixed exactly like SDR export
    (including optional ducking via the existing path), written to a temporary
    WAV and muxed with the HDR10 video stream using `-c:v copy -c:a aac`; the
    HDR video bitstream/metadata is preserved. Range exports currently mux the
    full timeline mix (same as the existing SDR addon behavior).
-3. The per-frame path decodes each supported HDR source directly with ffmpeg to
+4. The per-frame path decodes each supported HDR source directly with ffmpeg to
    16-bit RGBA PQ code values, **bypassing `opentake_media::decode`'s SDR
    tone-map**, linearises with the PQ EOTF, composites layers (including affine
    transform/opacity) with `LinearCompositor::composite_transformed`, and pushes
    the linear frame into `Hdr10Writer`.
-4. `exportStep` streams chunks through the writer; `exportFinish` finishes the
+5. `exportStep` streams chunks through the writer; `exportFinish` finishes the
    video, muxes AAC audio when present (else renames the video temp), and returns
    `{hdr10:true, hasAudio, metadata:{primaries,transfer,matrix,maxCll,maxFall,masteringDisplay}}`;
    `exportCancel` aborts the ffmpeg child, removes temp/final files. SDR export is
@@ -245,13 +257,15 @@ Tests:
 
 ```text
 cargo test -p opentake-render --lib --offline
-  test result: ok. 72 passed; 0 failed  (8 HDR tests included)
+  test result: ok. 74 passed; 0 failed  (10 HDR tests included)
 
 cargo test --offline --manifest-path crates/opentake-export-pro/Cargo.toml --lib
   test result: ok. 32 passed; 0 failed
 
 cargo check -p opentake-render --offline
 cargo check -p opentake-node --offline
+cargo test -p opentake-node --lib
+  2 passed (SDR 203-nit conversion + premultiplied alpha)
   Finished (macOS arm64; warnings are pre-existing)
 
 scripts/route-b/export/hdr10-evidence.sh          # isolated writer proof
@@ -296,6 +310,24 @@ Both HDR outputs expose a video stream (`hevc` Main10, yuv420p10le,
 bt2020/smpte2084/bt2020nc, mastering+content-light metadata) and an **AAC audio
 stream**; `hasAudio:true` is reported by the addon export summaries.
 
+SDR overlay evidence: `production_hdr10_overlays.mp4` composites an SDR white
+image (25% box, centre 0.75/0.25) and an SDR text clip (`HDR`, centre 0.25/0.75)
+over the HDR video. First-frame Y at the image sample changes from 805 (HDR bar)
+to **573** (203-nit SDR white); the text box has **1,952** changed pixels versus
+the base frame. Both overlays preserve the HDR10 tags, metadata and AAC audio.
+
+Keyframed opacity evidence: `production_hdr10_keyframed.mp4` animates opacity
+1.0→0.2 over 10 frames; first-frame Y 668 drops to **521** at frame 9.
+
+Ellipse-mask evidence: `production_hdr10_masked.mp4` applies a feathered ellipse
+(radius 0.3, feather 0.02) to the HDR layer; first-frame centre Y = **669**
+(HDR) and corner Y = **64** (masked black), proving mask coverage and feather in
+the linear path. Rect/polygon/invert/feather geometry is unit-tested.
+
+HLG-input evidence: `production_hdr10_from_hlg.mp4` starts from an
+`arib-std-b67` BT.2020 fixture and exports PQ/BT.2020 Main10 with mastering/
+content-light metadata; measured Y codes [222,439,554,695] (4 distinct levels).
+
 Affine-transform evidence: `production_hdr10_transformed.mp4` places the layer
 in the left half (width 0.5, centre 0.25) with opacity 0.75; first-frame Y at
 x=10% is **182** (HDR layer present) and at x=75% is **64** (background black),
@@ -316,6 +348,10 @@ SHA-256 from the latest run:
 fefc97e67cb73189b39635ec1b5598561cb21a3bc23dbf09ead3f43aa9059b1c  production_hdr10.mp4
 5097ce9eb35087c5d4453cce7fe23bdad849fc45d967e366c85530feee30c894  production_sdr10.mp4
 2e9eee11c881227df2d1230809b391419d9e6686ec6730efc75f9f7e936b19c6  production_hdr10_transformed.mp4
+f4f010ef80b6d7223bdc5dbdccbae2c72d259c671840cfe59a2dfa82750b078a  production_hdr10_overlays.mp4
+cae8390a482fd5259025ab216086727a9cd2ae555f51a89c3042c348b88284a7  production_hdr10_keyframed.mp4
+82fb43dd4af82a7e315cac1c37d269877b1f269ac999d74afd3712ace1a94a03  production_hdr10_masked.mp4
+04fabd209f612f223a6c97f1093d1660e9d153aa35730b10a8563d52cf3a53bd  production_hdr10_from_hlg.mp4
 ```
 
 The isolated export-pro evidence (§4) remains the writer-only proof; §4.1 is the
@@ -373,10 +409,13 @@ Required follow-up to widen/consume the production HDR path:
 1. Migrate the wgpu compositor output to `Rgba16Float` (or add an HDR-capable
    second compositor) and composite layer textures in scene-linear space; keep
    the existing RGBA8 path as the SDR fallback. Add GPU readback for RGBA16F.
-2. Extend the addon HDR path beyond the supported subset: crop/masks/effects/
-   grades/LUTs/keying, text/image overlays, keyframed transforms/opacity, nested
-   sequences, range-trimmed audio, and HLG sources. Or replace the CPU linear
-   compositor with the GPU linear compositor once (1) exists.
+2. Extend the addon HDR path beyond the supported subset: crop (non-mask),
+   effects/grades/LUTs/keying, nested sequences, and range-trimmed audio. SDR
+   text/image overlays, keyframed transform/opacity, basic masks and HLG→PQ input
+   conversion are now supported. HLG policy is static 1,000-nit peak, not a
+   dynamic scene-referred tone-map.
+   Or replace the CPU linear compositor with the GPU linear compositor once (1)
+   exists.
 3. Port the HDR10 writer into the shared `opentake_media` encoder/`ExportPreset`
    for the desktop app once approved; keep the existing SDR/10-bit path as the
    fallback.
@@ -393,10 +432,13 @@ Required follow-up to widen/consume the production HDR path:
 ## 7. Limits of this phase
 
 - The production addon HDR path is **supported-subset only**: HDR PQ video
-  layers with static affine transform/opacity and mixed timeline audio; no
-  crops/masks/effects/grades/LUTs/chroma key/stabilization/transitions/reverse/
-  nested sequences, no text/image layers, no visual keyframe tracks, no HLG.
-  Unsupported timelines are rejected, not exported.
+  layers with static or keyframed affine transform/opacity, basic rect/ellipse/
+  polygon masks with feather/invert, mixed timeline audio, SDR text/image
+  overlays using the documented 203-nit linear white policy, and HLG→PQ input
+  conversion (static 1,000-nit peak). No crop/effects/grades/LUTs/chroma key/
+  stabilization/transitions/reverse/nested sequences; unsupported timelines are
+  rejected, not exported. SDR overlay conversion and HLG peak mapping are
+  explicit approximations, not source-accurate HDR master claims.
 - The addon HDR path uses a **CPU linear compositor** (bilinear affine sampling,
   full-frame decode per layer) and per-frame ffmpeg HDR decode; it is correct and
   evidenced, not a performance path. The wgpu compositor is still RGBA8 SDR and

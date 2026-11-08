@@ -23,9 +23,9 @@ pub use size::{even, export_render_size, ExportResolution};
 pub use source::{DecodedFrame, FrameProvider, SourceMetrics};
 
 pub use hdr::{
-    bt2020_to_bt709, bt709_oetf, pq_eotf, pq_inverse_eotf, Hdr10Metadata, HdrError,
-    LinearCompositor, LinearFrame, LinearLayer, LinearPrimaries, LinearSourceMetadata,
-    LinearTransfer, MasteringDisplay, SdrFallback, SdrFallbackMode,
+    bt2020_to_bt709, bt709_oetf, hlg_oetf_inverse, hlg_to_linear_10k, pq_eotf, pq_inverse_eotf,
+    Hdr10Metadata, HdrError, LinearCompositor, LinearFrame, LinearLayer, LinearPrimaries,
+    LinearSourceMetadata, LinearTransfer, MasteringDisplay, SdrFallback, SdrFallbackMode,
 };
 
 pub use gpu::{

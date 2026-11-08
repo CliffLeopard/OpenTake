@@ -263,12 +263,193 @@ impl Default for LayerTransform {
     }
 }
 
+/// One linear-path mask shape in normalized canvas coordinates. Rectangle,
+/// ellipse, polygon and half-plane shapes are supported with feather/invert and
+/// the same whole-mask offset/scale/rotation semantics as the domain mask.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LayerMaskShape {
+    Rect {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
+    Ellipse {
+        center_x: f64,
+        center_y: f64,
+        radius_x: f64,
+        radius_y: f64,
+    },
+    Polygon {
+        points: Vec<(f64, f64)>,
+    },
+    Linear {
+        point_x: f64,
+        point_y: f64,
+        normal_x: f64,
+        normal_y: f64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerMask {
+    pub shape: LayerMaskShape,
+    pub feather: f64,
+    pub invert: bool,
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub scale_x: f64,
+    pub scale_y: f64,
+    pub rotation_degrees: f64,
+}
+
+impl Default for LayerMask {
+    fn default() -> Self {
+        Self {
+            shape: LayerMaskShape::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+            feather: 0.0,
+            invert: false,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation_degrees: 0.0,
+        }
+    }
+}
+
+fn smoothstep01(edge0: f64, edge1: f64, value: f64) -> f64 {
+    if (edge1 - edge0).abs() <= f64::EPSILON {
+        return if value < edge0 { 0.0 } else { 1.0 };
+    }
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn polygon_signed_distance(points: &[(f64, f64)], x: f64, y: f64) -> f64 {
+    if points.len() < 3 {
+        return f64::INFINITY;
+    }
+    let mut inside = false;
+    let mut min_edge = f64::INFINITY;
+    let mut j = points.len() - 1;
+    for i in 0..points.len() {
+        let (xi, yi) = points[i];
+        let (xj, yj) = points[j];
+        if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        let dx = xj - xi;
+        let dy = yj - yi;
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > f64::EPSILON {
+            (((x - xi) * dx + (y - yi) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let px = xi + t * dx;
+        let py = yi + t * dy;
+        min_edge = min_edge.min(((x - px).powi(2) + (y - py).powi(2)).sqrt());
+        j = i;
+    }
+    if inside {
+        -min_edge
+    } else {
+        min_edge
+    }
+}
+
+impl LayerMask {
+    fn local_point(&self, x: f64, y: f64) -> (f64, f64) {
+        let sx = self.scale_x.abs().max(f64::EPSILON);
+        let sy = self.scale_y.abs().max(f64::EPSILON);
+        let radians = self.rotation_degrees.to_radians();
+        let (sin, cos) = radians.sin_cos();
+        let dx = x - 0.5 - self.offset_x;
+        let dy = y - 0.5 - self.offset_y;
+        let unrotated_x = cos * dx + sin * dy;
+        let unrotated_y = -sin * dx + cos * dy;
+        (unrotated_x / sx + 0.5, unrotated_y / sy + 0.5)
+    }
+
+    fn signed_distance(&self, x: f64, y: f64) -> f64 {
+        let (x, y) = self.local_point(x, y);
+        match &self.shape {
+            LayerMaskShape::Rect {
+                x: rx,
+                y: ry,
+                width,
+                height,
+            } => {
+                let cx = rx + width * 0.5;
+                let cy = ry + height * 0.5;
+                let dx = (x - cx).abs() - width * 0.5;
+                let dy = (y - cy).abs() - height * 0.5;
+                let outside = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
+                outside + dx.max(dy).min(0.0)
+            }
+            LayerMaskShape::Ellipse {
+                center_x,
+                center_y,
+                radius_x,
+                radius_y,
+            } => {
+                let rx = radius_x.abs().max(f64::EPSILON);
+                let ry = radius_y.abs().max(f64::EPSILON);
+                let nx = (x - center_x) / rx;
+                let ny = (y - center_y) / ry;
+                ((nx * nx + ny * ny).sqrt() - 1.0) * rx.min(ry)
+            }
+            LayerMaskShape::Polygon { points } => polygon_signed_distance(points, x, y),
+            LayerMaskShape::Linear {
+                point_x,
+                point_y,
+                normal_x,
+                normal_y,
+            } => {
+                let len = (normal_x * normal_x + normal_y * normal_y).sqrt();
+                if len <= f64::EPSILON {
+                    return 0.0;
+                }
+                -((x - point_x) * (normal_x / len) + (y - point_y) * (normal_y / len))
+            }
+        }
+    }
+
+    pub fn coverage(&self, x: f64, y: f64) -> f64 {
+        let sd = self.signed_distance(x, y);
+        let f = self.feather.max(0.0);
+        let inside = if f <= f64::EPSILON {
+            if sd <= 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            1.0 - smoothstep01(-f * 0.5, f * 0.5, sd)
+        };
+        if self.invert {
+            1.0 - inside
+        } else {
+            inside
+        }
+    }
+}
+
 /// A transformed full-frame-resolution linear source layer.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct TransformedLinearLayer<'a> {
     pub frame: &'a LinearFrame,
     pub opacity: f32,
     pub transform: LayerTransform,
+    /// All masks are intersected (coverage multiplied), matching the domain
+    /// render plan's multiple-mask semantics.
+    pub masks: Vec<LayerMask>,
 }
 
 /// Bilinear sample from a straight-alpha linear frame; outside = transparent.
@@ -333,6 +514,7 @@ impl LinearCompositor {
                 frame: layer.frame,
                 opacity: layer.opacity,
                 transform: LayerTransform::default(),
+                masks: Vec::new(),
             })
             .collect();
         self.composite_transformed(background, &transformed)
@@ -392,7 +574,15 @@ impl LinearCompositor {
                         (lx * frame_width - 0.5).clamp(0.0, frame_width - 1.0),
                         (ly * frame_height - 0.5).clamp(0.0, frame_height - 1.0),
                     );
-                    let alpha = (src[3] * layer.opacity).clamp(0.0, 1.0);
+                    let mut mask_coverage = 1.0_f64;
+                    if !layer.masks.is_empty() {
+                        let nx = (px as f64 + 0.5) / self.width as f64;
+                        let ny = (py as f64 + 0.5) / self.height as f64;
+                        for mask in &layer.masks {
+                            mask_coverage *= mask.coverage(nx, ny);
+                        }
+                    }
+                    let alpha = (src[3] * layer.opacity * mask_coverage as f32).clamp(0.0, 1.0);
                     if alpha <= 0.0 {
                         continue;
                     }
@@ -423,6 +613,26 @@ pub fn bt2020_to_bt709(rgb_2020: [f32; 3]) -> [f32; 3] {
         -0.124_55 * r + 1.132_9 * g - 0.008_35 * b,
         -0.018_151 * r - 0.100_579 * g + 1.118_73 * b,
     ]
+}
+
+/// HLG inverse OETF (ARIB STD-B67). Input is the encoded `E'` in [0,1];
+/// output is scene-linear in [0,1] relative to the HLG 1000-nit peak.
+pub fn hlg_oetf_inverse(encoded: f32) -> f32 {
+    const A: f32 = 0.178_832_77;
+    const B: f32 = 1.0 - 4.0 * A;
+    let encoded = encoded.clamp(0.0, 1.0);
+    if encoded <= 0.5 {
+        encoded * encoded / 3.0
+    } else {
+        (((encoded - (0.5 - A * (4.0 * A).ln())) / A).exp() + B) / 12.0
+    }
+}
+
+/// HLG encoded value → scene-linear BT.2020 relative to the 10,000-nit PQ
+/// contract. Policy: HLG peak (encoded 1.0) maps to 1,000 cd/m² = 0.1, so the
+/// conversion is `hlg_oetf_inverse(value) * 1000/10000`.
+pub fn hlg_to_linear_10k(encoded: f32) -> f32 {
+    hlg_oetf_inverse(encoded) * 0.1
 }
 
 /// BT.709 OETF (SDR encoding); input/output in [0,1].
@@ -1064,6 +1274,7 @@ mod tests {
                         flip_horizontal: false,
                         flip_vertical: false,
                     },
+                    masks: Vec::new(),
                 }],
             )
             .unwrap();
@@ -1083,6 +1294,7 @@ mod tests {
                         center_y: 0.5,
                         ..LayerTransform::default()
                     },
+                    masks: Vec::new(),
                 }],
             )
             .unwrap();
@@ -1099,10 +1311,90 @@ mod tests {
                         rotation_degrees: 90.0,
                         ..LayerTransform::default()
                     },
+                    masks: Vec::new(),
                 }],
             )
             .unwrap();
         assert!(out.to_f32().iter().any(|value| *value > 0.2));
+    }
+
+    #[test]
+    fn linear_masks_support_rect_ellipse_polygon_feather_and_invert() {
+        let ellipse = LayerMask {
+            shape: LayerMaskShape::Ellipse {
+                center_x: 0.5,
+                center_y: 0.5,
+                radius_x: 0.25,
+                radius_y: 0.25,
+            },
+            ..LayerMask::default()
+        };
+        assert_eq!(ellipse.coverage(0.5, 0.5), 1.0);
+        assert_eq!(ellipse.coverage(0.0, 0.0), 0.0);
+
+        let rect = LayerMask {
+            shape: LayerMaskShape::Rect {
+                x: 0.25,
+                y: 0.25,
+                width: 0.5,
+                height: 0.5,
+            },
+            ..LayerMask::default()
+        };
+        assert_eq!(rect.coverage(0.5, 0.5), 1.0);
+        assert_eq!(rect.coverage(0.05, 0.05), 0.0);
+
+        let polygon = LayerMask {
+            shape: LayerMaskShape::Polygon {
+                points: vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)],
+            },
+            ..LayerMask::default()
+        };
+        assert_eq!(polygon.coverage(0.1, 0.1), 1.0);
+        assert_eq!(polygon.coverage(0.9, 0.9), 0.0);
+
+        let feathered = LayerMask {
+            shape: LayerMaskShape::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0,
+            },
+            feather: 0.2,
+            ..LayerMask::default()
+        };
+        let edge = feathered.coverage(0.5, 0.5);
+        assert!(edge > 0.2 && edge < 0.8, "edge={edge}");
+        assert_eq!(feathered.coverage(0.1, 0.5), 1.0);
+
+        let inverted = LayerMask {
+            shape: LayerMaskShape::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0,
+            },
+            invert: true,
+            ..LayerMask::default()
+        };
+        assert_eq!(inverted.coverage(0.1, 0.5), 0.0);
+        assert_eq!(inverted.coverage(0.9, 0.5), 1.0);
+    }
+
+    #[test]
+    fn hlg_inverse_oetf_is_monotonic_and_maps_peak_to_1000_nits() {
+        assert!((hlg_oetf_inverse(0.0)).abs() < 1e-6);
+        assert!((hlg_oetf_inverse(1.0) - 1.0).abs() < 1e-4);
+        assert!((hlg_to_linear_10k(1.0) - 0.1).abs() < 1e-5);
+        let mut previous = 0.0;
+        for step in 0..=100 {
+            let value = hlg_oetf_inverse(step as f32 / 100.0);
+            assert!(
+                value >= previous - 1e-6,
+                "step {step}: {value} < {previous}"
+            );
+            previous = value;
+        }
     }
 
     #[test]

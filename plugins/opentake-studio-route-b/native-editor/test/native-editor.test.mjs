@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { createEngineClient, EngineRequestError } from '../../../../web/src/native/ipc.js';
 import { createTranslator } from '../../../../web/src/native/locale.js';
 import {
+  captionClips,
   createNativeEditorStore,
+  evaluateScalarTrack,
   findClip,
   mediaItems,
   timelineTracks,
@@ -59,6 +61,8 @@ function makeFetch(routes = {}) {
     if (path.endsWith('/engine/media')) return jsonResponse(MEDIA);
     if (path.endsWith('/engine/apply')) return jsonResponse({ changed: true, actionName: 'Move Clips', timelineVersion: 5 });
     if (path.endsWith('/engine/export/status')) return jsonResponse({ active: false, done: 120, total: 120, operationId: 'native-export' });
+    if (path.endsWith('/engine/playback/status')) return jsonResponse({ active: true, paused: false, frame: 7, terminal: false, fps: 30 });
+    if (path.endsWith('/engine/import-media')) return jsonResponse({ items: [...MEDIA.items, { id: 'media-3', name: 'Imported', type: 'image', duration: 1 }] });
     if (path.endsWith('/engine/invoke')) {
       let payload = {};
       try { payload = JSON.parse(init.body); } catch { payload = {}; }
@@ -70,6 +74,7 @@ function makeFetch(routes = {}) {
       if (cmd === 'search_index_status') return jsonResponse({ ready: false, indexed: 0 });
       if (cmd === 'export_video') return jsonResponse({ outputFile: args.req?.outPath ?? '/tmp/out.mp4', fps: 30, durationFrames: 120 });
       if (cmd === 'cancel_export') return jsonResponse(null);
+      if (cmd === 'playback_start' || cmd === 'playback_pause' || cmd === 'playback_seek' || cmd === 'playback_stop') return jsonResponse(null);
       return jsonResponse({ error: { code: 'unknown-command', message: `mock invoke ${cmd}` } }, 400);
     }
     if (path.endsWith('/engine/undo')) return jsonResponse({ changed: true, actionName: 'Undo' });
@@ -475,4 +480,117 @@ test('native locale dictionaries keep inspector/export/settings keys in parity',
     assert.equal(typeof TRANSLATIONS.en[key], 'string', key);
     assert.equal(typeof TRANSLATIONS.zh[key], 'string', key);
   }
+});
+
+test('native effects, masks and keyframes use the exact engine commands', async () => {
+  const { fetchImpl, calls } = makeFetch();
+  const store = createNativeEditorStore({
+    client: createEngineClient({ fetchImpl }),
+    setIntervalImpl: () => 1,
+    clearIntervalImpl: () => {},
+  });
+  await store.initialize();
+  await store.setClipEffects('clip-1', [{ name: 'grayscale', params: { amount: 0.5 }, enabled: true }]);
+  let call = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(call.init.body), {
+    command: { type: 'setEffects', clipIds: ['clip-1'], effects: [{ name: 'grayscale', params: { amount: 0.5 }, enabled: true }] },
+  });
+
+  await store.setClipMasks('clip-1', [{ shape: { kind: 'circle', center: { x: 0.5, y: 0.5 }, radius: { x: 0.3, y: 0.3 } }, feather: 0.1, invert: true }]);
+  call = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(call.init.body), {
+    command: {
+      type: 'setMasks',
+      clipIds: ['clip-1'],
+      masks: [{ shape: { kind: 'circle', center: { x: 0.5, y: 0.5 }, radius: { x: 0.3, y: 0.3 } }, feather: 0.1, invert: true }],
+    },
+  });
+
+  await store.upsertKeyframe('clip-1', 'opacity', 12, 0.4);
+  call = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(call.init.body), {
+    command: { type: 'upsertKeyframe', clipId: 'clip-1', property: 'opacity', frame: 12, value: { kind: 'scalar', value: 0.4 } },
+  });
+
+  await store.removeKeyframe('clip-1', 'opacity', 12);
+  call = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  assert.deepEqual(JSON.parse(call.init.body), {
+    command: { type: 'removeKeyframe', clipId: 'clip-1', property: 'opacity', frame: 12 },
+  });
+});
+
+test('native captions create and update through addCaptions/setClipProperties/moveClips', async () => {
+  const { fetchImpl, calls } = makeFetch();
+  const store = createNativeEditorStore({
+    client: createEngineClient({ fetchImpl }),
+    setIntervalImpl: () => 1,
+    clearIntervalImpl: () => {},
+  });
+  await store.initialize();
+  await store.addCaption({ content: 'Hello caption', startFrame: 10, durationFrames: 40 });
+  const addCall = calls.filter((entry) => entry.url.endsWith('/engine/apply')).at(-1);
+  const command = JSON.parse(addCall.init.body).command;
+  assert.equal(command.type, 'addCaptions');
+  assert.equal(command.entries[0].content, 'Hello caption');
+  assert.equal(command.entries[0].startFrame, 10);
+  assert.equal(command.entries[0].durationFrames, 40);
+  assert.match(command.entries[0].captionGroupId, /^captions-native-/);
+  assert.equal(typeof command.entries[0].textStyle.fontName, 'string');
+  assert.equal(command.entries[0].transform.centerY, 0.85);
+
+  await store.updateCaption('clip-1', { content: 'Updated', startFrame: 5, durationFrames: 20 });
+  const applied = calls.filter((entry) => entry.url.endsWith('/engine/apply')).slice(-2);
+  assert.equal(JSON.parse(applied[0].init.body).command.type, 'setClipProperties');
+  assert.equal(JSON.parse(applied[0].init.body).command.properties.durationFrames, 20);
+  assert.equal(JSON.parse(applied[1].init.body).command.type, 'moveClips');
+  assert.equal(JSON.parse(applied[1].init.body).command.moves[0].toFrame, 5);
+});
+
+test('native media import and playback commands use live engine routes', async () => {
+  const { fetchImpl, calls } = makeFetch();
+  const timers = [];
+  const cleared = [];
+  const store = createNativeEditorStore({
+    client: createEngineClient({ fetchImpl }),
+    setIntervalImpl: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    clearIntervalImpl: (id) => { cleared.push(id); },
+  });
+  await store.initialize();
+  const catalog = await store.importMedia(['/tmp/import-me.png']);
+  assert.equal(catalog.items.length, 3);
+  assert.equal(store.getSnapshot().media.length, 3);
+  const importCall = calls.find((entry) => entry.url.endsWith('/engine/import-media'));
+  assert.deepEqual(JSON.parse(importCall.init.body), { paths: ['/tmp/import-me.png'] });
+
+  await store.seekTo(7);
+  await store.play();
+  assert.equal(timers.length, 1);
+  const startCall = calls.find((entry) => entry.url.endsWith('/engine/invoke') && JSON.parse(entry.init.body).cmd === 'playback_start');
+  assert.equal(JSON.parse(startCall.init.body).args.fromFrame, 7);
+  await timers[0].fn();
+  assert.equal(store.getSnapshot().frame, 7);
+  assert.equal(store.getSnapshot().playback.active, true);
+  await store.pause();
+  assert.equal(store.getSnapshot().playback.paused, true);
+  store.dispose();
+});
+
+test('caption/keyframe helpers tolerate empty and interpolate scalar tracks', () => {
+  assert.deepEqual(captionClips({ timeline: { tracks: [] } }), []);
+  const snapshot = {
+    timeline: {
+      tracks: [{
+        clips: [
+          { id: 'text-1', captionGroupId: 'g1', textContent: 'Hi' },
+          { id: 'video-1' },
+        ],
+      }],
+    },
+  };
+  assert.deepEqual(captionClips(snapshot).map((entry) => entry.clip.id), ['text-1']);
+  const track = { keyframes: [{ frame: 0, value: 0 }, { frame: 10, value: 1 }] };
+  assert.equal(evaluateScalarTrack(track, 5), 0.5);
+  assert.equal(evaluateScalarTrack(track, -1), 0);
+  assert.equal(evaluateScalarTrack(track, 20), 1);
+  assert.equal(evaluateScalarTrack({ keyframes: [] }, 0), null);
 });

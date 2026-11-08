@@ -113,6 +113,13 @@ export function createEngineClient({ base = '/opentake-studio-route-b', fetchImp
       return request('/engine/invoke', { method: 'POST', body: { cmd, args } });
     },
     exportStatus: () => request('/engine/export/status'),
+    playbackStatus: () => request('/engine/playback/status'),
+    importMedia: (paths) => {
+      if (!Array.isArray(paths) || paths.some((item) => typeof item !== 'string')) {
+        throw new TypeError('importMedia requires an array of paths');
+      }
+      return request('/engine/import-media', { method: 'POST', body: { paths } });
+    },
     undo: () => request('/engine/undo', { method: 'POST' }),
     redo: () => request('/engine/redo', { method: 'POST' }),
     previewUrl: (frame, { revision = 0, format = 'png' } = {}) => {

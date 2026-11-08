@@ -6,7 +6,7 @@
  */
 
 import { createTranslator } from './locale.js';
-import { clipCount, findClip, mediaItems, timelineMeta, timelineTracks, totalFrames } from './store.js';
+import { captionClips, clipCount, evaluateScalarTrack, findClip, mediaItems, timelineMeta, timelineTracks, totalFrames } from './store.js';
 
 const h = (React, type, props, ...children) => React.createElement(type, props, ...children);
 
@@ -117,6 +117,21 @@ function MediaPanel(React, { state, client, t, store }) {
       h(React, 'span', null, t('media')),
       h(React, 'span', null, String(items.length)),
     ),
+    h(React, 'form', {
+      className: 'otn-media-import',
+      onSubmit: (event) => {
+        event.preventDefault();
+        const input = event.currentTarget.elements.nativeImportPath;
+        const value = typeof input?.value === 'string' ? input.value.trim() : '';
+        if (value.length > 0) {
+          void store.importMedia([value]);
+          input.value = '';
+        }
+      },
+    },
+      h(React, 'input', { className: 'otn-input', name: 'nativeImportPath', placeholder: t('importMediaPath'), 'aria-label': t('importMediaPath'), spellCheck: false, 'data-otn-import-path': '' }),
+      h(React, 'button', { type: 'submit', className: 'otn-btn', disabled: state.busy, 'data-otn-action': 'import-media' }, state.busy ? t('importing') : t('importMedia')),
+    ),
     items.length === 0
       ? h(React, 'p', { className: 'otn-empty' }, t('noMedia'))
       : h(React, 'ul', { className: 'otn-media-list' },
@@ -162,18 +177,27 @@ function PreviewPane(React, { state, client, store, t }) {
         })
         : h(React, 'div', { className: 'otn-preview-placeholder' }, t('noProject')),
     ),
-    h(React, 'div', { className: 'otn-transport' },
-      button(React, '◀', () => store.setFrame(Math.max(0, frame - 1)), { ariaLabel: t('previousFrame'), disabled: frame <= 0, title: t('previousFrame') }),
+    h(React, 'div', { className: 'otn-transport', 'data-otn-playback': state.playback.active ? (state.playback.paused ? 'paused' : 'playing') : 'idle' },
+      button(React, '◀', () => { void store.seekTo(Math.max(0, frame - 1)); }, { ariaLabel: t('previousFrame'), disabled: frame <= 0, title: t('previousFrame') }),
+      h(React, 'button', {
+        type: 'button',
+        className: 'otn-btn otn-btn--icon',
+        'data-otn-action': 'playback-toggle',
+        'aria-label': state.playback.active && !state.playback.paused ? t('pause') : t('play'),
+        title: state.playback.active && !state.playback.paused ? t('pause') : t('play'),
+        onClick: () => { if (state.playback.active && !state.playback.paused) { void store.pause(); } else { void store.play(); } },
+      }, state.playback.active && !state.playback.paused ? '❚❚' : '▶'),
+      h(React, 'button', { type: 'button', className: 'otn-btn otn-btn--icon', 'data-otn-action': 'playback-stop', 'aria-label': t('stop'), title: t('stop'), onClick: () => { void store.stopPlayback(); } }, '■'),
       h(React, 'input', {
         className: 'otn-scrub',
         type: 'range',
         min: 0,
         max: Math.max(0, maxFrame),
         value: frame,
-        onChange: (event) => store.setFrame(Number(event.target.value)),
+        onChange: (event) => { void store.seekTo(Number(event.target.value)); },
         'aria-label': t('frame'),
       }),
-      button(React, '▶', () => store.setFrame(Math.min(maxFrame, frame + 1)), { ariaLabel: t('nextFrame'), disabled: frame >= maxFrame, title: t('nextFrame') }),
+      button(React, '▶', () => { void store.seekTo(Math.min(maxFrame, frame + 1)); }, { ariaLabel: t('nextFrame'), disabled: frame >= maxFrame, title: t('nextFrame') }),
       h(React, 'span', { className: 'otn-frame-readout' }, `${t('frame')} ${frame} / ${maxFrame} · ${meta.fps}fps`),
     ),
   );
@@ -353,6 +377,209 @@ function InspectorPanel({ React, state, store, t }) {
           h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'aria-pressed': track.muted === true, 'data-otn-track-prop': 'muted', onClick: () => { void store.setTrackProperties(trackIndex, { muted: track.muted !== true }); } }, t('mute')),
           h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'aria-pressed': track.hidden === true, 'data-otn-track-prop': 'hidden', onClick: () => { void store.setTrackProperties(trackIndex, { hidden: track.hidden !== true }); } }, t('hide')),
           h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'aria-pressed': track.syncLocked === true, 'data-otn-track-prop': 'syncLocked', onClick: () => { void store.setTrackProperties(trackIndex, { syncLocked: track.syncLocked !== true }); } }, t('syncLock')),
+        ),
+      ),
+      h(React, EffectsSection, { React, clip, store, t, disabled }),
+      h(React, KeyframesSection, { React, state, clip, store, t, disabled }),
+      h(React, MasksSection, { React, clip, store, t, disabled }),
+    ),
+  );
+}
+
+const EFFECT_KINDS = ['grayscale', 'sepia', 'invert'];
+const KEYFRAME_TRACKS = [
+  { property: 'opacity', field: 'opacityTrack', scalar: true, value: (clip) => Number(clip.opacity ?? 1) },
+  { property: 'volume', field: 'volumeTrack', scalar: true, value: (clip) => Number(clip.volume ?? 1) },
+  { property: 'rotation', field: 'rotationTrack', scalar: true, value: (clip) => Number(clip.transform?.rotation ?? 0) },
+  { property: 'position', field: 'positionTrack', scalar: false },
+  { property: 'scale', field: 'scaleTrack', scalar: false },
+  { property: 'crop', field: 'cropTrack', scalar: false },
+];
+
+function EffectsSection({ React, clip, store, t, disabled }) {
+  const effects = Array.isArray(clip.effects) ? clip.effects : [];
+  function setEffects(next) { void store.setClipEffects(clip.id, next); }
+  function addEffect(name) {
+    if (effects.length >= 8) return;
+    setEffects([...effects, { name, params: { amount: 1 }, enabled: true }]);
+  }
+  function updateEffect(index, patch) {
+    setEffects(effects.map((effect, effectIndex) => (effectIndex === index ? { ...effect, ...patch } : effect)));
+  }
+  return h(React, 'div', { className: 'otn-inspector__group', 'data-otn-effects': '' },
+    h(React, 'span', { className: 'otn-inspector__title' }, t('effects')),
+    h(React, 'div', { className: 'otn-field__row' },
+      EFFECT_KINDS.map((name) => h(React, 'button', {
+        key: name,
+        type: 'button',
+        className: 'otn-toggle',
+        'data-otn-effect-add': name,
+        disabled: disabled || effects.length >= 8,
+        onClick: () => addEffect(name),
+      }, name)),
+    ),
+    effects.length === 0 ? h(React, 'p', { className: 'otn-sheet__hint' }, t('noEffects')) : null,
+    effects.map((effect, index) => h(React, 'div', { key: `${effect.name}-${index}`, className: 'otn-effect-card', 'data-otn-effect-index': index, 'data-otn-effect-name': effect.name },
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'strong', { className: 'otn-inspector__track-name' }, effect.name),
+        h(React, 'button', { type: 'button', className: 'otn-toggle', 'aria-pressed': effect.enabled !== false, 'data-otn-effect-enabled': index, onClick: () => updateEffect(index, { enabled: effect.enabled === false }) }, t('effectEnabled')),
+        h(React, 'button', { type: 'button', className: 'otn-toggle', 'data-otn-effect-remove': index, onClick: () => setEffects(effects.filter((_, effectIndex) => effectIndex !== index)) }, t('removeEffect')),
+      ),
+      h(React, 'label', { className: 'otn-field' },
+        h(React, 'span', { className: 'otn-field__label' }, t('amount')),
+        h(React, 'input', {
+          className: 'otn-field__input', type: 'number', min: 0, max: 1, step: 0.01,
+          defaultValue: String(effect.params?.amount ?? 1),
+          'data-otn-effect-amount': index,
+          onBlur: (event) => {
+            const value = Math.min(1, Math.max(0, Number(event.target.value)));
+            if (Number.isFinite(value)) updateEffect(index, { params: { ...(effect.params ?? {}), amount: value } });
+          },
+        }),
+      ),
+    )),
+    h(React, 'p', { className: 'otn-sheet__hint' }, t('effectsHint')),
+  );
+}
+
+function KeyframesSection({ React, state, clip, store, t, disabled }) {
+  return h(React, 'div', { className: 'otn-inspector__group', 'data-otn-keyframes': '' },
+    h(React, 'span', { className: 'otn-inspector__title' }, t('keyframes')),
+    KEYFRAME_TRACKS.map(({ property, field, scalar, value }) => {
+      const track = clip[field];
+      const keyframes = Array.isArray(track?.keyframes) ? track.keyframes : [];
+      const evaluated = scalar && track !== undefined ? evaluateScalarTrack(track, state.frame) : null;
+      return h(React, 'div', { key: property, className: 'otn-keyframe-track', 'data-otn-keyframe-track': property },
+        h(React, 'div', { className: 'otn-field__row' },
+          h(React, 'strong', { className: 'otn-inspector__track-name' }, property),
+          h(React, 'span', { className: 'otn-sheet__hint' }, `${keyframes.length}`),
+          scalar ? h(React, 'button', {
+            type: 'button', className: 'otn-toggle', 'data-otn-keyframe-add': property, disabled,
+            onClick: () => { void store.upsertKeyframe(clip.id, property, state.frame, Number(value(clip))); },
+          }, t('addKeyframe')) : null,
+        ),
+        keyframes.length === 0 ? null : h(React, 'div', { className: 'otn-keyframe-list' },
+          keyframes.map((keyframe) => h(React, 'div', { key: `${property}-${keyframe.frame}`, className: 'otn-keyframe-row', 'data-otn-keyframe-frame': keyframe.frame },
+            h(React, 'span', null, `${t('frame')} ${keyframe.frame}`),
+            h(React, 'span', { className: 'otn-sheet__hint' }, typeof keyframe.value === 'object' ? JSON.stringify(keyframe.value) : String(keyframe.value)),
+            h(React, 'button', {
+              type: 'button', className: 'otn-toggle', disabled,
+              'data-otn-keyframe-remove': `${property}:${keyframe.frame}`,
+              onClick: () => { void store.removeKeyframe(clip.id, property, keyframe.frame); },
+            }, t('removeKeyframe')),
+          )),
+        ),
+        evaluated !== null ? h(React, 'span', { className: 'otn-sheet__hint' }, `${t('evaluate')} ${state.frame}: ${evaluated.toFixed(3)}`) : null,
+      );
+    }),
+    h(React, 'p', { className: 'otn-sheet__hint' }, t('keyframesHint')),
+  );
+}
+
+function maskLabel(mask) {
+  const kind = mask?.shape?.kind;
+  return kind === 'circle' ? 'ellipse' : kind === 'poly' ? 'rectangle / poly' : kind === 'linear' ? 'linear' : 'mask';
+}
+
+function MasksSection({ React, clip, store, t, disabled }) {
+  const masks = Array.isArray(clip.masks) ? clip.masks : [];
+  function setMasks(next) { void store.setClipMasks(clip.id, next); }
+  function updateMask(index, patch) {
+    setMasks(masks.map((mask, maskIndex) => (maskIndex === index ? { ...mask, ...patch } : mask)));
+  }
+  function addMask(kind) {
+    const mask = kind === 'ellipse'
+      ? { shape: { kind: 'circle', center: { x: 0.5, y: 0.5 }, radius: { x: 0.3, y: 0.3 } }, feather: 0, invert: false }
+      : { shape: { kind: 'poly', points: [{ x: 0.25, y: 0.25 }, { x: 0.75, y: 0.25 }, { x: 0.75, y: 0.75 }, { x: 0.25, y: 0.75 }] }, feather: 0, invert: false };
+    setMasks([...masks, mask]);
+  }
+  return h(React, 'div', { className: 'otn-inspector__group', 'data-otn-masks': '' },
+    h(React, 'span', { className: 'otn-inspector__title' }, t('masks')),
+    h(React, 'div', { className: 'otn-field__row' },
+      h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'data-otn-mask-add': 'rect', onClick: () => addMask('rect') }, t('addRectMask')),
+      h(React, 'button', { type: 'button', className: 'otn-toggle', disabled, 'data-otn-mask-add': 'ellipse', onClick: () => addMask('ellipse') }, t('addEllipseMask')),
+    ),
+    masks.length === 0 ? h(React, 'p', { className: 'otn-sheet__hint' }, t('noMasks')) : masks.map((mask, index) => h(React, 'div', { key: index, className: 'otn-effect-card', 'data-otn-mask-index': index },
+      h(React, 'div', { className: 'otn-field__row' },
+        h(React, 'strong', { className: 'otn-inspector__track-name' }, maskLabel(mask)),
+        h(React, 'button', { type: 'button', className: 'otn-toggle', 'aria-pressed': mask.invert === true, 'data-otn-mask-invert': index, onClick: () => updateMask(index, { invert: mask.invert !== true }) }, t('invertMask')),
+        h(React, 'button', { type: 'button', className: 'otn-toggle', 'data-otn-mask-remove': index, onClick: () => setMasks(masks.filter((_, maskIndex) => maskIndex !== index)) }, t('removeMask')),
+      ),
+      h(React, 'label', { className: 'otn-field' },
+        h(React, 'span', { className: 'otn-field__label' }, t('feather')),
+        h(React, 'input', {
+          className: 'otn-field__input', type: 'number', min: 0, max: 1, step: 0.01,
+          defaultValue: String(mask.feather ?? 0),
+          'data-otn-mask-feather': index,
+          onBlur: (event) => {
+            const value = Math.max(0, Number(event.target.value));
+            if (Number.isFinite(value)) updateMask(index, { feather: value });
+          },
+        }),
+      ),
+    )),
+    h(React, 'p', { className: 'otn-sheet__hint' }, t('masksHint')),
+  );
+}
+
+function CaptionsPanel({ React, state, store, t }) {
+  const captions = captionClips(state.timeline);
+  const [selectedId, setSelectedId] = React.useState('');
+  const [draft, setDraft] = React.useState({ content: '', startFrame: 0, durationFrames: 60 });
+  const selected = captions.find((entry) => entry.clip.id === selectedId)?.clip ?? null;
+  function selectCaption(clip) {
+    setSelectedId(clip.id);
+    setDraft({ content: typeof clip.textContent === 'string' ? clip.textContent : '', startFrame: clip.startFrame, durationFrames: clip.durationFrames });
+  }
+  function create(event) {
+    event.preventDefault();
+    const content = draft.content.trim();
+    if (content.length === 0) return;
+    void store.addCaption({ content, startFrame: Number(draft.startFrame), durationFrames: Number(draft.durationFrames) });
+    setDraft({ content: '', startFrame: 0, durationFrames: 60 });
+  }
+  function save() {
+    if (selected === null) return;
+    void store.updateCaption(selected.id, {
+      content: draft.content,
+      startFrame: Number(draft.startFrame),
+      durationFrames: Number(draft.durationFrames),
+    });
+  }
+  return h(React, 'div', { className: 'otn-overlay', 'data-otn-panel': 'captions' },
+    h(React, 'section', { className: 'otn-sheet', 'aria-label': t('captions') },
+      h(React, 'div', { className: 'otn-sheet__header' },
+        h(React, 'h2', { className: 'otn-sheet__title' }, t('captions')),
+        button(React, t('close'), () => store.closePanel(), { ariaLabel: t('close') }),
+      ),
+      h(React, 'div', { className: 'otn-sheet__body' },
+        h(React, 'div', { className: 'otn-sheet__section' },
+          h(React, 'span', { className: 'otn-sheet__section-title' }, t('captions')),
+          captions.length === 0 ? h(React, 'p', { className: 'otn-sheet__hint' }, t('captionsEmpty')) : captions.map((entry) => h(React, 'button', {
+            key: entry.clip.id,
+            type: 'button',
+            className: `otn-toggle${entry.clip.id === selectedId ? ' otn-toggle--active' : ''}`,
+            'data-otn-caption-id': entry.clip.id,
+            onClick: () => selectCaption(entry.clip),
+          }, `${entry.clip.startFrame}+${entry.clip.durationFrames} · ${entry.clip.textContent ?? ''}`)),
+        ),
+        h(React, 'form', { className: 'otn-sheet__section', onSubmit: create },
+          h(React, 'span', { className: 'otn-sheet__section-title' }, t('addCaption')),
+          h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('captionText')), h(React, 'textarea', { className: 'otn-field__input', rows: 2, value: draft.content, 'data-otn-caption-content': 'new', onChange: (event) => setDraft((current) => ({ ...current, content: event.target.value })) })),
+          h(React, 'div', { className: 'otn-field__row' },
+            h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('rangeStart')), h(React, 'input', { className: 'otn-field__input', type: 'number', min: 0, value: draft.startFrame, 'data-otn-caption-start': 'new', onChange: (event) => setDraft((current) => ({ ...current, startFrame: event.target.value })) })),
+            h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('duration')), h(React, 'input', { className: 'otn-field__input', type: 'number', min: 1, value: draft.durationFrames, 'data-otn-caption-duration': 'new', onChange: (event) => setDraft((current) => ({ ...current, durationFrames: event.target.value })) })),
+          ),
+          h(React, 'div', { className: 'otn-field__row' }, h(React, 'button', { type: 'submit', className: 'otn-btn otn-btn--primary', 'data-otn-action': 'caption-create' }, t('addCaption'))),
+        ),
+        selected === null ? null : h(React, 'div', { className: 'otn-sheet__section', 'data-otn-caption-edit': selected.id },
+          h(React, 'span', { className: 'otn-sheet__section-title' }, `${t('saveCaption')} · ${selected.captionGroupId}`),
+          h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('captionText')), h(React, 'textarea', { className: 'otn-field__input', rows: 2, value: draft.content, 'data-otn-caption-content': 'selected', onChange: (event) => setDraft((current) => ({ ...current, content: event.target.value })) })),
+          h(React, 'div', { className: 'otn-field__row' },
+            h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('rangeStart')), h(React, 'input', { className: 'otn-field__input', type: 'number', min: 0, value: draft.startFrame, 'data-otn-caption-start': 'selected', onChange: (event) => setDraft((current) => ({ ...current, startFrame: event.target.value })) })),
+            h(React, 'label', { className: 'otn-field' }, h(React, 'span', { className: 'otn-field__label' }, t('duration')), h(React, 'input', { className: 'otn-field__input', type: 'number', min: 1, value: draft.durationFrames, 'data-otn-caption-duration': 'selected', onChange: (event) => setDraft((current) => ({ ...current, durationFrames: event.target.value })) })),
+          ),
+          h(React, 'div', { className: 'otn-field__row' }, h(React, 'button', { type: 'button', className: 'otn-btn otn-btn--primary', 'data-otn-action': 'caption-save', onClick: save }, t('saveCaption'))),
         ),
       ),
     ),
@@ -546,6 +773,13 @@ export function NativeEditorView({ React, store, client, theme = 'system' }) {
         h(React, 'button', {
           type: 'button',
           className: 'otn-btn',
+          'data-otn-action': 'open-captions',
+          'aria-pressed': state.panel === 'captions',
+          onClick: () => store.openPanel(state.panel === 'captions' ? 'editor' : 'captions'),
+        }, t('captions')),
+        h(React, 'button', {
+          type: 'button',
+          className: 'otn-btn',
           'data-otn-action': 'open-export',
           'aria-pressed': state.panel === 'export',
           onClick: () => store.openPanel(state.panel === 'export' ? 'editor' : 'export'),
@@ -566,6 +800,7 @@ export function NativeEditorView({ React, store, client, theme = 'system' }) {
     state.view === 'home'
       ? h(React, HomeView, { React, state, store, client, t })
       : EditorView(React, { state, store, client, t }),
+    state.panel === 'captions' ? h(React, CaptionsPanel, { React, state, store, t }) : null,
     state.panel === 'export' ? h(React, ExportPanel, { React, state, store, t }) : null,
     state.panel === 'settings' ? h(React, SettingsPanel, { React, state, store, t }) : null,
     h(React, 'footer', { className: 'otn-status' },

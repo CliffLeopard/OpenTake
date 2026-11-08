@@ -76,6 +76,50 @@ export function mediaItems(media) {
   return media !== null && typeof media === 'object' ? asArray(media.items) : [];
 }
 
+/** Caption clips are text clips that carry a caption group id. */
+export function captionClips(snapshot) {
+  const result = [];
+  for (const [trackIndex, track] of timelineTracks(snapshot).entries()) {
+    for (const [clipIndex, clip] of asArray(track?.clips).entries()) {
+      if (typeof clip?.captionGroupId === 'string' && clip.captionGroupId.length > 0) {
+        result.push({ trackIndex, clipIndex, track, clip });
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Small client-side sampler for the keyframe panel readout. The engine remains
+ * authoritative for render evaluation; this only shows the authored scalar
+ * between keyframes so the UI has a useful "at this frame" value.
+ */
+export function evaluateScalarTrack(track, frame) {
+  const keyframes = asArray(track?.keyframes)
+    .filter((keyframe) => Number.isFinite(Number(keyframe?.frame)) && Number.isFinite(Number(keyframe?.value)))
+    .map((keyframe) => ({ frame: Number(keyframe.frame), value: Number(keyframe.value) }))
+    .sort((a, b) => a.frame - b.frame);
+  if (keyframes.length === 0) return null;
+  if (frame <= keyframes[0].frame) return keyframes[0].value;
+  if (frame >= keyframes[keyframes.length - 1].frame) return keyframes[keyframes.length - 1].value;
+  for (let index = 1; index < keyframes.length; index += 1) {
+    const right = keyframes[index];
+    if (frame <= right.frame) {
+      const left = keyframes[index - 1];
+      const span = right.frame - left.frame;
+      if (span <= 0) return right.value;
+      const ratio = (frame - left.frame) / span;
+      return left.value + (right.value - left.value) * ratio;
+    }
+  }
+  return keyframes[keyframes.length - 1].value;
+}
+
+export function nextId(prefix = 'clip') {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid === undefined ? `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}` : `${prefix}-${uuid}`;
+}
+
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -130,10 +174,16 @@ export function createNativeEditorStore({
       error: null,
       summary: null,
     },
+    playback: {
+      active: false,
+      paused: false,
+      frame: 0,
+    },
   };
   const listeners = new Set();
   let timer = null;
   let exportTimer = null;
+  let playbackTimer = null;
 
   function notify() {
     for (const listener of [...listeners]) {
@@ -350,7 +400,7 @@ export function createNativeEditorStore({
   }
 
   function openPanel(panel) {
-    const next = panel === 'export' || panel === 'settings' ? panel : 'editor';
+    const next = panel === 'export' || panel === 'settings' || panel === 'captions' ? panel : 'editor';
     update({ panel: next });
     if (next === 'settings') void refreshSettings();
   }
@@ -479,6 +529,191 @@ export function createNativeEditorStore({
     }
   }
 
+  async function setClipEffects(clipId, effects) {
+    if (!Array.isArray(effects)) {
+      update({ error: 'effects must be an array' });
+      return null;
+    }
+    return apply({ type: 'setEffects', clipIds: [clipId], effects });
+  }
+
+  async function setClipMasks(clipId, masks) {
+    if (!Array.isArray(masks)) {
+      update({ error: 'masks must be an array' });
+      return null;
+    }
+    return apply({ type: 'setMasks', clipIds: [clipId], masks });
+  }
+
+  async function upsertKeyframe(clipId, property, frame, value) {
+    const frameNumber = Math.trunc(Number(frame));
+    if (!Number.isInteger(frameNumber) || frameNumber < 0) {
+      update({ error: 'keyframe frame must be a non-negative integer' });
+      return null;
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      update({ error: 'keyframe value must be a finite number' });
+      return null;
+    }
+    return apply({
+      type: 'upsertKeyframe',
+      clipId,
+      property,
+      frame: frameNumber,
+      value: { kind: 'scalar', value },
+    });
+  }
+
+  async function removeKeyframe(clipId, property, frame) {
+    const frameNumber = Math.trunc(Number(frame));
+    if (!Number.isInteger(frameNumber) || frameNumber < 0) return null;
+    return apply({ type: 'removeKeyframe', clipId, property, frame: frameNumber });
+  }
+
+  async function addCaption({ content, startFrame = 0, durationFrames = 60 } = {}) {
+    const text = typeof content === 'string' ? content.trim() : '';
+    if (text.length === 0) {
+      update({ error: 'caption text must not be empty' });
+      return null;
+    }
+    const start = Math.max(0, Math.trunc(Number(startFrame)) || 0);
+    const duration = Math.max(1, Math.trunc(Number(durationFrames)) || 60);
+    const group = `captions-native-${nextId('group').split('-').pop()}`;
+    return apply({
+      type: 'addCaptions',
+      entries: [{
+        startFrame: start,
+        durationFrames: duration,
+        content: text,
+        captionGroupId: group,
+        textStyle: {
+          fontName: 'Helvetica-Bold', fontSize: 48, fontScale: 1,
+          color: { r: 1, g: 1, b: 1, a: 1 }, alignment: 'center',
+          shadow: { enabled: false, color: { r: 0, g: 0, b: 0, a: 0 }, offsetX: 0, offsetY: 0, blur: 0 },
+          background: { enabled: false, color: { r: 0, g: 0, b: 0, a: 0 } },
+          border: { enabled: false, color: { r: 0, g: 0, b: 0, a: 1 } },
+        },
+        transform: { centerX: 0.5, centerY: 0.85, width: 0.9, height: 0.2, rotation: 0, flipHorizontal: false, flipVertical: false },
+      }],
+    });
+  }
+
+  async function updateCaption(clipId, { content, startFrame, durationFrames } = {}) {
+    const selected = findClip(state.timeline, clipId);
+    if (selected === null) {
+      update({ error: 'caption clip not found' });
+      return null;
+    }
+    const properties = {};
+    if (typeof content === 'string') properties.textContent = content;
+    if (Number.isFinite(Number(durationFrames))) properties.durationFrames = Math.max(1, Math.trunc(Number(durationFrames)));
+    if (Object.keys(properties).length > 0) {
+      const applied = await apply({ type: 'setClipProperties', clipIds: [clipId], properties });
+      if (applied === null) return null;
+    }
+    if (Number.isFinite(Number(startFrame))) {
+      return apply({
+        type: 'moveClips',
+        moves: [{ clipId, toTrack: selected.trackIndex, toFrame: Math.max(0, Math.trunc(Number(startFrame))) }],
+      });
+    }
+    return null;
+  }
+
+  async function importMedia(paths) {
+    const list = Array.isArray(paths) ? paths.filter((item) => typeof item === 'string' && item.trim().length > 0) : [];
+    if (list.length === 0) {
+      update({ error: 'enter one or more media paths to import' });
+      return null;
+    }
+    update({ busy: true, error: null });
+    try {
+      const catalog = await client.importMedia(list);
+      update({ busy: false, media: mediaItems(catalog) });
+      return catalog;
+    } catch (error) {
+      update({ busy: false, error: errorMessage(error) });
+      return null;
+    }
+  }
+
+  async function play() {
+    if (state.playback.active && state.playback.paused === false) return;
+    try {
+      const snapshot = state.timeline ?? {};
+      await client.invoke('playback_start', {
+        fromFrame: state.frame,
+        identity: {
+          projectEpoch: Number(snapshot.projectEpoch) || 0,
+          timelineVersion: Number(snapshot.version) || 0,
+          sessionId: 'route-b-native',
+        },
+      });
+      update({ playback: { active: true, paused: false, frame: state.frame } });
+      if (playbackTimer !== null) clearIntervalImpl(playbackTimer);
+      playbackTimer = setIntervalImpl(async () => {
+        try {
+          const status = await client.playbackStatus();
+          if (status === null || status.active !== true) {
+            stopPlaybackTimer();
+            update({ playback: { active: false, paused: true, frame: state.frame } });
+            return;
+          }
+          const frame = Math.max(0, Math.trunc(Number(status.frame) || 0));
+          update({ frame, playback: { active: true, paused: status.paused === true, frame } });
+          if (status.terminal === true || status.active === false) {
+            stopPlaybackTimer();
+            update({ playback: { active: false, paused: true, frame } });
+          }
+        } catch {
+          stopPlaybackTimer();
+          update({ playback: { active: false, paused: true, frame: state.frame } });
+        }
+      }, 200);
+    } catch (error) {
+      update({ error: errorMessage(error) });
+    }
+  }
+
+  function stopPlaybackTimer() {
+    if (playbackTimer !== null) {
+      clearIntervalImpl(playbackTimer);
+      playbackTimer = null;
+    }
+  }
+
+  async function pause() {
+    stopPlaybackTimer();
+    try {
+      await client.invoke('playback_pause', { frame: state.frame });
+    } catch (error) {
+      update({ error: errorMessage(error) });
+    }
+    update({ playback: { active: state.playback.active, paused: true, frame: state.frame } });
+  }
+
+  async function seekTo(frame) {
+    const value = Number.isFinite(Number(frame)) ? Math.trunc(Number(frame)) : 0;
+    update({ frame: Math.max(0, value), playback: { ...state.playback, frame: Math.max(0, value) } });
+    if (state.playback.active) {
+      try {
+        await client.invoke('playback_seek', { frame: Math.max(0, value) });
+      } catch (error) {
+        update({ error: errorMessage(error) });
+      }
+    }
+  }
+
+  async function stopPlayback() {
+    stopPlaybackTimer();
+    try {
+      await client.invoke('playback_stop');
+    } catch {
+      // A stopped backend should still leave the local UI stopped.
+    }
+    update({ playback: { active: false, paused: false, frame: state.frame } });
+  }
+
   function selectClip(clipId) {
     update({ selectedClipId: typeof clipId === 'string' && findClip(state.timeline, clipId) ? clipId : null });
   }
@@ -563,6 +798,7 @@ export function createNativeEditorStore({
       clearIntervalImpl(exportTimer);
       exportTimer = null;
     }
+    stopPlaybackTimer();
     listeners.clear();
   }
 
@@ -585,6 +821,17 @@ export function createNativeEditorStore({
     selectMedia,
     setClipProperties,
     setTrackProperties,
+    setClipEffects,
+    setClipMasks,
+    upsertKeyframe,
+    removeKeyframe,
+    addCaption,
+    updateCaption,
+    importMedia,
+    play,
+    pause,
+    seekTo,
+    stopPlayback,
     openPanel,
     closePanel,
     refreshSettings,

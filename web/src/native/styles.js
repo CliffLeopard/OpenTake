@@ -209,6 +209,16 @@ export const NATIVE_EDITOR_CSS = `
 }
 .otn-scrub { flex: 1 1 auto; accent-color: var(--otn-accent); min-inline-size: 60px; }
 .otn-frame-readout { color: var(--otn-muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+.otn-media-import { display: flex; gap: 6px; padding: 8px; border-block-end: 1px solid var(--otn-border); }
+.otn-media-import .otn-input { flex: 1 1 auto; min-inline-size: 0; min-block-size: 28px; }
+.otn-effect-card { display: grid; gap: 6px; padding: 7px; border: 1px solid var(--otn-border); border-radius: 7px; background: var(--otn-panel-2); }
+.otn-keyframe-track { display: grid; gap: 4px; padding-block-start: 6px; border-block-start: 1px solid var(--otn-border); }
+.otn-keyframe-track:first-of-type { border-block-start: 0; padding-block-start: 0; }
+.otn-keyframe-list { display: grid; gap: 3px; }
+.otn-keyframe-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.otn-keyframe-row > span:first-child { min-inline-size: 62px; color: var(--otn-muted); }
+.otn-keyframe-row > button { margin-inline-start: auto; }
+.otn-toggle--active { border-color: var(--otn-accent); background: var(--otn-accent-soft); }
 .otn-inspector {
   inline-size: clamp(220px, 24%, 300px);
   flex: 0 0 auto;
