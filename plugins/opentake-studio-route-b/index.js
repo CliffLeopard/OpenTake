@@ -11,7 +11,7 @@
  */
 
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -239,6 +239,71 @@ export function apply(ctx) {
     };
   }
 
+  function cacheRoot() {
+    return path.join(os.tmpdir(), 'opentake-route-b', 'cache');
+  }
+
+  function directoryBytes(directory) {
+    if (!existsSync(directory)) return 0;
+    let total = 0;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      try {
+        total += entry.isDirectory() ? directoryBytes(absolute) : statSync(absolute).size;
+      } catch { /* concurrent deletion */ }
+    }
+    return total;
+  }
+
+  function storageUsage() {
+    const root = cacheRoot();
+    const categories = [
+      { id: 'thumbnails', bytes: 0, path: root },
+      { id: 'waveforms', bytes: 0, path: root },
+      { id: 'searchIndex', bytes: 0, path: path.join(root, 'search-index') },
+      { id: 'models', bytes: 0, path: path.join(root, 'models') },
+      { id: 'other', bytes: 0, path: root },
+    ];
+    if (existsSync(root)) {
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+        const absolute = path.join(root, entry.name);
+        if (!entry.isFile()) continue;
+        if (entry.name.endsWith('.png')) categories[0].bytes += statSync(absolute).size;
+        else categories[4].bytes += statSync(absolute).size;
+      }
+    }
+    const models = categories.find((category) => category.id === 'models');
+    const index = categories.find((category) => category.id === 'searchIndex');
+    models.bytes = directoryBytes(models.path);
+    index.bytes = directoryBytes(index.path);
+    return {
+      categories,
+      totalBytes: categories.reduce((total, category) => total + category.bytes, 0),
+      cacheRoot: root,
+    };
+  }
+
+  function clearStorage(ids, modelsConfirmed) {
+    const root = cacheRoot();
+    if (!existsSync(root)) return storageUsage();
+    const wanted = new Set(ids);
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      const absolute = path.join(root, entry.name);
+      if (wanted.has('thumbnails') && entry.isFile() && entry.name.endsWith('.png')) {
+        rmSync(absolute, { force: true });
+      } else if (wanted.has('other') && entry.isFile() && !entry.name.endsWith('.png')) {
+        rmSync(absolute, { force: true });
+      }
+    }
+    if (wanted.has('models') && modelsConfirmed === true) {
+      rmSync(path.join(root, 'models'), { recursive: true, force: true });
+    }
+    if (wanted.has('searchIndex')) {
+      rmSync(path.join(root, 'search-index'), { recursive: true, force: true });
+    }
+    return storageUsage();
+  }
+
   function invokeCore(cmd, args) {
     if (state.engine === null) throw new Error(state.loadError ?? 'OpenTake Rust engine is unavailable');
     switch (cmd) {
@@ -356,6 +421,10 @@ export function apply(ctx) {
         if (!existsSync(file)) return null;
         return JSON.parse(readFileSync(file, 'utf8'));
       }
+      case 'storage_usage':
+        return storageUsage();
+      case 'storage_clear':
+        return clearStorage(Array.isArray(args.categories) ? args.categories : [], args.modelsConfirmed === true);
       case 'export_subtitles':
         return JSON.parse(state.engine.exportSubtitles(
           String(args.path ?? ''),
@@ -1005,6 +1074,16 @@ export function apply(ctx) {
     },
     async (args) => {
       const value = JSON.parse(ensureEngine().toggleFavorite(args.mediaRef, args.favorite));
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_storage',
+    'Report Route B cache storage usage by category.',
+    { type: 'object', properties: {}, additionalProperties: false },
+    async () => {
+      const value = storageUsage();
       return { text: JSON.stringify(value), data: value };
     },
   );

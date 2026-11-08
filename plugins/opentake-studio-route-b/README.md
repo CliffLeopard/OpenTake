@@ -51,7 +51,8 @@ not runtime-tested on this machine.
   Lottie (.json/.lottie) GPU composite, and H.264/H.265/ProRes export with a linear audio
   mixdown (including clip volume/fade envelopes; transparent ProRes 4444) work.
   The global asset library lists/favorites/imports entries; project media can be
-  favorited/unfavorited and mirrored into it. Caption cues export
+  favorited/unfavorited and mirrored into it. The Settings storage pane reads
+  and clears Route B's derived caches. Caption cues export
   to SRT/VTT; XMEML/EDL/OTIO/FCPXML interchange export is bridged. Provider
   ASR (OpenAI-compatible verbose JSON) can transcribe and generate captions;
   configure `OPENTAKE_ASR_URL`/`OPENAI_API_KEY`. Basic streaming playback is
