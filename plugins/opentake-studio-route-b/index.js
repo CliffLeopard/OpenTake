@@ -31,7 +31,7 @@ const CACHE_ROOT = path.join(os.tmpdir(), 'opentake-route-b');
 const WEB_DIR = path.join(PLUGIN_DIR, 'web');
 
 function addonPath() {
-  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v34.node');
+  return path.join(PLUGIN_DIR, 'native', `${process.platform}-${process.arch}`, 'opentake_engine_v35.node');
 }
 
 function loadAddon() {
@@ -991,6 +991,15 @@ export function apply(ctx) {
       case 'motion_preview_cancel':
       case 'motion_cancel':
         return false;
+      case 'prepare_denoise':
+        return JSON.parse(state.engine.prepareDenoise(
+          String(args.clipId ?? args.clip_id ?? ''),
+          typeof args.mode === 'string' ? args.mode : undefined,
+          typeof args.strength === 'number' ? args.strength : undefined,
+          typeof args.previewEnabled === 'boolean' ? args.previewEnabled : undefined,
+        ));
+      case 'cancel_denoise_analysis':
+        return false;
       case 'analyze_loudness':
         return JSON.parse(state.engine.analyzeLoudness(
           String(args.clipId ?? args.clip_id ?? ''),
@@ -1873,6 +1882,26 @@ export function apply(ctx) {
     },
     async (args) => {
       const value = importFolder(args.path, args.recursive === true);
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_prepare_denoise',
+    'Validate/process an audio clip with the local denoise profile and return its AudioDenoise config.',
+    {
+      type: 'object',
+      properties: {
+        clipId: { type: 'string' },
+        mode: { type: 'string', enum: ['adaptive', 'voice'] },
+        strength: { type: 'number' },
+        previewEnabled: { type: 'boolean' },
+      },
+      required: ['clipId'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = JSON.parse(ensureEngine().prepareDenoise(String(args.clipId ?? ''), args.mode, args.strength, args.previewEnabled));
       return { text: JSON.stringify(value), data: value };
     },
   );

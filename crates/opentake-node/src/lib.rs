@@ -26,9 +26,9 @@ use std::sync::Arc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
-use opentake_domain::{ClipType, MediaManifestEntry, MediaSource};
+use opentake_domain::{AudioDenoise, ClipType, DenoiseMode, MediaManifestEntry, MediaSource};
 use opentake_media::encode::{mix_clips, ClipAudio, MIX_SAMPLE_RATE};
-use opentake_media::analysis::{analyze_loudness, analyze_stabilization, track_translation_motion, LoudnessNormalizationConfig, StabilizationConfig};
+use opentake_media::analysis::{analyze_loudness, analyze_stabilization, denoise_interleaved, track_translation_motion, LoudnessNormalizationConfig, StabilizationConfig};
 use opentake_media::MediaCancelToken;
 use opentake_media::library::{FavoriteRequest, LibraryStore};
 use opentake_media::decode::pcm::{PcmBuffer, PcmFormat, PcmSpec};
@@ -794,6 +794,62 @@ impl Engine {
         if let Some(playback) = self.playback.borrow_mut().take() {
             let _ = playback.stream.pause();
         }
+    }
+
+    /// Validate/process one clip's visible audio window with the deterministic
+    /// denoise profile and return the persisted AudioDenoise config.
+    #[napi]
+    pub fn prepare_denoise(
+        &self,
+        clip_id: String,
+        mode: Option<String>,
+        strength: Option<f64>,
+        preview_enabled: Option<bool>,
+    ) -> Result<String> {
+        let timeline = self.core.get_timeline().timeline;
+        let clip = timeline
+            .tracks
+            .iter()
+            .flat_map(|track| &track.clips)
+            .chain(timeline.nested_sequences.iter().flat_map(|sequence| sequence.timeline.tracks.iter().flat_map(|track| &track.clips)))
+            .find(|clip| clip.id == clip_id)
+            .cloned()
+            .ok_or_else(|| Error::from_reason(format!("clip not found: {clip_id}")))?;
+        if !matches!(clip.media_type, ClipType::Audio | ClipType::Video) || clip.nested_sequence_id.is_some() {
+            return Err(Error::from_reason("denoise requires an ordinary audio-bearing clip"));
+        }
+        let config = AudioDenoise {
+            mode: match mode.as_deref() {
+                Some("voice") => DenoiseMode::Voice,
+                _ => DenoiseMode::Adaptive,
+            },
+            strength: strength.unwrap_or(0.5).clamp(0.0, 1.0),
+            preview_enabled: preview_enabled.unwrap_or(true),
+        };
+        config.validate().map_err(|error| Error::from_reason(format!("denoise_invalid_config: {error}")))?;
+        let entry = self
+            .core
+            .media()
+            .entries
+            .iter()
+            .find(|entry| entry.id == clip.media_ref)
+            .cloned()
+            .ok_or_else(|| Error::from_reason("denoise source media not found"))?;
+        let path = resolve_media_path(&entry, self.core.project_dir().as_deref())
+            .ok_or_else(|| Error::from_reason("denoise source path unavailable"))?;
+        let fps = timeline.fps.max(1) as f64;
+        let start = clip.trim_start_frame.max(0) as f64 / fps;
+        let end = start + clip.duration_frames.max(1) as f64 / fps;
+        let spec = PcmSpec { sample_rate: MIX_SAMPLE_RATE, channels: 1, format: PcmFormat::F32 };
+        let pcm = opentake_media::extract_pcm(&path, &spec, Some((start, end)))
+            .map_err(|error| Error::from_reason(format!("denoise_unreadable_audio: {error}")))?;
+        if pcm.samples_f32.is_empty() {
+            return Err(Error::from_reason("denoise_unreadable_audio: empty PCM window"));
+        }
+        let cancel = MediaCancelToken::new();
+        denoise_interleaved(&pcm.samples_f32, 1, pcm.spec.sample_rate, config, &cancel, None)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        json(&config)
     }
 
     /// Analyze one audio-bearing clip's visible window and return a persisted
