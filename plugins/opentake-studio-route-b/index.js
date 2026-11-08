@@ -113,6 +113,11 @@ export function apply(ctx) {
       key: process.env.OPENAI_API_KEY ?? null,
       model: process.env.OPENTAKE_IMAGE_MODEL ?? 'gpt-image-1',
     },
+    speech: {
+      url: process.env.OPENTAKE_TTS_URL ?? (process.env.OPENAI_API_KEY ? 'https://api.openai.com/v1/audio/speech' : null),
+      key: process.env.OPENAI_API_KEY ?? null,
+      model: process.env.OPENTAKE_TTS_MODEL ?? 'gpt-4o-mini-tts',
+    },
   };
 
   try {
@@ -307,6 +312,29 @@ export function apply(ctx) {
       rmSync(path.join(root, 'search-index'), { recursive: true, force: true });
     }
     return storageUsage();
+  }
+
+  async function generateSpeech(text, voice) {
+    if (state.speech.url === null) throw new Error('speech provider is not configured');
+    const response = await fetch(state.speech.url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(state.speech.key ? { authorization: `Bearer ${state.speech.key}` } : {}),
+      },
+      body: JSON.stringify({ model: state.speech.model, input: text, voice: voice ?? 'alloy', response_format: 'mp3' }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.error?.message ?? `speech generation failed (${response.status})`);
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length === 0) throw new Error('speech generation returned empty audio');
+    const directory = path.join(CACHE_ROOT, 'generated');
+    await mkdir(directory, { recursive: true });
+    const file = path.join(directory, `${Date.now()}-${randomUUID()}.mp3`);
+    await writeFile(file, bytes);
+    return { path: file, media: importMedia([file]) };
   }
 
   async function generateImage(prompt, size) {
@@ -910,6 +938,14 @@ export function apply(ctx) {
         sendJson(res, 200, { ok: true, configured: state.asr.url !== null, model: state.asr.model });
         return;
       }
+      if (sub === '/engine/speech/config' && req.method === 'POST') {
+        const body = await readJson(req);
+        state.speech.url = typeof body.url === 'string' && body.url.length > 0 ? body.url : null;
+        state.speech.key = typeof body.key === 'string' && body.key.length > 0 ? body.key : null;
+        state.speech.model = typeof body.model === 'string' && body.model.length > 0 ? body.model : 'gpt-4o-mini-tts';
+        sendJson(res, 200, { ok: true, configured: state.speech.url !== null, model: state.speech.model });
+        return;
+      }
       if (sub === '/engine/generation/config' && req.method === 'POST') {
         const body = await readJson(req);
         state.generation.url = typeof body.url === 'string' && body.url.length > 0 ? body.url : null;
@@ -1231,6 +1267,21 @@ export function apply(ctx) {
         args.nameBase ?? 'Frame',
         args.sourceMediaId ?? null,
       ));
+      return { text: JSON.stringify(value), data: value };
+    },
+  );
+
+  registerTool(
+    'opentake_route_b_generate_speech',
+    'Generate speech through the configured OpenAI-compatible TTS provider and import it as audio.',
+    {
+      type: 'object',
+      properties: { text: { type: 'string' }, voice: { type: 'string' } },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const value = await generateSpeech(args.text, args.voice);
       return { text: JSON.stringify(value), data: value };
     },
   );
