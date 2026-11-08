@@ -103,6 +103,7 @@ export function apply(ctx) {
     thumbnails: new Map(),
     exportJob: null,
     playback: null,
+    motionJob: null,
     asr: {
       url: process.env.OPENTAKE_ASR_URL ?? (process.env.OPENAI_API_KEY ? 'https://api.openai.com/v1/audio/transcriptions' : null),
       key: process.env.OPENAI_API_KEY ?? null,
@@ -568,6 +569,10 @@ export function apply(ctx) {
     const startFrame = Math.max(0, Math.round(Number(request.startFrame) || 0));
     const directory = path.join(CACHE_ROOT, 'motion-publish', `${request.documentId}-${Date.now()}`);
     await mkdir(directory, { recursive: true });
+    state.motionJob = { active: true, phase: 'rendering', doneFrames: 0, totalFrames: duration };
+    const updateMotion = (phase, doneFrames = 0) => {
+      state.motionJob = { active: phase !== 'complete', phase, doneFrames, totalFrames: duration };
+    };
     for (let frame = 0; frame < duration; frame += 1) {
       const preview = await motionPreview({
         documentId: request.documentId,
@@ -580,7 +585,9 @@ export function apply(ctx) {
       });
       const bytes = Buffer.from(preview.pngDataUrl.split(',')[1], 'base64');
       await writeFile(path.join(directory, `${String(frame).padStart(5, '0')}.png`), bytes);
+      updateMotion('rendering', frame + 1);
     }
+    updateMotion('encoding');
     const transparent = request.transparent === true;
     const output = path.join(directory, transparent ? 'motion.mov' : 'motion.mp4');
     const codec = transparent
@@ -591,6 +598,7 @@ export function apply(ctx) {
       '-framerate', String(fps), '-i', path.join(directory, '%05d.png'),
       ...codec, output,
     ], { timeout: 300000, maxBuffer: 8 * 1024 * 1024 });
+    updateMotion('committing');
     const catalog = importMedia([output]);
     const asset = catalog.items.find((item) => item.path === output);
     if (!asset) throw new Error('motion output could not be imported');
@@ -619,6 +627,7 @@ export function apply(ctx) {
     })));
     const clipId = applied.result.affectedClipIds[0];
     const contentHash = createHash('sha256').update(await readFile(output)).digest('hex');
+    updateMotion('complete');
     return {
       clipId,
       assetId: asset.id,
@@ -1154,6 +1163,10 @@ export function apply(ctx) {
         sendJson(res, 200, job === null
           ? { active: false, done: 0, total: 0, operationId: null }
           : { active: job.active, done: job.done, total: job.total, operationId: job.operationId });
+        return;
+      }
+      if (sub === '/engine/motion/status' && req.method === 'GET') {
+        sendJson(res, 200, state.motionJob ?? { active: false });
         return;
       }
       if (sub === '/engine/playback/status' && req.method === 'GET') {

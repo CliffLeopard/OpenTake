@@ -70,7 +70,8 @@ by the DSH Host through N-API.
   PNG preview at 320x180. `motion_add` renders all frames via Chrome, encodes
   H.264 mp4 or transparent ProRes 4444, imports the video and adds a clip.
   Verified 5-frame H.264 and 3-frame ProRes 4444 alpha output; per-frame Chrome
-  rendering is slow and progress events are not emitted.
+  rendering is slow; `motion_progress` events are polled from the Host status
+  endpoint during publish.
 - Search is text-only: `search_query` matches media names and cached
   transcripts (Spoken/Files); visual embeddings/Moments are explicitly
   unavailable. `search_model_status` reports `route-b-text-search`, not SigLIP.

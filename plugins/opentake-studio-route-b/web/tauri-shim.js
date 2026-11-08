@@ -7,6 +7,7 @@
   window.__SHIM_LOG__ = [];
   const listeners = new Map();
   let playbackPoll = null;
+  let motionPoll = null;
   let nextId = 1;
 
   function transformCallback(callback, once) {
@@ -32,6 +33,26 @@
       return Promise.resolve(true);
     }
     let poll = null;
+    if (cmd === 'motion_add') {
+      if (motionPoll !== null) clearInterval(motionPoll);
+      motionPoll = setInterval(async () => {
+        try {
+          const response = await fetch(BASE + '/engine/motion/status', { credentials: 'same-origin' });
+          if (!response.ok) return;
+          const status = await response.json();
+          if (!status.active) {
+            if (motionPoll !== null) clearInterval(motionPoll);
+            motionPoll = null;
+            return;
+          }
+          emitToListeners('motion_progress', {
+            phase: status.phase,
+            doneFrames: status.doneFrames,
+            totalFrames: status.totalFrames,
+          });
+        } catch (error) { /* best-effort */ }
+      }, 200);
+    }
     if (cmd === 'export_video') {
       const operationId = args && args.operationId ? String(args.operationId) : 'export';
       poll = setInterval(async () => {
@@ -62,7 +83,10 @@
       }
       afterInvoke(cmd, args || {}, body);
       return body;
-    }).finally(() => { if (poll !== null) clearInterval(poll); });
+    }).finally(() => {
+      if (poll !== null) clearInterval(poll);
+      if (motionPoll !== null) clearInterval(motionPoll);
+    });
   }
 
   function emitToListeners(event, payload) {
