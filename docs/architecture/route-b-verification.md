@@ -2,7 +2,7 @@
 
 Status: **partial parity verified, not full parity**  
 Branch: `feat/dsh-rust-engine`  
-Artifact under test: addon v27, commit `5caeb7d` plus uncommitted docs  
+Artifact under test: addon v28, commit `5caeb7d` plus verification/folder-import changes  
 Date: 2026-11-08
 
 This record separates what was actually exercised from what remains
@@ -21,7 +21,18 @@ unimplemented. It is not a parity claim.
 The Route B addon itself has only the smoke test; the 422 tests are for the
 separate JS plugin and are not evidence for Route B behavior.
 
-## 2. Host API end-to-end
+## 2. Independent addon contract
+
+`node scripts/route-b/verify-addon.mjs --addon .../opentake_engine_v28.node --workers`
+passed **22/22** checks (0 failed, 2 warnings): method surface, snapshot/result
+shapes, apply validation/atomicity, undo/redo, persistence/reopen, compatibility
+read-only, multiple instances and 4 concurrent worker_threads.
+
+Warnings: `newProjectAt(existing path)` overwrites without a guard, and the
+Host `project_new {path}` reaches that path. This is a known data-loss hazard,
+not silently accepted.
+
+## 3. Host API end-to-end
 
 A scripted run against the live DSH Host passed **44/44** checks:
 
@@ -43,7 +54,7 @@ the expected masked grayscale frame.
 Evidence files: `/tmp/verify-routeb.log`, `/tmp/verify-composite.png`,
 `/tmp/comp-video.png`, `/tmp/routeb-verify-*`.
 
-## 3. UI verification
+## 4. UI verification
 
 CDP-driven run against `http://127.0.0.1:56474` with the OpenTake (Rust) panel:
 
@@ -58,7 +69,7 @@ CDP-driven run against `http://127.0.0.1:56474` with the OpenTake (Rust) panel:
 Known UI gap: `request_timeline_sprite` returns 400, so the timeline filmstrip
 request logs warnings. The editor still renders.
 
-## 4. Package and installation without a local OpenTake app
+## 5. Package and installation without a local OpenTake app
 
 - `ps` shows no `OpenTake`/Tauri process; the plugin code has no `/Applications`
   app path and only a comment mentioning `__TAURI_INTERNALS__`.
@@ -73,7 +84,7 @@ request logs warnings. The editor still renders.
   Chrome/Chromium (only Motion preview/publish), system fonts, macOS arm64.
   These are not OpenTake installations, but they are not bundled.
 
-## 5. Feature matrix
+## 6. Feature matrix
 
 | Area | Route B status | Evidence / gap |
 |---|---|---|
@@ -81,7 +92,7 @@ request logs warnings. The editor still renders.
 | Timeline edit, split/trim/move, undo/redo | verified | API |
 | Effects, masks, keyframes, transitions | effects/mask API verified; keyframes/transitions not matrix-tested | EditRequest supports them |
 | Media import/probe/thumbnail/waveform | verified | API |
-| Folders, folder import | not fully verified | not exercised |
+| Folder import | verified | recursive scan + import (video/Lottie) |
 | Lottie JSON/.lottie import and composite | verified | import + simple shape |
 | Proxies, relink, library, favorites | verified | API |
 | Composite video/image/text | verified (video/effects/mask/text) | Lottie simple |
@@ -98,7 +109,7 @@ request logs warnings. The editor still renders.
 | macOS arm64 | verified | x64 built, not run |
 | Windows/Linux | not built/tested | — |
 
-## 6. Remaining gaps
+## 7. Remaining gaps
 
 1. SigLIP2 visual search (about 1.54 GB ONNX assets + ONNX Runtime backend).
 2. Real streaming/cpal playback and exact A/V master clock.
@@ -109,7 +120,7 @@ request logs warnings. The editor still renders.
 7. Windows/Linux builds, signing, notarization, updater/account surfaces.
 8. Real ASR/generation provider credentials (only mocks used).
 
-## 7. Verdict
+## 8. Verdict
 
 Route B is a working, self-contained prototype that executes the core editor,
 media, composite, export, caption, library, Motion and generation paths through
