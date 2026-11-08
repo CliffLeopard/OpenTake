@@ -373,3 +373,13 @@ Recommended staging:
 accepts `bitDepth:10` for H.265. Verified Host export produced HEVC Main10
 `yuv420p10le` at 1280x720 (0.5 s, BT.709 tags). HDR10 passthrough, tone-map
 policy and ducking remain isolated/not wired.
+
+
+## HDR source verification (Lead, 2026-11-08)
+
+Generated a 320x180 HEVC Main10 PQ/BT.2020 test clip, imported it into Route B,
+composited a frame and exported with `export_video(..., bitDepth=10)`. The
+output was HEVC Main10 `yuv420p10le` with BT.709 tags: the current decode path
+tone-maps HDR to SDR, so this verifies **HDR source handling**, not HDR10
+passthrough. HDR10 output still requires a linear/HDR compositor and metadata
+contract.

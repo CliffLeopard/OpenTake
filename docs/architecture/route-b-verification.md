@@ -104,7 +104,7 @@ longer falls back to the warning path.
 | Export H.264/AAC, range, alpha, audio-only | verified | current run |
 | Export H.265/10-bit | verified integrated | Host `export_video bitDepth=10` produced Main10 `yuv420p10le` BT.709 |
 | Export ducking | verified integrated | linked A/V voice vs standalone music; RMS 0.1245 -> 0.0908 with `duckMusic` |
-| HDR tone-map | isolated only | export-pro evidence, not wired |
+| HDR source handling | verified (SDR delivery) | PQ/HLG source imports, composites and exports 10-bit BT.709; HDR10 passthrough not implemented |
 | Interchange and subtitles | verified | XMEML/EDL/OTIO/FCPXML/SRT |
 | ASR/captions | verified against mock | real provider not called |
 | Search | text fallback only; Host status now honest | SigLIP assets/backend missing; `opentake-search` capability crate exists |
