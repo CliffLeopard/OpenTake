@@ -166,8 +166,11 @@ Importing only fills the media library; it does not add clips to the timeline.
 - **Global media library**: project/library tabs with search, kind/favorite
   filters, thumbnails, favorites, categories/tags, rename/delete and Add to
   project. Library assets are content-addressed and shared across projects.
-- **Export presets/formats**: H.264/H.265/ProRes/VP9-WebM, project/1080p/720p/
-  custom resolution, fps, CRF or bitrate.
+- **Export presets/formats**: H.264/H.265/ProRes/ProRes 4444 (alpha)/VP9-WebM,
+  project/1080p/720p/custom resolution, fps, CRF/bitrate, 10-bit H.265/VP9/
+  ProRes, transparent ProRes 4444 and optional color tags.
+- **Frame stepping**: −1/+1 buttons and ArrowLeft/ArrowRight step exactly one
+  frame (pauses playback), with the frame counter visible.
 - **Crop**: normalized per-clip crop applied before transform/effects, with
   preview and export support.
 - **Masks**: rect/ellipse clip masks with feather and invert, preview and export;
@@ -324,7 +327,7 @@ MCP endpoint, client or credential is involved.
 | `opentake_studio_add_text` | `content`, `startFrame`, `durationFrames?`, `trackId?`, `fontSize?`, `color?`, `x?`, `y?` | Adds a text overlay; `durationFrames` defaults to 90 frames, `x`/`y` are normalized top-left coordinates. Uses or creates a `Text` video track with a free interval. |
 | `opentake_studio_undo` | — | Undoes the most recent edit. |
 | `opentake_studio_redo` | — | Redoes the most recently undone edit. |
-| `opentake_studio_export` | `path?`, `overwrite?`, `codec?` (h264/h265), `width?`, `height?`, `fps?`, `crf?`, `bitrate?` | Starts an asynchronous ffmpeg export; omit `path` to write into `exports/`. Existing output refused unless `overwrite:true`. Poll `get_state` for progress. |
+| `opentake_studio_export` | `path?`, `overwrite?`, `codec?` (h264/h265/prores/prores4444/vp9), `transparent?`, `bitDepth?`, `colorPrimaries?`, `colorTrc?`, `colorspace?`, `width?`, `height?`, `fps?`, `crf?`, `bitrate?` | Starts an asynchronous ffmpeg export; omit `path` to write into `exports/`. Existing output refused unless `overwrite:true`. Poll `get_state` for progress. |
 
 ### Frames and fps
 
@@ -433,9 +436,10 @@ gaps:
   `volume`/fades and volume keyframes. There is no ducking, gain automation or
   separate track effects; the preview monitor volume is not part of the export.
 - **Export formats are limited to the built-in encoders.** H.264/H.265/ProRes/
-  VP9-WebM are supported with project/custom resolution, fps and CRF/bitrate,
-  but there are no two-pass encodes, alpha/ProRes 4444, 10-bit HDR delivery or
-  audio-only exports.
+  ProRes 4444 (alpha)/VP9-WebM are supported with project/custom resolution,
+  fps, CRF/bitrate, 10-bit H.265/VP9/ProRes and optional color tags. There are
+  no two-pass encodes, true HDR tone-mapping/delivery, or audio-only exports;
+  color metadata is tagging, not conversion.
 - **One project, one export.** The Host holds one open project and one running
   export at a time; starting another export while one runs returns
   `export-running`.
@@ -503,7 +507,7 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **350/350 tests pass**, 36 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **358/358 tests pass**, 36 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |
@@ -513,6 +517,7 @@ this document; the Client/UI/export rows are the verification run's results.
 | Formats/presets | H.265 640×360@24 and ProRes MOV + VP9 WebM exports were ffprobe-verified; crop and true dissolve/wipe were pixel/probe-verified. |
 | Library/AI | Global library import/list/favorite/add-to-project/folders ran live; transcription, image/speech/video generation and visual indexing were verified against local OpenAI/fal-compatible fixture servers. |
 | Masks/blend/ducking | Rect/ellipse masks and screen blend were pixel-verified in exported frames; track-volume attenuation measured, and ducking argv/real-audio verification is covered by tests. |
+| Alpha/10-bit | Transparent ProRes 4444 alphaextract (255/0) and 10-bit H.265 (`yuv420p10le`) were real-export verified. |
 
 Not verified / not claimed:
 

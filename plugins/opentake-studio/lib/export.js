@@ -70,14 +70,25 @@
  *     export; the static rotation is used. drawtext-only text/caption clips
  *     cannot be rotated (PNG-rendered overlays can).
  *   - export options: `buildExportArgs`/`runExport` accept
- *     `{ codec?: 'h264'|'h265'|'prores'|'vp9', container?, width?, height?,
- *     fps?, crf?, bitrate? }`. Codecs: h264 (libx264, .mp4), h265 (libx265,
- *     .mp4), prores (prores_ks profile 3 / yuv422p10le + pcm_s16le, .mov) and
- *     vp9 / alias webm (libvpx-vp9 CRF `-b:v 0` or bitrate + libopus, .webm).
- *     ProRes ignores CRF (profile/bitrate based). `defaultExtensionForCodec`
- *     exposes the default output extension to the Host. Output resolution is
- *     scaled from the normalized transforms; fps is an output `-r` override
- *     while timeline timing stays on project fps. H.264 remains the default.
+ *     `{ codec?: 'h264'|'h265'|'prores'|'prores4444'|'vp9', container?,
+ *     width?, height?, fps?, crf?, bitrate?, bitDepth?, transparent?,
+ *     colorPrimaries?, colorTrc?, colorspace? }`. Codecs: h264 (libx264,
+ *     8-bit, .mp4), h265 (libx265, 8/10-bit, .mp4), prores (prores_ks
+ *     profile 3 / yuv422p10le + pcm_s16le, .mov), prores4444 / alias
+ *     prores-alpha (prores_ks profile 4 / yuva444p10le + pcm_s16le, .mov) and
+ *     vp9 / alias webm (libvpx-vp9, 8/10-bit, CRF `-b:v 0` or bitrate +
+ *     libopus, .webm). ProRes ignores CRF (profile/bitrate based).
+ *     `bitDepth: 10` switches h265/vp9 to yuv420p10le and is fixed at 10 for
+ *     ProRes (H.264 is 8-bit only). `transparent: true` is only valid with
+ *     prores4444: the base canvas becomes `black@0.0` RGBA and alpha from
+ *     overlays/masks/PNG text-caption renders is preserved (opaque black base
+ *     otherwise). Blend modes and true xfade are disabled for transparent
+ *     exports (they convert to yuv and would drop alpha). Optional color
+ *     metadata (`-color_primaries`, `-color_trc`, `-colorspace`) is forwarded
+ *     after validation. `defaultExtensionForCodec` exposes the default output
+ *     extension to the Host. Output resolution is scaled from the normalized
+ *     transforms; fps is an output `-r` override while timeline timing stays on
+ *     project fps. H.264 remains the default.
  *
  * Text rendering still depends on a system font (`drawtext` needs an ffmpeg
  * build with libfreetype).
@@ -126,12 +137,14 @@ const XFADE_NAMES = Object.freeze({
 });
 
 /** Codecs accepted by `options.codec`. */
-export const EXPORT_CODECS = Object.freeze(['h264', 'h265', 'prores', 'vp9']);
+export const EXPORT_CODECS = Object.freeze(['h264', 'h265', 'prores', 'prores4444', 'vp9']);
 
 const CODEC_ALIASES = new Map([
   ['h264', 'h264'], ['avc', 'h264'],
   ['h265', 'h265'], ['hevc', 'h265'],
   ['prores', 'prores'], ['prores_ks', 'prores'],
+  ['prores4444', 'prores4444'], ['prores-alpha', 'prores4444'],
+  ['prores_alpha', 'prores4444'], ['prores4444_alpha', 'prores4444'],
   ['vp9', 'vp9'], ['webm', 'vp9'], ['libvpx-vp9', 'vp9'],
 ]);
 
@@ -139,6 +152,7 @@ const DEFAULT_CONTAINER_FOR_CODEC = Object.freeze({
   h264: 'mp4',
   h265: 'mp4',
   prores: 'mov',
+  prores4444: 'mov',
   vp9: 'webm',
 });
 
@@ -146,8 +160,27 @@ const ALLOWED_CONTAINERS_FOR_CODEC = Object.freeze({
   h264: Object.freeze(['mp4', 'mov']),
   h265: Object.freeze(['mp4', 'mov']),
   prores: Object.freeze(['mov']),
+  prores4444: Object.freeze(['mov']),
   vp9: Object.freeze(['webm']),
 });
+
+/** Allowed color metadata values forwarded to ffmpeg (AVColor* spellings). */
+const COLOR_PRIMARIES_VALUES = new Set([
+  'bt709', 'bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'film', 'bt2020',
+  'smpte428', 'smpte431', 'smpte432', 'jedec-p22', 'ebu3213', 'unknown',
+]);
+
+const COLOR_TRC_VALUES = new Set([
+  'bt709', 'gamma22', 'gamma28', 'smpte170m', 'smpte240m', 'linear', 'log100',
+  'log316', 'iec61966-2-1', 'iec61966-2-4', 'bt1361', 'bt2020-10', 'bt2020-12',
+  'smpte2084', 'smpte428', 'arib-std-b67', 'unknown',
+]);
+
+const COLOR_SPACE_VALUES = new Set([
+  'rgb', 'bt709', 'fcc', 'bt470bg', 'smpte170m', 'smpte240m', 'ycgco',
+  'bt2020nc', 'bt2020c', 'smpte2085', 'chroma-derived-nc', 'chroma-derived-c',
+  'ictcp', 'unknown',
+]);
 
 function normalizeCodecName(value) {
   const raw = value === undefined || value === null ? 'h264' : String(value).toLowerCase();
@@ -563,7 +596,7 @@ function canUseTrueTransition(fromEntry, toEntry) {
  *   truePlans: Map fromClipId -> { from, to, sideA, sideB, xfade, transition }
  *   fadeAdditions: Map clipId -> { inFrames, outFrames } (fallback/fadeToBlack)
  */
-function planTransitions(project, fps) {
+function planTransitions(project, fps, { transparent = false } = {}) {
   const truePlans = new Map();
   const fadeAdditions = new Map();
   const transitions = Array.isArray(project?.transitions) ? project.transitions : [];
@@ -602,7 +635,7 @@ function planTransitions(project, fps) {
     const fallbackHalf = Math.max(1, Math.round(duration / 2));
 
     if (TRUE_TRANSITION_TYPES.has(transition.type)) {
-      const plan = buildTrueTransitionPlan(project, item, touchCounts, fps);
+      const plan = buildTrueTransitionPlan(project, item, touchCounts, fps, transparent);
       if (plan !== null) {
         truePlans.set(from.clip.id, plan);
         continue;
@@ -621,8 +654,12 @@ function planTransitions(project, fps) {
  * extension to the headroom actually present in each media file. Returns null
  * when the pair must fall back to fades.
  */
-function buildTrueTransitionPlan(project, item, touchCounts, fps) {
+function buildTrueTransitionPlan(project, item, touchCounts, fps, transparent) {
   const { transition, from, to, duration } = item;
+
+  // xfade layers are opaque yuv frames, which would destroy alpha in a
+  // transparent export.
+  if (transparent) return null;
 
   // A clip in two transitions would need a chained xfade graph; fall back.
   if ((touchCounts.get(from.clip.id) ?? 0) !== 1) return null;
@@ -1013,6 +1050,39 @@ function normalizeExportBitrate(value) {
   return text;
 }
 
+function normalizeColorOption(value, allowed, name) {
+  if (value === undefined) return null;
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new ExportError(`Export ${name} must be a non-empty string`, 'invalid-input');
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!allowed.has(normalized)) {
+    throw new ExportError(
+      `Export ${name} must be one of ${[...allowed].join(', ')}`,
+      'invalid-input',
+    );
+  }
+  return normalized;
+}
+
+function normalizeExportBitDepth(value, codec) {
+  const fallback = codec === 'prores' || codec === 'prores4444' ? 10 : 8;
+  const bitDepth = value === undefined ? fallback : Number(value);
+  if (bitDepth !== 8 && bitDepth !== 10) {
+    throw new ExportError('Export bitDepth must be 8 or 10', 'invalid-input');
+  }
+  if (codec === 'h264' && bitDepth === 10) {
+    throw new ExportError(
+      'H.264 export supports 8-bit only (use h265, vp9 or prores for 10-bit)',
+      'invalid-input',
+    );
+  }
+  if ((codec === 'prores' || codec === 'prores4444') && bitDepth !== 10) {
+    throw new ExportError(`ProRes export requires bitDepth 10`, 'invalid-input');
+  }
+  return bitDepth;
+}
+
 /**
  * Normalize export settings; `null`/undefined fields fall back to project
  * defaults so existing exports are byte-for-byte unchanged.
@@ -1040,10 +1110,26 @@ function normalizeExportOptions(project, rawOptions) {
 
   const defaultCrf = codec === 'h265' ? 23 : codec === 'vp9' ? 31 : 20;
 
+  if (options.transparent !== undefined && typeof options.transparent !== 'boolean') {
+    throw new ExportError('Export transparent must be a boolean', 'invalid-input');
+  }
+  const transparent = options.transparent === true;
+  if (transparent && codec !== 'prores4444') {
+    throw new ExportError(
+      'Transparent export requires codec prores4444 (alpha-capable ProRes 4444)',
+      'invalid-input',
+    );
+  }
+
   return {
     codec,
     container,
     containerExplicit,
+    bitDepth: normalizeExportBitDepth(options.bitDepth, codec),
+    transparent,
+    colorPrimaries: normalizeColorOption(options.colorPrimaries, COLOR_PRIMARIES_VALUES, 'colorPrimaries'),
+    colorTrc: normalizeColorOption(options.colorTrc, COLOR_TRC_VALUES, 'colorTrc'),
+    colorspace: normalizeColorOption(options.colorspace, COLOR_SPACE_VALUES, 'colorspace'),
     width: options.width === undefined ? projectWidth : evenDimension(options.width, 'width'),
     height: options.height === undefined ? projectHeight : evenDimension(options.height, 'height'),
     fps: options.fps === undefined ? projectFps : validateExportFps(options.fps),
@@ -1055,19 +1141,25 @@ function normalizeExportOptions(project, rawOptions) {
 }
 
 const ENCODER_LABELS = Object.freeze({
-  h264: 'H.264', h265: 'H.265', prores: 'ProRes', vp9: 'VP9',
+  h264: 'H.264', h265: 'H.265', prores: 'ProRes', prores4444: 'ProRes 4444', vp9: 'VP9',
 });
 
 const ENCODER_FALLBACKS = Object.freeze({
   h264: 'libx264',
   h265: 'libx265',
   prores: 'prores_ks',
+  prores4444: 'prores_ks',
   vp9: 'libvpx-vp9',
 });
 
+/** `prores4444` reuses the ProRes encoder-detection entry (`prores_ks`). */
+function encoderKeyForCodec(codec) {
+  return codec === 'prores4444' ? 'prores' : codec;
+}
+
 function requireVideoEncoder(settings) {
   const encoders = detectEncoders();
-  const encoder = encoders[settings.codec];
+  const encoder = encoders[encoderKeyForCodec(settings.codec)];
   if (encoder !== null) return encoder;
   if (resolveTools().ffmpeg === null) {
     // Keep the argv buildable; runExport reports ffmpeg-unavailable.
@@ -1085,14 +1177,25 @@ function videoEncodeArgs(settings) {
   const args = ['-c:v', encoder];
 
   switch (settings.codec) {
-    case 'prores': {
+    case 'prores':
+    case 'prores4444': {
+      if (settings.codec === 'prores4444') {
+        if (encoder !== 'prores_ks') {
+          throw new ExportError(
+            'ProRes 4444 (alpha) export requires the prores_ks encoder',
+            'encoder-unavailable',
+          );
+        }
+        args.push('-profile:v', '4', '-pix_fmt', 'yuva444p10le');
+      } else {
+        args.push('-profile:v', '3', '-pix_fmt', 'yuv422p10le');
+      }
       // ProRes is profile/bitrate based; CRF is accepted but ignored.
-      args.push('-profile:v', '3', '-pix_fmt', 'yuv422p10le');
       if (settings.bitrate !== null) args.push('-b:v', settings.bitrate);
       break;
     }
     case 'vp9': {
-      args.push('-pix_fmt', 'yuv420p');
+      args.push('-pix_fmt', settings.bitDepth === 10 ? 'yuv420p10le' : 'yuv420p');
       if (settings.bitrate !== null) {
         // Bitrate mode: no constant-quality -crf.
         args.push('-b:v', settings.bitrate);
@@ -1105,8 +1208,14 @@ function videoEncodeArgs(settings) {
     case 'h264':
     case 'h265':
     default: {
+      if (settings.bitDepth === 10 && encoder !== 'libx265') {
+        throw new ExportError(
+          'H.265 10-bit export requires the libx265 encoder',
+          'encoder-unavailable',
+        );
+      }
       if (encoder === 'libx265') args.push('-tag:v', 'hvc1');
-      args.push('-pix_fmt', 'yuv420p');
+      args.push('-pix_fmt', settings.bitDepth === 10 ? 'yuv420p10le' : 'yuv420p');
       if (encoder === 'libx264' || encoder === 'libx265') {
         args.push('-preset', 'veryfast');
         if (settings.bitrate !== null) args.push('-b:v', settings.bitrate);
@@ -1127,6 +1236,7 @@ function audioEncodeArgs(settings, hasAudio) {
   const args = ['-map', '[aout]'];
   switch (settings.codec) {
     case 'prores':
+    case 'prores4444':
       args.push('-c:a', 'pcm_s16le');
       break;
     case 'vp9': {
@@ -1263,15 +1373,16 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
   const height = settings.height;
   const durationFrames = timelineDurationFrames(project);
   const durationSeconds = framesToSeconds(durationFrames, fps);
-  const transitionPlan = planTransitions(project, fps);
+  const transitionPlan = planTransitions(project, fps, { transparent: settings.transparent });
   const transitionFades = transitionPlan.fadeAdditions;
   const trueTransitions = transitionPlan.truePlans;
   const coveredClipIds = new Set();
 
-  const inputs = [
-    '-f', 'lavfi',
-    '-i', `color=c=black:s=${width}x${height}:r=${formatScalar(fps)}:d=${formatSeconds(durationSeconds)}`,
-  ];
+  const baseColor = settings.transparent ? 'black@0.0' : 'black';
+  const baseSpec =
+    `color=c=${baseColor}:s=${width}x${height}:r=${formatScalar(fps)}:d=${formatSeconds(durationSeconds)}` +
+    (settings.transparent ? ',format=rgba' : '');
+  const inputs = ['-f', 'lavfi', '-i', baseSpec];
   let inputIndex = 1;
 
   const chains = [];
@@ -1373,11 +1484,13 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     const rotation = rotationPlan(box, clip.transform?.rotation);
     const cropFilter = cropFilterFor(clip.crop);
     const maskFilter = maskFilterFor(clip.mask, box, rotation);
-    const blendMode = blendModeForClip(clip, {
-      rotation,
-      cropFilter,
-      maskFilter,
-    });
+    const blendMode = settings.transparent
+      ? null
+      : blendModeForClip(clip, {
+        rotation,
+        cropFilter,
+        maskFilter,
+      });
 
     const parts = [];
     if (cropFilter !== null) parts.push(cropFilter);
@@ -1904,13 +2017,21 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
 
   args.push(...audioEncodeArgs(settings, finalAudioLabels.length > 0));
   args.push(...videoEncodeArgs(settings));
+  if (settings.colorPrimaries !== null) args.push('-color_primaries', settings.colorPrimaries);
+  if (settings.colorTrc !== null) args.push('-color_trc', settings.colorTrc);
+  if (settings.colorspace !== null) args.push('-colorspace', settings.colorspace);
 
   if (settings.container === 'mp4' || settings.container === 'mov') {
     args.push('-movflags', '+faststart');
   }
   // New formats always force their muxer so the explicit output path may use
   // any extension; mp4/mov do so when a container was explicitly requested.
-  if (settings.containerExplicit || settings.codec === 'prores' || settings.codec === 'vp9') {
+  if (
+    settings.containerExplicit ||
+    settings.codec === 'prores' ||
+    settings.codec === 'prores4444' ||
+    settings.codec === 'vp9'
+  ) {
     args.push('-f', settings.container);
   }
   if (settings.fpsProvided) args.push('-r', formatScalar(settings.fps));
@@ -1926,6 +2047,8 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     durationFrames,
     codec: settings.codec,
     container: settings.container,
+    bitDepth: settings.bitDepth,
+    transparent: settings.transparent,
   };
 }
 
@@ -2027,5 +2150,7 @@ export async function runExport({
     durationFrames: built.durationFrames,
     codec: built.codec,
     container: built.container,
+    bitDepth: built.bitDepth,
+    transparent: built.transparent,
   };
 }

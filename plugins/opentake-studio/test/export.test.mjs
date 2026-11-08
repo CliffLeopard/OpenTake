@@ -291,6 +291,28 @@ const hasProresEncoder = encoderNames.has('prores_ks');
 const hasVp9Encoder = encoderNames.has('libvpx-vp9');
 const hasOpusEncoder = encoderNames.has('libopus');
 
+function sampleAlpha(filePath, seconds, x, y) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(initialTools.ffmpeg, [
+      '-hide_banner', '-loglevel', 'error',
+      '-ss', String(seconds),
+      '-i', filePath,
+      '-frames:v', '1',
+      '-vf', `alphaextract,crop=8:8:${x}:${y},scale=1:1`,
+      '-f', 'rawvideo', '-pix_fmt', 'gray', '-',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const chunks = [];
+    let stderr = '';
+    child.stdout.on('data', (chunk) => chunks.push(chunk));
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(Buffer.concat(chunks)[0] ?? 0);
+      else reject(new Error(`sampleAlpha failed (${code}): ${stderr.slice(-300)}`));
+    });
+  });
+}
+
 function meanVolumeDb(filePath) {
   return new Promise((resolve, reject) => {
     const child = spawn(initialTools.ffmpeg, [
@@ -1621,14 +1643,17 @@ it(
 // ---------------------------------------------------------------------------
 
 it('exposes default containers and extensions per codec', () => {
-  assert.deepEqual([...EXPORT_CODECS], ['h264', 'h265', 'prores', 'vp9']);
+  assert.deepEqual([...EXPORT_CODECS], ['h264', 'h265', 'prores', 'prores4444', 'vp9']);
   assert.equal(defaultExtensionForCodec('h264'), '.mp4');
   assert.equal(defaultExtensionForCodec('h265'), '.mp4');
   assert.equal(defaultExtensionForCodec('prores'), '.mov');
+  assert.equal(defaultExtensionForCodec('prores4444'), '.mov');
+  assert.equal(defaultExtensionForCodec('prores-alpha'), '.mov', 'prores-alpha is a prores4444 alias');
   assert.equal(defaultExtensionForCodec('vp9'), '.webm');
   assert.equal(defaultExtensionForCodec('webm'), '.webm', 'webm is a vp9 alias');
   assert.equal(defaultExtensionForCodec('hevc'), '.mp4', 'hevc is an h265 alias');
   assert.equal(defaultContainerForCodec('prores'), 'mov');
+  assert.equal(defaultContainerForCodec('prores4444'), 'mov');
   assert.equal(defaultContainerForCodec('webm'), 'webm');
   assert.throws(
     () => defaultExtensionForCodec('av1'),
@@ -2531,3 +2556,306 @@ it('exports ducked voice/music audio and verifies the volume drop', { skip: tool
   );
   assert.ok(duckedDb > -60, 'the ducked mix stays audible');
 });
+
+// ---------------------------------------------------------------------------
+// Phase 13: ProRes 4444 alpha + 10-bit export
+// ---------------------------------------------------------------------------
+
+it('builds ProRes 4444 alpha argv with PCM audio and a transparent base', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'out4444.mov');
+
+  const built = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'prores4444' },
+  });
+  assert.equal(built.codec, 'prores4444');
+  assert.equal(built.container, 'mov');
+  assert.equal(built.bitDepth, 10);
+  assert.equal(built.transparent, false);
+  assert.ok(hasPair(built.args, '-c:v', 'prores_ks'));
+  assert.ok(hasPair(built.args, '-profile:v', '4'));
+  assert.ok(hasPair(built.args, '-pix_fmt', 'yuva444p10le'));
+  assert.ok(hasPair(built.args, '-c:a', 'pcm_s16le'));
+  assert.ok(hasPair(built.args, '-f', 'mov'));
+  assert.ok(hasPair(built.args, '-movflags', '+faststart'));
+  assert.ok(!built.args.includes('-crf'));
+  assert.match(inputsOf(built.args)[0], /^color=c=black:s=640x360:r=30:d=3$/);
+
+  const alias = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'prores-alpha', transparent: true },
+  });
+  assert.equal(alias.codec, 'prores4444');
+  assert.equal(alias.transparent, true);
+  assert.match(inputsOf(alias.args)[0], /^color=c=black@0\.0:s=640x360:r=30:d=3,format=rgba$/);
+});
+
+it('preserves alpha through masks and disables blend/xfade in transparent mode', () => {
+  const masked = makeProject({
+    media: [
+      mediaEntry({
+        id: 'media-image', name: 'card.png', kind: 'image', fileName: 'image.png',
+        durationFrames: null, sourceDurationSeconds: null, hasAudio: false,
+      }),
+    ],
+    clips: [
+      makeClip({
+        id: 'alpha-mask', type: 'image', mediaId: 'media-image',
+        startFrame: 0, durationFrames: 30,
+        mask: { shape: 'rect', x: 0, y: 0, width: 0.5, height: 1, feather: 0, invert: false },
+      }),
+    ],
+  });
+  const maskedBuilt = buildExportArgs({
+    project: masked,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'alpha.mov'),
+    options: { codec: 'prores4444', transparent: true },
+  });
+  const maskedFilter = filterOf(maskedBuilt);
+  assert.ok(maskedFilter.includes('format=rgba,geq='), maskedFilter);
+  assert.ok(maskedBuilt.args.includes('-pix_fmt') && hasPair(maskedBuilt.args, '-pix_fmt', 'yuva444p10le'));
+  assert.match(inputsOf(maskedBuilt.args)[0], /^color=c=black@0\.0:.*,format=rgba$/);
+
+  const blendClip = makeProject({
+    clips: [
+      makeClip({
+        id: 'alpha-blend', type: 'video', mediaId: 'media-video',
+        startFrame: 0, durationFrames: 30, blendMode: 'screen',
+      }),
+    ],
+  });
+  const blendFilter = filterOf(buildExportArgs({
+    project: blendClip,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'alpha-blend.mov'),
+    options: { codec: 'prores4444', transparent: true },
+  }));
+  assert.ok(!blendFilter.includes('blend='), 'transparent export falls back to alpha overlay');
+  assert.ok(blendFilter.includes('overlay='));
+
+  const transition = trueTransitionProject('dissolve');
+  const transitionFilter = filterOf(buildExportArgs({
+    project: transition,
+    projectRoot: phaseRoot,
+    outputPath: path.join(phaseRoot, 'alpha-transition.mov'),
+    options: { codec: 'prores4444', transparent: true },
+  }));
+  assert.ok(!transitionFilter.includes('xfade='), 'transparent export avoids opaque xfade layers');
+});
+
+it('validates transparent and bitDepth combinations', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'combo.mov');
+  const buildWith = (options) => buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options,
+  });
+
+  for (const options of [
+    { codec: 'h264', transparent: true },
+    { codec: 'h265', transparent: true },
+    { codec: 'prores', transparent: true },
+    { codec: 'vp9', transparent: true },
+    { codec: 'prores4444', transparent: true, bitDepth: 8 },
+    { codec: 'prores', bitDepth: 8 },
+    { codec: 'h264', bitDepth: 10 },
+    { codec: 'h264', bitDepth: 12 },
+    { codec: 'prores4444', transparent: 'yes' },
+  ]) {
+    assert.throws(
+      () => buildWith(options),
+      (error) => error instanceof ExportError && error.code === 'invalid-input',
+      `expected invalid-input for ${JSON.stringify(options)}`,
+    );
+  }
+
+  const proresDefault = buildWith({ codec: 'prores' });
+  assert.equal(proresDefault.bitDepth, 10);
+  assert.ok(hasPair(proresDefault.args, '-pix_fmt', 'yuv422p10le'));
+});
+
+it('switches h265/vp9 to 10-bit pixel formats', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'ten.mp4');
+
+  const h265 = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'h265', bitDepth: 10 },
+  });
+  assert.equal(h265.bitDepth, 10);
+  if (encoderNames.has('libx265') || !initialTools.available) {
+    assert.ok(hasPair(h265.args, '-c:v', 'libx265'));
+    assert.ok(hasPair(h265.args, '-pix_fmt', 'yuv420p10le'));
+  } else if (encoderNames.has('hevc_videotoolbox')) {
+    assert.throws(
+      () => buildExportArgs({
+        project,
+        projectRoot: FIXTURE_ROOT,
+        outputPath,
+        options: { codec: 'h265', bitDepth: 10 },
+      }),
+      (error) => error instanceof ExportError && error.code === 'encoder-unavailable',
+    );
+  }
+
+  const vp9 = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath: path.join(FIXTURE_ROOT, 'ten.webm'),
+    options: { codec: 'vp9', bitDepth: 10 },
+  });
+  assert.equal(vp9.bitDepth, 10);
+  assert.ok(hasPair(vp9.args, '-c:v', 'libvpx-vp9'));
+  assert.ok(hasPair(vp9.args, '-pix_fmt', 'yuv420p10le'));
+  assert.ok(hasPair(vp9.args, '-crf', '31'));
+  assert.ok(hasPair(vp9.args, '-b:v', '0'));
+
+  const h265Eight = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { codec: 'h265' },
+  });
+  assert.equal(h265Eight.bitDepth, 8);
+  assert.ok(hasPair(h265Eight.args, '-pix_fmt', 'yuv420p'));
+});
+
+it('forwards validated color metadata', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'color.mp4');
+  const built = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: {
+      colorPrimaries: 'BT2020',
+      colorTrc: 'bt2020-10',
+      colorspace: 'bt2020nc',
+    },
+  });
+  assert.ok(hasPair(built.args, '-color_primaries', 'bt2020'));
+  assert.ok(hasPair(built.args, '-color_trc', 'bt2020-10'));
+  assert.ok(hasPair(built.args, '-colorspace', 'bt2020nc'));
+
+  for (const options of [
+    { colorPrimaries: 'bogus' },
+    { colorTrc: 'bogus' },
+    { colorspace: 'bogus' },
+    { colorPrimaries: 42 },
+  ]) {
+    assert.throws(
+      () => buildExportArgs({ project, projectRoot: FIXTURE_ROOT, outputPath, options }),
+      (error) => error instanceof ExportError && error.code === 'invalid-input',
+      `expected invalid-input for ${JSON.stringify(options)}`,
+    );
+  }
+});
+
+it('reports effective codec/container/bitDepth/transparent', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'defaults.mp4');
+  const defaults = buildExportArgs({ project, projectRoot: FIXTURE_ROOT, outputPath });
+  assert.equal(defaults.codec, 'h264');
+  assert.equal(defaults.container, 'mp4');
+  assert.equal(defaults.bitDepth, 8);
+  assert.equal(defaults.transparent, false);
+  assert.equal(defaultExtensionForCodec(defaults.codec), '.mp4');
+});
+
+it(
+  'exports transparent ProRes 4444 and verifies alpha with alphaextract',
+  {
+    skip: toolSkip
+      ? toolSkip
+      : (!hasProresEncoder ? 'prores_ks encoder is not available' : false),
+  },
+  async () => {
+    const project = makeProject({
+      media: [greenMedia],
+      clips: [
+        makeClip({
+          id: 'alpha-real', type: 'image', mediaId: greenMedia.id,
+          startFrame: 0, durationFrames: 30,
+          mask: { shape: 'rect', x: 0, y: 0, width: 0.5, height: 1, feather: 0, invert: false },
+        }),
+      ],
+    });
+    const outputPath = path.join(exportTemp, 'phase13-alpha.mov');
+    const result = await runExport({
+      project,
+      projectRoot: exportProjectRoot,
+      outputPath,
+      options: { codec: 'prores4444', transparent: true },
+    });
+    assert.equal(result.codec, 'prores4444');
+    assert.equal(result.container, 'mov');
+    assert.equal(result.bitDepth, 10);
+    assert.equal(result.transparent, true);
+
+    const info = await stat(outputPath);
+    assert.ok(info.size > 1000);
+    const probe = await probeMedia(outputPath);
+    assert.equal(probe.kind, 'video');
+    assert.equal(probe.width, 320);
+    assert.equal(probe.height, 180);
+
+    const streams = JSON.parse(await runFfprobe([
+      '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+    ]));
+    const videoStream = streams.streams.find((stream) => stream.codec_type === 'video');
+    assert.equal(videoStream.codec_name, 'prores');
+    // The ProRes 4444 decoder reports 12-bit yuva; the encoder received yuva444p10le.
+    assert.ok(videoStream.pix_fmt.startsWith('yuva444p'), videoStream.pix_fmt);
+
+    const leftAlpha = await sampleAlpha(outputPath, 0.2, 60, 90);
+    const rightAlpha = await sampleAlpha(outputPath, 0.2, 260, 90);
+    assert.ok(leftAlpha > 200, `expected opaque green inside the mask, alpha ${leftAlpha}`);
+    assert.ok(rightAlpha < 20, `expected transparent black outside the mask, alpha ${rightAlpha}`);
+  },
+);
+
+it(
+  'exports 10-bit H.265 when libx265 is available',
+  {
+    skip: toolSkip
+      ? toolSkip
+      : (!encoderNames.has('libx265') ? 'libx265 encoder is not available' : false),
+  },
+  async () => {
+    const project = makeProject({
+      media: [greenMedia],
+      clips: [
+        makeClip({
+          id: 'ten-real', type: 'image', mediaId: greenMedia.id,
+          startFrame: 0, durationFrames: 30,
+        }),
+      ],
+    });
+    const outputPath = path.join(exportTemp, 'phase13-10bit.mp4');
+    const result = await runExport({
+      project,
+      projectRoot: exportProjectRoot,
+      outputPath,
+      options: { codec: 'h265', bitDepth: 10 },
+    });
+    assert.equal(result.codec, 'h265');
+    assert.equal(result.bitDepth, 10);
+
+    const streams = JSON.parse(await runFfprobe([
+      '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+    ]));
+    const videoStream = streams.streams.find((stream) => stream.codec_type === 'video');
+    assert.equal(videoStream.codec_name, 'hevc');
+    assert.equal(videoStream.pix_fmt, 'yuv420p10le');
+  },
+);

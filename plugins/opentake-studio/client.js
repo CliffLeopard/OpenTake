@@ -228,8 +228,13 @@ window.__ModuleLoader__.load({
 			return `${base}${separator}${name}`;
 		}
 
+		const EXPORT_BIT_DEPTH_CODECS = ['h265', 'vp9', 'prores', 'prores4444'];
+		const EXPORT_COLOR_PRIMARIES = ['bt709', 'bt2020'];
+		const EXPORT_COLOR_TRCS = ['bt709', 'smpte2084', 'arib-std-b67'];
+		const EXPORT_COLOR_SPACES = ['bt709', 'bt2020nc', 'bt2020c'];
+
 		function exportCodecExtension(codec) {
-			if (codec === 'prores') return '.mov';
+			if (codec === 'prores' || codec === 'prores4444') return '.mov';
 			if (codec === 'vp9') return '.webm';
 			return '.mp4';
 		}
@@ -292,7 +297,7 @@ window.__ModuleLoader__.load({
 			const projectWidth = project && Number.isFinite(Number(project.width)) ? Math.max(1, Math.round(Number(project.width))) : 1920;
 			const projectHeight = project && Number.isFinite(Number(project.height)) ? Math.max(1, Math.round(Number(project.height))) : 1080;
 			const projectFps = project && Number.isFinite(Number(project.fps)) ? Math.max(1, Number(project.fps)) : 30;
-			const codec = ['h264', 'h265', 'prores', 'vp9'].includes(source.codec) ? source.codec : 'h264';
+			const codec = ['h264', 'h265', 'prores', 'prores4444', 'vp9'].includes(source.codec) ? source.codec : 'h264';
 			const resolution = ['project', '1080p', '720p', 'custom'].includes(source.resolution) ? source.resolution : 'project';
 			let width = projectWidth;
 			let height = projectHeight;
@@ -312,8 +317,23 @@ window.__ModuleLoader__.load({
 			const crf = clamp(Math.round(finiteNumber(source.crf, 20)), 0, 51);
 			const rawBitrate = typeof source.bitrate === 'string' ? source.bitrate.trim() : '';
 			const bitrate = rawBitrate.length > 0 ? rawBitrate : '8M';
+			const bitDepth =
+				codec === 'prores' || codec === 'prores4444'
+					? 10
+					: EXPORT_BIT_DEPTH_CODECS.includes(codec) && Number(source.bitDepth) === 10
+						? 10
+						: 8;
+			const transparent = codec === 'prores4444' && source.transparent === true;
+			const colorPrimaries = EXPORT_COLOR_PRIMARIES.includes(source.colorPrimaries) ? source.colorPrimaries : undefined;
+			const colorTrc = EXPORT_COLOR_TRCS.includes(source.colorTrc) ? source.colorTrc : undefined;
+			const colorspace = EXPORT_COLOR_SPACES.includes(source.colorspace) ? source.colorspace : undefined;
 			return {
 				codec,
+				transparent,
+				bitDepth,
+				...(colorPrimaries === undefined ? {} : { colorPrimaries }),
+				...(colorTrc === undefined ? {} : { colorTrc }),
+				...(colorspace === undefined ? {} : { colorspace }),
 				resolution,
 				width,
 				height,
@@ -1709,6 +1729,7 @@ window.__ModuleLoader__.load({
 .ots-track-confirm-actions{display:flex;gap:3px}
 .ots-track-confirm .ots-mini{font-size:9px;height:16px;padding:0 4px}
 .ots-export-grid{display:grid;gap:8px;grid-template-columns:1fr 1fr}
+.ots-export-toggles{display:flex;flex-wrap:wrap;gap:4px 12px}
 .ots-export-summary{background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.5;padding:6px 8px}
 .ots-export-check{align-items:center;display:flex;gap:6px;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:11.5px}
 .ots-export-check input{accent-color:var(--dsw-alias-brand-primary);margin:0}
@@ -2353,6 +2374,26 @@ window.__ModuleLoader__.load({
 			'media.relinkConfirm': 'Relink',
 			'media.relinkHint': 'Enter an absolute path to an existing media file. Clips keep the same id and timing.',
 			'media.relinked': 'Relinked {name}.',
+			'export.codecProres4444': 'ProRes 4444 (.mov, alpha)',
+			'export.transparent': 'Transparent background',
+			'export.transparentHint': 'Render a transparent base; ProRes 4444 keeps the alpha channel.',
+			'export.bitDepth10': '10-bit',
+			'export.bitDepthHint': '10-bit output is available for H.265, VP9 and ProRes (ignored for H.264).',
+			'export.colorPrimaries': 'Primaries',
+			'export.colorTrc': 'Transfer',
+			'export.colorspace': 'Color space',
+			'export.colorAuto': 'Default',
+			'export.primaries709': 'BT.709',
+			'export.primaries2020': 'BT.2020',
+			'export.trcSdr': 'SDR (BT.709)',
+			'export.trcPq': 'PQ (HDR10)',
+			'export.trcHlg': 'HLG',
+			'export.space709': 'BT.709',
+			'export.space2020': 'BT.2020',
+			'export.colorHint': 'Optional color metadata tags; leave on Default unless the delivery requires them.',
+			'preview.stepBack': 'Step back one frame',
+			'preview.stepForward': 'Step forward one frame',
+			'inspector.shortcutStep': '← / → — step one frame',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -2903,6 +2944,26 @@ window.__ModuleLoader__.load({
 			'media.relinkConfirm': '重新链接',
 			'media.relinkHint': '输入现有媒体文件的绝对路径。片段会保留相同的 id 与时间。',
 			'media.relinked': '已重新链接 {name}。',
+			'export.codecProres4444': 'ProRes 4444（.mov，带 Alpha）',
+			'export.transparent': '透明背景',
+			'export.transparentHint': '渲染透明底色；ProRes 4444 会保留 Alpha 通道。',
+			'export.bitDepth10': '10 位',
+			'export.bitDepthHint': '10 位输出支持 H.265、VP9 和 ProRes（H.264 会忽略）。',
+			'export.colorPrimaries': '色原色',
+			'export.colorTrc': '传递函数',
+			'export.colorspace': '色彩空间',
+			'export.colorAuto': '默认',
+			'export.primaries709': 'BT.709',
+			'export.primaries2020': 'BT.2020',
+			'export.trcSdr': 'SDR（BT.709）',
+			'export.trcPq': 'PQ（HDR10）',
+			'export.trcHlg': 'HLG',
+			'export.space709': 'BT.709',
+			'export.space2020': 'BT.2020',
+			'export.colorHint': '可选的色彩元数据标签；除非交付需要，否则保持“默认”。',
+			'preview.stepBack': '后退一帧',
+			'preview.stepForward': '前进一帧',
+			'inspector.shortcutStep': '← / → — 单帧步进',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -5181,6 +5242,7 @@ window.__ModuleLoader__.load({
 				onTogglePlay,
 				onToggleLoop,
 				onVolumeChange,
+				onStepFrame,
 				proxyPreview,
 				missingMediaIds,
 			} = props;
@@ -5232,6 +5294,17 @@ window.__ModuleLoader__.load({
 					h(
 						Btn,
 						{
+							variant: 'ghost',
+							onClick: () => onStepFrame(-1),
+							disabled: !project || duration <= 0,
+							title: t('preview.stepBack'),
+							'aria-label': t('preview.stepBack'),
+						},
+						'−1',
+					),
+					h(
+						Btn,
+						{
 							variant: 'toolbar',
 							onClick: onTogglePlay,
 							disabled: !project || duration <= 0,
@@ -5239,6 +5312,17 @@ window.__ModuleLoader__.load({
 							'aria-label': playing ? t('preview.pause') : t('preview.play'),
 						},
 						playing ? '❚❚' : '▶',
+					),
+					h(
+						Btn,
+						{
+							variant: 'ghost',
+							onClick: () => onStepFrame(1),
+							disabled: !project || duration <= 0,
+							title: t('preview.stepForward'),
+							'aria-label': t('preview.stepForward'),
+						},
+						'+1',
 					),
 					h(
 						Btn,
@@ -6443,6 +6527,7 @@ window.__ModuleLoader__.load({
 						{ className: 'ots-section', key: 'shortcuts' },
 						h('h3', { className: 'ots-section-title' }, t('inspector.shortcuts')),
 						h(Shortcut, { t, shortcutKey: 'Space', label: t('inspector.shortcutPlay') }),
+						h(Shortcut, { t, shortcutKey: '← / →', label: t('inspector.shortcutStep') }),
 						h(Shortcut, { t, shortcutKey: 'Del', label: t('inspector.shortcutDelete') }),
 						h(Shortcut, { t, shortcutKey: '⌘Z', label: t('inspector.shortcutUndo') }),
 						h(Shortcut, { t, shortcutKey: '⇧⌘Z', label: t('inspector.shortcutRedo') }),
@@ -7642,7 +7727,9 @@ window.__ModuleLoader__.load({
 								? t('export.codecH265')
 								: exportSettings.codec === 'prores'
 									? t('export.codecProres')
-									: exportSettings.codec === 'vp9'
+									: exportSettings.codec === 'prores4444'
+										? t('export.codecProres4444')
+										: exportSettings.codec === 'vp9'
 										? t('export.codecVp9')
 										: t('export.codecH264'),
 						width: exportSettings.width,
@@ -7701,14 +7788,22 @@ window.__ModuleLoader__.load({
 									'select',
 									{
 										className: 'ots-select',
-										value: ['h264', 'h265', 'prores', 'vp9'].includes(dialog.codec) ? dialog.codec : 'h264',
+										value: ['h264', 'h265', 'prores', 'prores4444', 'vp9'].includes(dialog.codec) ? dialog.codec : 'h264',
 										'aria-label': t('export.codec'),
 										title: t('export.codec'),
-										onChange: (event) => onPatch({ codec: event.target.value }),
+										onChange: (event) => {
+											const nextCodec = event.target.value;
+											const patch = { codec: nextCodec };
+											if (nextCodec !== 'prores4444') patch.transparent = false;
+											if (nextCodec === 'prores' || nextCodec === 'prores4444') patch.bitDepth = 10;
+											else if (!EXPORT_BIT_DEPTH_CODECS.includes(nextCodec)) patch.bitDepth = 8;
+											onPatch(patch);
+										},
 									},
 									h('option', { value: 'h264' }, t('export.codecH264')),
 									h('option', { value: 'h265' }, t('export.codecH265')),
 									h('option', { value: 'prores' }, t('export.codecProres')),
+									h('option', { value: 'prores4444' }, t('export.codecProres4444')),
 									h('option', { value: 'vp9' }, t('export.codecVp9')),
 								),
 							),
@@ -7847,11 +7942,99 @@ window.__ModuleLoader__.load({
 						),
 						h(
 							'div',
+							{ className: 'ots-export-toggles', key: 'alpha-depth' },
+							h(
+								'label',
+								{ className: 'ots-export-check', title: t('export.transparentHint') },
+								h('input', {
+									type: 'checkbox',
+									checked: exportSettings.codec === 'prores4444' && dialog.transparent === true,
+									disabled: exportSettings.codec !== 'prores4444',
+									'aria-label': t('export.transparent'),
+									onChange: (event) => onPatch({ transparent: event.target.checked }),
+								}),
+								t('export.transparent'),
+							),
+							h(
+								'label',
+								{ className: 'ots-export-check', title: t('export.bitDepthHint') },
+								h('input', {
+									type: 'checkbox',
+									checked: exportSettings.bitDepth === 10,
+									disabled: !['h265', 'vp9'].includes(exportSettings.codec),
+									'aria-label': t('export.bitDepth10'),
+									onChange: (event) => onPatch({ bitDepth: event.target.checked ? 10 : 8 }),
+								}),
+								t('export.bitDepth10'),
+							),
+						),
+						h(
+							'div',
+							{ className: 'ots-export-grid', key: 'color-metadata' },
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('export.colorPrimaries')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: dialog.colorPrimaries || '',
+										'aria-label': t('export.colorPrimaries'),
+										title: t('export.colorPrimaries'),
+										onChange: (event) => onPatch({ colorPrimaries: event.target.value }),
+									},
+									h('option', { value: '' }, t('export.colorAuto')),
+									h('option', { value: 'bt709' }, t('export.primaries709')),
+									h('option', { value: 'bt2020' }, t('export.primaries2020')),
+								),
+							),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('export.colorTrc')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: dialog.colorTrc || '',
+										'aria-label': t('export.colorTrc'),
+										title: t('export.colorTrc'),
+										onChange: (event) => onPatch({ colorTrc: event.target.value }),
+									},
+									h('option', { value: '' }, t('export.colorAuto')),
+									h('option', { value: 'bt709' }, t('export.trcSdr')),
+									h('option', { value: 'smpte2084' }, t('export.trcPq')),
+									h('option', { value: 'arib-std-b67' }, t('export.trcHlg')),
+								),
+							),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('export.colorspace')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: dialog.colorspace || '',
+										'aria-label': t('export.colorspace'),
+										title: t('export.colorspace'),
+										onChange: (event) => onPatch({ colorspace: event.target.value }),
+									},
+									h('option', { value: '' }, t('export.colorAuto')),
+									h('option', { value: 'bt709' }, t('export.space709')),
+									h('option', { value: 'bt2020nc' }, t('export.space2020')),
+								),
+							),
+						),
+						h('p', { className: 'ots-field-hint', key: 'color-hint' }, t('export.colorHint')),
+						h(
+							'div',
 							{ className: 'ots-export-summary', key: 'summary' },
 							h('strong', {}, t('export.estimated')),
 							h('div', {}, exportSummary),
 							h('div', {}, t('export.extensionHint', { ext: exportSettings.extension })),
-							exportSettings.codec === 'prores'
+							exportSettings.codec === 'prores' || exportSettings.codec === 'prores4444'
 								? h('div', { className: 'ots-note' }, t('export.proresHint'))
 								: null,
 						),
@@ -7954,6 +8137,7 @@ window.__ModuleLoader__.load({
 						{ className: 'ots-settings-section' },
 						h('h3', {}, t('settings.shortcuts')),
 						h(Shortcut, { t, shortcutKey: 'Space', label: t('inspector.shortcutPlay') }),
+						h(Shortcut, { t, shortcutKey: 'Left / Right', label: t('inspector.shortcutStep') }),
 						h(Shortcut, { t, shortcutKey: 'Delete', label: t('inspector.shortcutDelete') }),
 						h(Shortcut, { t, shortcutKey: 'Cmd/Ctrl+Z', label: t('inspector.shortcutUndo') }),
 						h(Shortcut, { t, shortcutKey: 'Shift+Cmd/Ctrl+Z', label: t('inspector.shortcutRedo') }),
@@ -8450,6 +8634,12 @@ window.__ModuleLoader__.load({
 				applyFrame(target);
 			};
 
+			const stepFrame = (delta) => {
+				if (!projectRef.current) return;
+				if (playingRef.current) setPlaying(false);
+				seekToFrame(currentFrameRef.current + delta);
+			};
+
 			const togglePlay = () => {
 				if (!projectRef.current) return;
 				const total = timelineDurationFrames(projectRef.current);
@@ -8517,6 +8707,11 @@ window.__ModuleLoader__.load({
 					error: null,
 					busy: false,
 					codec: 'h264',
+					transparent: false,
+					bitDepth: 8,
+					colorPrimaries: '',
+					colorTrc: '',
+					colorspace: '',
 					resolution: 'project',
 					width: projectValue.width,
 					height: projectValue.height,
@@ -9087,10 +9282,15 @@ window.__ModuleLoader__.load({
 							...(pathValue.length > 0 ? { path: pathValue } : {}),
 							overwrite: exportSettings.overwrite === true,
 							codec: exportSettings.codec,
+							transparent: exportSettings.transparent,
+							bitDepth: exportSettings.bitDepth,
 							width: exportSettings.width,
 							height: exportSettings.height,
 							fps: exportSettings.fps,
 						};
+						if (exportSettings.colorPrimaries !== undefined) exportBody.colorPrimaries = exportSettings.colorPrimaries;
+						if (exportSettings.colorTrc !== undefined) exportBody.colorTrc = exportSettings.colorTrc;
+						if (exportSettings.colorspace !== undefined) exportBody.colorspace = exportSettings.colorspace;
 						if (exportSettings.qualityMode === 'crf') exportBody.crf = exportSettings.crf;
 						else exportBody.bitrate = exportSettings.bitrate;
 						payload = await hostPost('export', exportBody);
@@ -9117,6 +9317,8 @@ window.__ModuleLoader__.load({
 				paste: handlePaste,
 				selectAll: handleSelectAll,
 				play: togglePlay,
+				stepBack: () => stepFrame(-1),
+				stepForward: () => stepFrame(1),
 				remove: handleDelete,
 				ripple: handleDeleteRipple,
 			};
@@ -9153,6 +9355,16 @@ window.__ModuleLoader__.load({
 					if (meta && (event.key === 'a' || event.key === 'A')) {
 						event.preventDefault();
 						handlers.selectAll();
+						return;
+					}
+					if (event.key === 'ArrowLeft') {
+						event.preventDefault();
+						handlers.stepBack();
+						return;
+					}
+					if (event.key === 'ArrowRight') {
+						event.preventDefault();
+						handlers.stepForward();
 						return;
 					}
 					if (event.key === ' ') {
@@ -9290,6 +9502,7 @@ window.__ModuleLoader__.load({
 										onTogglePlay: togglePlay,
 										onToggleLoop: () => setLoop((value) => !value),
 										onVolumeChange: (value) => setMonitorVolume(clamp01(value)),
+										onStepFrame: stepFrame,
 										proxyPreview,
 										missingMediaIds,
 									}),

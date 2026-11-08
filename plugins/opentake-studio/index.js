@@ -1156,7 +1156,7 @@ export function apply(ctx) {
     state.exportAbort = controller;
     const exportProject = structuredClone(project);
     const exportOptions = {};
-    for (const key of ['codec', 'width', 'height', 'fps', 'crf', 'bitrate']) {
+    for (const key of ['codec', 'width', 'height', 'fps', 'crf', 'bitrate', 'transparent', 'bitDepth', 'colorPrimaries', 'colorTrc', 'colorspace']) {
       if (input[key] !== undefined) exportOptions[key] = input[key];
     }
     void runExport({
@@ -2169,12 +2169,17 @@ export function apply(ctx) {
       properties: {
         path: { type: 'string' },
         overwrite: { type: 'boolean' },
-        codec: { type: 'string', enum: ['h264', 'h265', 'prores', 'vp9'] },
+        codec: { type: 'string', enum: ['h264', 'h265', 'prores', 'prores4444', 'vp9'] },
         width: { type: 'number' },
         height: { type: 'number' },
         fps: { type: 'number' },
         crf: { type: 'number' },
         bitrate: { type: 'string' },
+        transparent: { type: 'boolean' },
+        bitDepth: { type: 'number' },
+        colorPrimaries: { type: 'string' },
+        colorTrc: { type: 'string' },
+        colorspace: { type: 'string' },
       },
       additionalProperties: false,
     },
