@@ -11,6 +11,8 @@
   "files": [
     "index.js",
     "client.js",
+    "lib/*.js",
+    "ui/**",
     "cordis.patch.yml",
     "web/**",
     "native/*/*.node",

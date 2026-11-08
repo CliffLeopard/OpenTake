@@ -1,0 +1,21 @@
+[package]
+name = "opentake-export-pro"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/appergb/OpenTake"
+description = "Route B export prototype: 10-bit H.265, HDR/tone-map policy and audio ducking."
+
+# Deliberately standalone: this prototype crate is NOT a member of the root
+# workspace (root Cargo.toml is owned by the Route B integration branch). It has
+# no OpenTake path dependencies so it can be built in isolation with
+# `cargo build --manifest-path crates/opentake-export-pro/Cargo.toml`.
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "export-pro"
+path = "src/bin/export-pro.rs"

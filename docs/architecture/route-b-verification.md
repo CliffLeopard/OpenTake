@@ -12,11 +12,11 @@ unimplemented. It is not a parity claim.
 
 | Check | Result |
 |---|---|
-| `scripts/build-route-b-addon.sh` | PASS, arm64 `opentake_engine_v27.node` |
+| `scripts/build-route-b-addon.sh` | PASS, arm64 `opentake_engine_v28.node` |
 | `ROUTE_B_TARGET=x86_64-apple-darwin` build | PASS, x64 Mach-O addon (not run) |
 | `node crates/opentake-node/test/smoke.mjs` | PASS (`route-b addon smoke: ok`) |
 | `node --test plugins/opentake-studio/test/` | PASS 422 tests / 40 suites (the separate pure-JS plugin) |
-| `scripts/package-route-b.sh` | PASS, universal tarball with both v27 addons |
+| `scripts/package-route-b.sh` | PASS, universal tarball with both v28 addons |
 
 The Route B addon itself has only the smoke test; the 422 tests are for the
 separate JS plugin and are not evidence for Route B behavior.
@@ -34,7 +34,7 @@ not silently accepted.
 
 ## 3. Host API end-to-end
 
-A scripted run against the live DSH Host passed **44/44** checks:
+An earlier live-Host scripted run passed **44/44** checks (kept as historical evidence; the independent verifier later reran 25/27, with one thumbnail warning since fixed):
 
 - project new/path/file, settings, import video+Lottie, ffprobe metadata, poster
   thumbnail, waveform (4000 buckets)
@@ -99,12 +99,12 @@ longer falls back to the warning path.
 | Composite video/image/text | verified (video/effects/mask/text) | Lottie simple |
 | Playback | WebKit direct path verified; native API verified | no cpal master clock; native route not used by UI for simple stacks |
 | Export H.264/AAC, range, alpha, audio-only | verified | current run |
-| Export H.265/10-bit/HDR/ducking | not verified / missing | no HDR/ducking contract |
+| Export H.265/10-bit/HDR/ducking | isolated slices verified; not integrated | `opentake-export-pro` tests + ffprobe evidence; Host encoder unchanged |
 | Interchange and subtitles | verified | XMEML/EDL/OTIO/FCPXML/SRT |
 | ASR/captions | verified against mock | real provider not called |
-| Search | text-only | SigLIP visual search missing |
+| Search | text fallback only; Host status now honest | SigLIP assets/backend missing; `opentake-search` capability crate exists |
 | Generation image/speech/video | verified against mocks | real providers not called |
-| Motion CRUD/preview/publish | verified | Chrome; templates/code path missing |
+| Motion CRUD/preview/publish | verified incl. template path | Host template preview/publish integrated; raw code path still not exposed |
 | Settings storage | verified | other settings/account/updater missing |
 | Agent/MCP | DSH tools exist | no MCP bridge by Route B design |
 | macOS arm64 | verified | x64 built, not run |

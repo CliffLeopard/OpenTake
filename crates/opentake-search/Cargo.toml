@@ -1,0 +1,23 @@
+[package]
+name = "opentake-search"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/appergb/OpenTake"
+description = "Route B isolated visual-search capability gate, deterministic text-search fallback and query contract (standalone; no workspace membership yet)."
+
+# Deliberately its own workspace root: the root workspace is owned by the Route B
+# integration workstream and `[workspace] members` must not be edited here. The
+# Lead can promote this crate into the root workspace later (see
+# docs/architecture/route-b-search.md).
+[workspace]
+
+[lib]
+name = "opentake_search"
+path = "src/lib.rs"
+
+[[bin]]
+name = "search-probe"
+path = "src/bin/search-probe.rs"
+
+[dependencies]

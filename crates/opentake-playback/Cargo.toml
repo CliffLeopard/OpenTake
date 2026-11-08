@@ -1,0 +1,21 @@
+[package]
+name = "opentake-playback"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/appergb/OpenTake"
+description = "Isolated Route B streaming playback slice: bounded decode queue, audio master clock, identity-guarded publication."
+
+# This crate is deliberately a standalone workspace. It must stay out of the
+# shared root workspace until the Route B addon integration is reviewed, and it
+# must not force cpal/GPU/ffmpeg dependencies into the existing crates.
+[workspace]
+
+[features]
+default = []
+cpal-output = ["dep:cpal"]
+
+[dependencies]
+cpal = { version = "0.15.3", optional = true }
+
+[dev-dependencies]

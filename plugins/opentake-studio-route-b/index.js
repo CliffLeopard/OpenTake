@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { templateToDocument, validateTemplateParams } from './lib/motion-templates.js';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
@@ -438,7 +439,8 @@ export function apply(ctx) {
       }
     }
     return {
-      visualError: 'visual embeddings unavailable: Route B text search only',
+      visualError: 'visual embeddings unavailable: SigLIP2 assets not installed',
+      visualErrorDetail: 'model_not_installed',
       moments: [],
       spoken,
       files,
@@ -529,20 +531,43 @@ export function apply(ctx) {
   }
 
   async function motionPreview(request) {
-    const root = motionRoot();
-    const document = readMotionDocument(root, String(request.documentId));
-    if (request.revisionHash !== document.summary.revisionHash) throw new Error('motion document changed; reload before previewing');
     const width = Math.max(2, Math.round(Number(request.width) || 1280));
     const height = Math.max(2, Math.round(Number(request.height) || 720));
     const fps = Math.max(1, Number(request.fps) || 30);
     const frame = Math.max(0, Math.round(Number(request.frame) || 0));
+    let document = null;
+    let page;
+    let revisionHash;
+    let sourceKey;
+    if (typeof request.documentId === 'string' && request.documentId.length > 0) {
+      const root = motionRoot();
+      document = readMotionDocument(root, request.documentId);
+      if (request.revisionHash !== document.summary.revisionHash) throw new Error('motion document changed; reload before previewing');
+      page = `<!doctype html><html><head><meta charset="utf-8"><style>${document.css}</style><style>html,body{width:${width}px;height:${height}px;margin:0;overflow:hidden}</style></head><body>${document.html}</body></html>`;
+      revisionHash = document.summary.revisionHash;
+      sourceKey = request.documentId;
+    } else if (typeof request.templateId === 'string' && request.templateId.length > 0) {
+      const params = validateTemplateParams(request.templateId, request.params ?? {});
+      const rendered = templateToDocument(request.templateId, params, {
+        width,
+        height,
+        fps,
+        frame,
+        durationSeconds: Math.max(0.1, Number(request.durationFrames) / fps || 1),
+      });
+      page = rendered.document;
+      revisionHash = createHash('sha256').update(request.templateId).update(JSON.stringify(params)).digest('hex');
+      sourceKey = `template-${request.templateId}`;
+    } else {
+      throw new Error('motion_preview requires documentId or templateId');
+    }
     const chrome = chromeExecutable();
     if (chrome === null) throw new Error('Chromium/Chrome is required for Motion preview');
     const directory = path.join(CACHE_ROOT, 'motion-preview');
     await mkdir(directory, { recursive: true });
-    const htmlFile = path.join(directory, `${request.documentId}-${frame}.html`);
-    const pngFile = path.join(directory, `${request.documentId}-${frame}.png`);
-    const page = `<!doctype html><html><head><meta charset="utf-8"><style>${document.css}</style><style>html,body{width:${width}px;height:${height}px;margin:0;overflow:hidden}</style></head><body>${document.html}</body></html>`;
+    const key = `${sourceKey}-${frame}`.replace(/[^A-Za-z0-9_.-]/g, '_');
+    const htmlFile = path.join(directory, `${key}.html`);
+    const pngFile = path.join(directory, `${key}.png`);
     await writeFile(htmlFile, page, 'utf8');
     const budget = Math.max(50, Math.round((frame / fps) * 1000));
     await execFileAsync(chrome, [
@@ -553,23 +578,40 @@ export function apply(ctx) {
     ], { timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
     const bytes = await readFile(pngFile);
     return {
-      revisionHash: document.summary.revisionHash,
+      revisionHash,
       frame,
       pngDataUrl: `data:image/png;base64,${bytes.toString('base64')}`,
       diagnostics: [],
+      source: document ? { kind: 'document', documentId: request.documentId } : { kind: 'template', templateId: request.templateId },
     };
   }
 
   async function motionAdd(request) {
-    const root = motionRoot();
-    const document = readMotionDocument(root, String(request.documentId));
-    if (request.revisionHash !== document.summary.revisionHash) throw new Error('motion document changed; reload before publishing');
+    let document = null;
+    let templateId = null;
+    let templateParams = null;
+    let revisionHash = null;
+    let sourceKey = null;
+    if (typeof request.documentId === 'string' && request.documentId.length > 0) {
+      const root = motionRoot();
+      document = readMotionDocument(root, request.documentId);
+      if (request.revisionHash !== document.summary.revisionHash) throw new Error('motion document changed; reload before publishing');
+      revisionHash = document.summary.revisionHash;
+      sourceKey = request.documentId;
+    } else if (typeof request.templateId === 'string' && request.templateId.length > 0) {
+      templateId = request.templateId;
+      templateParams = validateTemplateParams(templateId, request.params ?? {});
+      revisionHash = createHash('sha256').update(templateId).update(JSON.stringify(templateParams)).digest('hex');
+      sourceKey = `template-${templateId}`;
+    } else {
+      throw new Error('motion_add requires documentId or templateId');
+    }
     const width = Math.max(2, Math.round(Number(request.width) || 1280));
     const height = Math.max(2, Math.round(Number(request.height) || 720));
     const fps = Math.max(1, Math.round(Number(request.fps) || 30));
     const duration = Math.max(1, Math.round(Number(request.durationFrames) || 30));
     const startFrame = Math.max(0, Math.round(Number(request.startFrame) || 0));
-    const directory = path.join(CACHE_ROOT, 'motion-publish', `${request.documentId}-${Date.now()}`);
+    const directory = path.join(CACHE_ROOT, 'motion-publish', `${sourceKey}-${Date.now()}`);
     await mkdir(directory, { recursive: true });
     state.motionJob = { active: true, phase: 'rendering', doneFrames: 0, totalFrames: duration };
     const updateMotion = (phase, doneFrames = 0) => {
@@ -577,8 +619,8 @@ export function apply(ctx) {
     };
     for (let frame = 0; frame < duration; frame += 1) {
       const preview = await motionPreview({
-        documentId: request.documentId,
-        revisionHash: request.revisionHash,
+        ...(document ? { documentId: request.documentId } : { templateId, params: templateParams }),
+        revisionHash,
         frame,
         width,
         height,
@@ -635,7 +677,9 @@ export function apply(ctx) {
       assetId: asset.id,
       contentHash,
       actionName: 'Add Motion Graphic',
-      sourceDocument: { documentId: request.documentId, revisionHash: request.revisionHash },
+      ...(document
+        ? { sourceDocument: { documentId: request.documentId, revisionHash } }
+        : { source: { kind: 'template', templateId, revisionHash } }),
       output: {
         renderer: 'route-b-chrome-headless',
         rendererVersion: '1',
@@ -682,8 +726,9 @@ export function apply(ctx) {
       throw new Error('import_folder requires an existing directory path');
     }
     const files = scanImportFolder(directory, recursive === true);
-    if (files.length === 0) return JSON.parse(state.engine.mediaList());
-    return JSON.parse(state.engine.importMedia(files));
+    if (files.length === 0) return mediaWithThumbnails();
+    state.engine.importMedia(files);
+    return mediaWithThumbnails();
   }
 
   async function timelineSprite(mediaRef, requestedFrames) {
@@ -944,20 +989,26 @@ export function apply(ctx) {
       case 'motion_cancel':
         return false;
       case 'search_model_status':
-        return { installed: true, model: 'route-b-text-search', bytes: 0 };
+        return {
+          installed: false,
+          model: 'siglip2-base-patch16-256',
+          version: 2,
+          bytes: 0,
+          expectedBytes: 1535824768,
+          backend: null,
+          visualAvailable: false,
+          visualErrorDetail: 'model_not_installed',
+        };
       case 'download_search_model':
-        return { installed: true, model: 'route-b-text-search', bytes: 0 };
+        throw new Error('SigLIP2 assets are not installed; downloading ~1.43 GiB requires explicit approval');
       case 'search_index_status': {
         const items = JSON.parse(state.engine.mediaList()).items.filter((item) => item.type === 'video' || item.type === 'image');
-        const indexed = items.filter((item) => existsSync(path.join(CACHE_ROOT, 'transcripts', `${item.id}.json`))).length;
-        return { modelInstalled: true, indexable: items.length, indexed };
+        return { modelInstalled: false, visualAvailable: false, indexable: items.length, indexed: 0, reason: 'visual_unavailable', detail: 'model_not_installed' };
       }
-      case 'search_index_start': {
-        const items = JSON.parse(state.engine.mediaList()).items.filter((item) => item.type === 'video' || item.type === 'image');
-        return { modelInstalled: true, indexable: items.length, indexed: items.length };
-      }
+      case 'search_index_start':
+        throw new Error('visual indexing requires installed SigLIP2 assets and an ONNX backend');
       case 'search_query':
-        return textSearch(args.query);
+        return { ...textSearch(args.query), visualAvailable: false, visualErrorDetail: 'model_not_installed' };
       case 'storage_usage':
         return storageUsage();
       case 'storage_clear':
