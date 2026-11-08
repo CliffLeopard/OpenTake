@@ -132,6 +132,32 @@ window.__ModuleLoader__.load({
 			return `${ROUTE}/media/file/${encodeURIComponent(mediaId)}`;
 		}
 
+		function mediaProxyUrl(mediaId) {
+			return `${ROUTE}/media/proxy/${encodeURIComponent(mediaId)}`;
+		}
+
+		function mediaMissingOf(media) {
+			return Boolean(media && media.missing === true);
+		}
+
+		const PROXY_PREVIEW_KEY = 'opentake-studio.proxy-preview';
+
+		function readProxyPreviewPreference() {
+			try {
+				return window.localStorage.getItem(PROXY_PREVIEW_KEY) === 'true';
+			} catch (error) {
+				return false;
+			}
+		}
+
+		function writeProxyPreviewPreference(value) {
+			try {
+				window.localStorage.setItem(PROXY_PREVIEW_KEY, value ? 'true' : 'false');
+			} catch (error) {
+				/* preference persistence is best-effort */
+			}
+		}
+
 		function mediaThumbUrl(mediaId) {
 			return `${ROUTE}/media/thumb/${encodeURIComponent(mediaId)}`;
 		}
@@ -1503,6 +1529,17 @@ window.__ModuleLoader__.load({
 .ots-media-meta{display:flex;flex-direction:column;gap:1px;min-width:0;padding:5px 7px 6px}
 .ots-media-name{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ots-media-sub{color:var(--dsw-alias-label-secondary);display:flex;font-size:10.5px;gap:5px;min-width:0}
+.ots-proxy-badge{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:999px;color:var(--dsw-alias-brand-primary);font-size:9px;letter-spacing:.3px;padding:1px 6px;text-transform:uppercase}
+.ots-media-card[data-missing="true"] .ots-media-thumb{box-shadow:inset 0 0 0 1.5px var(--dsw-alias-state-error-primary)}
+.ots-media-card[data-missing="true"]{border-color:var(--dsw-alias-state-error-primary)}
+.ots-media-offline{background:var(--dsw-alias-state-error-primary);border-radius:3px;color:var(--dsw-alias-bg-base);font-size:8px;left:4px;letter-spacing:.3px;padding:1px 4px;position:absolute;text-transform:uppercase;top:4px;z-index:3}
+.ots-clip[data-offline="true"]{border-color:var(--dsw-alias-state-error-primary);box-shadow:inset 0 0 0 1px var(--dsw-alias-state-error-primary)}
+.ots-clip-offline-badge{background:var(--dsw-alias-state-error-primary);border-radius:2px;color:var(--dsw-alias-bg-base);font-size:8px;line-height:11px;margin-right:3px;padding:0 3px;pointer-events:none}
+.ots-media-warning{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-state-error-primary);border-radius:6px;color:var(--dsw-alias-state-error-primary);font-size:10.5px;line-height:1.4;margin:0 0 6px;padding:6px 7px}
+.ots-missing-overlay{align-items:center;background:var(--dsw-alias-bg-overlay);display:flex;flex-direction:column;gap:3px;inset:0;justify-content:center;padding:12px;position:absolute;text-align:center;z-index:2}
+.ots-missing-overlay-title{color:var(--dsw-alias-state-error-primary);font-size:12px;font-weight:600}
+.ots-missing-overlay-hint{color:var(--dsw-alias-label-secondary);font-size:10px;line-height:1.4}
+.ots-proxy-chip{background:var(--dsw-alias-bg-overlay);border-radius:3px;bottom:4px;color:var(--dsw-alias-label-primary);font-size:8px;left:4px;letter-spacing:.3px;padding:1px 4px;position:absolute;text-transform:uppercase;z-index:2}
 .ots-media-add{background:var(--dsw-alias-bg-overlay);border:0;border-radius:5px;color:var(--dsw-alias-label-primary);cursor:pointer;font-size:14px;height:22px;line-height:1;opacity:0;position:absolute;right:4px;top:4px;width:22px;transition:opacity .12s}
 .ots-media-card:hover .ots-media-add,.ots-media-add:focus-visible{opacity:1}
 .ots-media-empty{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5;padding:18px 10px;text-align:center}
@@ -2293,6 +2330,29 @@ window.__ModuleLoader__.load({
 			'vision.hint': 'Configure OPENAI_API_KEY (or a DSH credential) on the Host to describe and search visuals.',
 			'vision.refresh': 'Refresh',
 			'search.vision': 'Visual matches',
+			'proxy.toggle': 'Proxy preview',
+			'proxy.toggleTitle': 'Preview videos through low-resolution proxies (export still uses originals).',
+			'proxy.badge': 'Proxy',
+			'proxy.badgeTitle': 'Preview is using a low-resolution proxy; export uses the original.',
+			'proxy.fallback': 'Proxy preview failed for {name}; falling back to the original.',
+			'proxy.generate': 'Proxy',
+			'proxy.generating': 'Proxy…',
+			'proxy.generateTitle': 'Generate a low-resolution preview proxy now (export uses the original).',
+			'proxy.generated': 'Preview proxy ready for {name}.',
+			'proxy.generateError': 'Could not generate a proxy for {name}: {message}',
+			'media.offline': 'Offline',
+			'media.missingPreview': 'Media missing',
+			'media.missingPreviewHint': 'Relink this asset from the media panel to preview it.',
+			'media.missingInspector': 'Media missing — relink the asset from the media panel.',
+			'media.missingDetected': 'Media file missing: {name}.',
+			'media.relink': 'Relink',
+			'media.relinkError': 'Relink failed: {message}',
+			'media.relinkTitle': 'Relink media',
+			'media.relinkPath': 'New file path',
+			'media.relinkPathRequired': 'Enter an absolute file path.',
+			'media.relinkConfirm': 'Relink',
+			'media.relinkHint': 'Enter an absolute path to an existing media file. Clips keep the same id and timing.',
+			'media.relinked': 'Relinked {name}.',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -2820,6 +2880,29 @@ window.__ModuleLoader__.load({
 			'vision.hint': '请在 Host 上配置 OPENAI_API_KEY（或 DSH 凭据）以描述和搜索画面。',
 			'vision.refresh': '刷新',
 			'search.vision': '视觉匹配',
+			'proxy.toggle': '代理预览',
+			'proxy.toggleTitle': '通过低分辨率代理预览视频（导出仍使用原始文件）。',
+			'proxy.badge': '代理',
+			'proxy.badgeTitle': '预览正在使用低分辨率代理；导出使用原始文件。',
+			'proxy.fallback': '{name} 的代理预览失败，已回退到原始文件。',
+			'proxy.generate': '代理',
+			'proxy.generating': '代理…',
+			'proxy.generateTitle': '立即生成低分辨率预览代理（导出使用原始文件）。',
+			'proxy.generated': '{name} 的预览代理已就绪。',
+			'proxy.generateError': '无法为 {name} 生成代理：{message}',
+			'media.offline': '离线',
+			'media.missingPreview': '媒体缺失',
+			'media.missingPreviewHint': '请在媒体面板中重新链接该素材以恢复预览。',
+			'media.missingInspector': '媒体缺失——请在媒体面板中重新链接该素材。',
+			'media.missingDetected': '媒体文件缺失：{name}。',
+			'media.relink': '重新链接',
+			'media.relinkError': '重新链接失败：{message}',
+			'media.relinkTitle': '重新链接媒体',
+			'media.relinkPath': '新文件路径',
+			'media.relinkPathRequired': '请输入绝对文件路径。',
+			'media.relinkConfirm': '重新链接',
+			'media.relinkHint': '输入现有媒体文件的绝对路径。片段会保留相同的 id 与时间。',
+			'media.relinked': '已重新链接 {name}。',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -3012,7 +3095,7 @@ window.__ModuleLoader__.load({
 		// -------------------------------------------------------------------
 
 		function TopBar(props) {
-			const { t, snapshot, project, projectRoot, busy, onNew, onOpen, onSave, onUndo, onRedo, onExport, onCancelExport } = props;
+			const { t, snapshot, project, projectRoot, busy, onNew, onOpen, onSave, onUndo, onRedo, onExport, onCancelExport, proxyPreview, onToggleProxyPreview } = props;
 			const ffmpeg = snapshot ? snapshot.ffmpeg : null;
 			const exportState = snapshot ? snapshot.export : null;
 			const exporting = exportState && exportState.state === 'running';
@@ -3044,6 +3127,18 @@ window.__ModuleLoader__.load({
 					h(Btn, { onClick: onSave, disabled: !canSave, title: t('actions.save') }, t('actions.save')),
 					h(Btn, { onClick: onUndo, disabled: !project || !snapshot.canUndo || busy > 0, title: t('actions.undo') }, t('actions.undo')),
 					h(Btn, { onClick: onRedo, disabled: !project || !snapshot.canRedo || busy > 0, title: t('actions.redo') }, t('actions.redo')),
+					h(
+						Btn,
+						{
+							variant: 'ghost',
+							active: proxyPreview,
+							onClick: onToggleProxyPreview,
+							title: t('proxy.toggleTitle'),
+							'aria-pressed': proxyPreview ? 'true' : 'false',
+							'aria-label': t('proxy.toggle'),
+						},
+						t('proxy.toggle'),
+					),
 					h(
 						Btn,
 						{
@@ -4546,6 +4641,8 @@ window.__ModuleLoader__.load({
 				generation,
 				onOpenSearchResult,
 				onCreateCaptionsFromTranscript,
+				missingMediaIds,
+				onMediaRelinked,
 			} = props;
 			const [tab, setTab] = React.useState('project');
 			const [transcribingId, setTranscribingId] = React.useState(null);
@@ -4554,6 +4651,10 @@ window.__ModuleLoader__.load({
 			const [visionRecords, setVisionRecords] = React.useState([]);
 			const [visionBusyId, setVisionBusyId] = React.useState(null);
 			const [visionError, setVisionError] = React.useState(null);
+			const [proxyBusyId, setProxyBusyId] = React.useState(null);
+			const [proxyKnownIds, setProxyKnownIds] = React.useState(() => new Set());
+			const [relinking, setRelinking] = React.useState(null);
+			const [relinkBusy, setRelinkBusy] = React.useState(false);
 			const media = project ? project.media : [];
 			const fps = project ? project.fps : 30;
 			const asrReady = !asr || asrConfigured(asr);
@@ -4626,6 +4727,47 @@ window.__ModuleLoader__.load({
 					setVisionError(t('vision.error', { message: issue && issue.message ? issue.message : String(issue) }));
 				} finally {
 					setVisionBusyId(null);
+				}
+			};
+			const relinkErrorText = (issue) =>
+				t('media.relinkError', { message: issue && issue.message ? issue.message : String(issue) });
+			const relinkMedia = async () => {
+				if (!relinking || relinkBusy) return;
+				const path = String(relinking.path || '').trim();
+				if (path.length === 0) {
+					setRelinking(Object.assign({}, relinking, { error: t('media.relinkPathRequired') }));
+					return;
+				}
+				setRelinkBusy(true);
+				setRelinking(Object.assign({}, relinking, { error: null }));
+				try {
+					const payload = await hostPost('media/relink', { mediaId: relinking.item.id, path });
+					if (typeof onLibraryState === 'function') onLibraryState(payload);
+					if (typeof onMediaRelinked === 'function') onMediaRelinked(relinking.item.id);
+					showNotice(t('media.relinked', { name: relinking.item.name }));
+					setRelinking(null);
+				} catch (issue) {
+					setRelinking(Object.assign({}, relinking, { error: relinkErrorText(issue) }));
+				} finally {
+					setRelinkBusy(false);
+				}
+			};
+			const generateProxy = async (item) => {
+				if (proxyBusyId !== null) return;
+				setProxyBusyId(item.id);
+				try {
+					const response = await fetch(mediaProxyUrl(item.id), { method: 'HEAD' });
+					if (!response.ok) throw new Error(`HTTP ${response.status}`);
+					setProxyKnownIds((previous) => {
+						const next = new Set(previous);
+						next.add(item.id);
+						return next;
+					});
+					showNotice(t('proxy.generated', { name: item.name }));
+				} catch (issue) {
+					showNotice(t('proxy.generateError', { name: item.name, message: issue && issue.message ? issue.message : String(issue) }));
+				} finally {
+					setProxyBusyId(null);
 				}
 			};
 			const transcriptPreviewPanel = transcriptPreview
@@ -4704,6 +4846,8 @@ window.__ModuleLoader__.load({
 										title: item.name,
 										draggable: true,
 										'data-media-id': item.id,
+										'data-missing':
+											mediaMissingOf(item) || (missingMediaIds && missingMediaIds.has(item.id)) ? 'true' : 'false',
 										onDragStart: (event) => {
 											if (!event.dataTransfer) return;
 											event.dataTransfer.effectAllowed = 'copy';
@@ -4716,6 +4860,12 @@ window.__ModuleLoader__.load({
 										'div',
 										{ className: 'ots-media-thumb' },
 										h(MediaThumb, { media: item, t }),
+										item.hasProxy === true || proxyKnownIds.has(item.id)
+											? h('span', { className: 'ots-proxy-chip', title: t('proxy.badgeTitle') }, t('proxy.badge'))
+											: null,
+										mediaMissingOf(item) || (missingMediaIds && missingMediaIds.has(item.id))
+											? h('span', { className: 'ots-media-offline', title: t('media.offline') }, t('media.offline'))
+											: null,
 										h(
 											'button',
 											{
@@ -4781,6 +4931,34 @@ window.__ModuleLoader__.load({
 																),
 														)
 													: null,
+												mediaMissingOf(item) || (missingMediaIds && missingMediaIds.has(item.id))
+													? h(
+															'button',
+															{
+																type: 'button',
+																className: 'ots-mini',
+																'data-danger': 'true',
+																title: t('media.relinkTitle'),
+																'aria-label': t('media.relink'),
+																onClick: () => setRelinking({ item, path: '', error: null }),
+															},
+															t('media.relink'),
+														)
+													: null,
+												item.kind === 'video'
+													? h(
+															'button',
+															{
+																type: 'button',
+																className: 'ots-mini',
+																disabled: proxyBusyId !== null,
+																title: t('proxy.generateTitle'),
+																'aria-label': t('proxy.generate'),
+																onClick: () => void generateProxy(item),
+															},
+															proxyBusyId === item.id ? t('proxy.generating') : t('proxy.generate'),
+														)
+													: null,
 												item.kind === 'video' || item.kind === 'image'
 													? h(
 															'button',
@@ -4800,6 +4978,47 @@ window.__ModuleLoader__.load({
 								),
 							),
 						);
+			const relinkDialog = relinking
+				? h(
+						'div',
+						{
+							className: 'ots-modal-backdrop ots-modal-fixed',
+							role: 'dialog',
+							'aria-modal': 'true',
+							'aria-label': t('media.relinkTitle'),
+							onPointerDown: (event) => {
+								if (event.target === event.currentTarget && !relinkBusy) setRelinking(null);
+							},
+						},
+						h(
+							'div',
+							{ className: 'ots-modal' },
+							h('h2', { className: 'ots-modal-title' }, t('media.relinkTitle')),
+							h('p', { className: 'ots-modal-hint' }, relinking.item.name),
+							h(
+								'label',
+								{ className: 'ots-field' },
+								h('span', { className: 'ots-field-label' }, t('media.relinkPath')),
+								h('input', {
+									className: 'ots-input',
+									type: 'text',
+									value: relinking.path,
+									placeholder: t('dialog.pathPlaceholder'),
+									'aria-label': t('media.relinkPath'),
+									onChange: (event) => setRelinking(Object.assign({}, relinking, { path: event.target.value })),
+								}),
+							),
+							h('p', { className: 'ots-modal-hint' }, t('media.relinkHint')),
+							relinking.error ? h('p', { className: 'ots-modal-error', role: 'alert' }, relinking.error) : null,
+							h(
+								'div',
+								{ className: 'ots-modal-actions' },
+								h(Btn, { variant: 'ghost', onClick: () => setRelinking(null), disabled: relinkBusy }, t('actions.cancel')),
+								h(Btn, { variant: 'primary', onClick: relinkMedia, disabled: relinkBusy }, t('media.relinkConfirm')),
+							),
+						),
+					)
+				: null;
 			return h(
 				'aside',
 				{ className: 'ots-panel ots-media', 'aria-label': t('media.title') },
@@ -4938,6 +5157,7 @@ window.__ModuleLoader__.load({
 										}),
 							),
 				),
+				relinkDialog,
 			);
 		}
 
@@ -4961,8 +5181,20 @@ window.__ModuleLoader__.load({
 				onTogglePlay,
 				onToggleLoop,
 				onVolumeChange,
+				proxyPreview,
+				missingMediaIds,
 			} = props;
 			const fps = project ? project.fps : 30;
+			const missingFrame = Boolean(
+				project &&
+					activeClipsAt(project, currentFrame).some((row) => {
+						if (!row.clip.mediaId || row.clip.type === 'audio') return false;
+						const media = findMedia(project, row.clip.mediaId);
+						return media
+							? mediaMissingOf(media) || (missingMediaIds && missingMediaIds.has(media.id))
+							: false;
+					}),
+			);
 			return h(
 				'section',
 				{ className: 'ots-center', 'aria-label': t('preview.canvas') },
@@ -4984,6 +5216,14 @@ window.__ModuleLoader__.load({
 							role: 'img',
 						}),
 						emptyFrame ? h('span', { className: 'ots-canvas-hint' }, t('preview.emptyFrame')) : null,
+						missingFrame
+							? h(
+									'div',
+									{ className: 'ots-missing-overlay' },
+									h('span', { className: 'ots-missing-overlay-title' }, t('media.missingPreview')),
+									h('span', { className: 'ots-missing-overlay-hint' }, t('media.missingPreviewHint')),
+								)
+							: null,
 					),
 				),
 				h(
@@ -5013,6 +5253,9 @@ window.__ModuleLoader__.load({
 					),
 					h('span', { className: 'ots-timecode' }, `${formatTimecode(currentFrame, fps)} / ${formatTimecode(duration, fps)}`),
 					h('span', { className: 'ots-frame-count' }, `${Math.round(currentFrame)} / ${Math.round(duration)}`),
+					proxyPreview
+						? h('span', { className: 'ots-proxy-badge', title: t('proxy.badgeTitle') }, t('proxy.badge'))
+						: null,
 					h('span', { className: 'ots-control-spacer' }),
 					h(
 						'div',
@@ -6131,8 +6374,15 @@ window.__ModuleLoader__.load({
 				onAddMarker,
 				onUpdateMarker,
 				onRemoveMarker,
+				missingMediaIds,
 			} = props;
 			const title = selected ? t(`inspector.kind${selected.clip.type.charAt(0).toUpperCase()}${selected.clip.type.slice(1)}`) : t('inspector.project');
+			const selectedMedia =
+				selected && selected.clip.mediaId && project ? findMedia(project, selected.clip.mediaId) : null;
+			const selectedMissing = Boolean(
+				selectedMedia &&
+					(mediaMissingOf(selectedMedia) || (missingMediaIds && missingMediaIds.has(selectedMedia.id))),
+			);
 			const body = [];
 			if (!selected) {
 				const projectInfo = project
@@ -6534,6 +6784,9 @@ window.__ModuleLoader__.load({
 				'aside',
 				{ className: 'ots-panel ots-inspector', 'aria-label': t('inspector.title') },
 				h('div', { className: 'ots-panel-head' }, h('span', { className: 'ots-panel-title' }, t('inspector.title'))),
+				selectedMissing
+					? h('div', { className: 'ots-media-warning', role: 'status' }, t('media.missingInspector'))
+					: null,
 				h('div', { className: 'ots-panel-body' }, body),
 			);
 		}
@@ -6652,6 +6905,7 @@ window.__ModuleLoader__.load({
 				onAddText,
 				onUpdateTrack,
 				onRemoveTrack,
+				missingMediaIds,
 			} = props;
 			const scrollRef = React.useRef(null);
 			const rowRefs = React.useRef({});
@@ -7140,6 +7394,11 @@ window.__ModuleLoader__.load({
 				const width = Math.max(2, Math.round(durationFrames * zoom));
 				const label = clipDisplayLabel(project, clip, t('inspector.clip'));
 				const selected = Array.isArray(selectedClipIds) && selectedClipIds.includes(clip.id);
+				const clipMedia = clip.mediaId ? findMedia(project, clip.mediaId) : null;
+				const offline = Boolean(
+					clip.mediaId &&
+						((missingMediaIds && missingMediaIds.has(clip.mediaId)) || mediaMissingOf(clipMedia)),
+				);
 				return h(
 					'div',
 					{
@@ -7147,9 +7406,10 @@ window.__ModuleLoader__.load({
 						className: 'ots-clip',
 						'data-kind': clip.type,
 						'data-selected': selected ? 'true' : 'false',
+						'data-offline': offline ? 'true' : 'false',
 						'data-dragging': dragState && dragState.clip.id === clip.id ? 'true' : 'false',
 						style: { left: Math.round(startFrame * zoom), width },
-						title: `${label} · ${formatTimecode(startFrame, fps)} – ${formatTimecode(startFrame + durationFrames, fps)}`,
+						title: `${label} · ${formatTimecode(startFrame, fps)} – ${formatTimecode(startFrame + durationFrames, fps)}${offline ? ` · ${t('media.offline')}` : ''}`,
 						'aria-label': label,
 						tabIndex: 0,
 						onPointerDown: (event) => beginClipDrag(event, track, clip),
@@ -7161,6 +7421,7 @@ window.__ModuleLoader__.load({
 						},
 					},
 					width > 28 ? h('span', { className: 'ots-clip-label' }, label) : null,
+					offline ? h('span', { className: 'ots-clip-offline-badge', title: t('media.offline') }, '!') : null,
 					h('span', {
 						className: 'ots-clip-handle ots-clip-handle-start',
 						onPointerDown: (event) => beginTrim(event, track, clip, 'start'),
@@ -7713,6 +7974,9 @@ window.__ModuleLoader__.load({
 			const [pollError, setPollError] = React.useState(null);
 			const [actionError, setActionError] = React.useState(null);
 			const [notice, setNotice] = React.useState(null);
+			const [proxyPreview, setProxyPreview] = React.useState(() => readProxyPreviewPreference());
+			const [proxyFailedIds, setProxyFailedIds] = React.useState(() => new Set());
+			const [missingMediaIds, setMissingMediaIds] = React.useState(() => new Set());
 			const [selectedClipIds, setSelectedClipIds] = React.useState([]);
 			const [snapping, setSnapping] = React.useState(true);
 			const [currentFrame, setCurrentFrame] = React.useState(0);
@@ -7769,6 +8033,38 @@ window.__ModuleLoader__.load({
 			const fps = project ? project.fps : 30;
 			const duration = project ? timelineDurationFrames(project) : 0;
 
+			const toggleProxyPreview = () => {
+				const next = !proxyPreview;
+				setProxyPreview(next);
+				writeProxyPreviewPreference(next);
+				setProxyFailedIds(new Set());
+			};
+			const handleProxyVideoError = (media) => {
+				if (!proxyPreview || proxyFailedIds.has(media.id)) return;
+				setProxyFailedIds((previous) => {
+					const next = new Set(previous);
+					next.add(media.id);
+					return next;
+				});
+				showNotice(t('proxy.fallback', { name: media.name }));
+			};
+			const markMediaMissing = (media) => {
+				if (!media || missingMediaIds.has(media.id)) return;
+				setMissingMediaIds((previous) => {
+					const next = new Set(previous);
+					next.add(media.id);
+					return next;
+				});
+				showNotice(t('media.missingDetected', { name: media.name }));
+			};
+			const handleMediaRelinked = (mediaId) => {
+				setMissingMediaIds((previous) => {
+					if (!previous.has(mediaId)) return previous;
+					const next = new Set(previous);
+					next.delete(mediaId);
+					return next;
+				});
+			};
 			const showNotice = (message) => {
 				if (!message) return;
 				setNotice(message);
@@ -8941,6 +9237,8 @@ window.__ModuleLoader__.load({
 					onRedo: handleRedo,
 					onExport: handleExport,
 					onCancelExport: handleCancelExport,
+					proxyPreview,
+					onToggleProxyPreview: toggleProxyPreview,
 				}),
 				banners.length > 0 ? h('div', { className: 'ots-banners' }, banners) : null,
 				initializing && !snapshot
@@ -8971,6 +9269,8 @@ window.__ModuleLoader__.load({
 										generation: snapshot ? snapshot.generation : null,
 										onOpenSearchResult: handleOpenSearchResult,
 										onCreateCaptionsFromTranscript: handleCreateCaptionsFromTranscript,
+										missingMediaIds,
+										onMediaRelinked: handleMediaRelinked,
 										onImport: handleImport,
 										onAddMedia: handleAddMedia,
 										onDropFiles: handleDropFiles,
@@ -8990,6 +9290,8 @@ window.__ModuleLoader__.load({
 										onTogglePlay: togglePlay,
 										onToggleLoop: () => setLoop((value) => !value),
 										onVolumeChange: (value) => setMonitorVolume(clamp01(value)),
+										proxyPreview,
+										missingMediaIds,
 									}),
 									h(Inspector, {
 										t,
@@ -9026,6 +9328,7 @@ window.__ModuleLoader__.load({
 										onUpdateMarker: handleUpdateMarker,
 										onRemoveMarker: handleRemoveMarker,
 										onSeek: seekToFrame,
+										missingMediaIds,
 									}),
 								),
 								h(
@@ -9034,11 +9337,12 @@ window.__ModuleLoader__.load({
 									project.media.flatMap((media) => {
 										const nodes = [];
 										if (media.kind === 'video') {
+											const useProxy = proxyPreview && !proxyFailedIds.has(media.id);
 											nodes.push(
 												h('video', {
-													key: `${media.id}-video`,
+													key: `${media.id}-video-${useProxy ? 'proxy' : 'original'}-${media.fileName || ''}`,
 													ref: setMediaElement(media.id, 'video'),
-													src: mediaFileUrl(media.id),
+													src: useProxy ? mediaProxyUrl(media.id) : mediaFileUrl(media.id),
 													muted: true,
 													playsInline: true,
 													preload: 'auto',
@@ -9046,27 +9350,33 @@ window.__ModuleLoader__.load({
 													onLoadedData: () => refreshFrameRef.current && refreshFrameRef.current(),
 													onCanPlay: () => refreshFrameRef.current && refreshFrameRef.current(),
 													onSeeked: () => scheduleDrawRef.current && scheduleDrawRef.current(),
+													onError: () => {
+														if (useProxy) handleProxyVideoError(media);
+														else markMediaMissing(media);
+													},
 												}),
 											);
 										}
 										if (media.kind === 'audio' || (media.kind === 'video' && media.hasAudio)) {
 											nodes.push(
 												h('audio', {
-													key: `${media.id}-audio`,
+													key: `${media.id}-audio-${media.fileName || ''}`,
 													ref: setMediaElement(media.id, 'audio'),
 													src: mediaFileUrl(media.id),
 													preload: 'auto',
+													onError: () => markMediaMissing(media),
 												}),
 											);
 										}
 										if (media.kind === 'image') {
 											nodes.push(
 												h('img', {
-													key: `${media.id}-image`,
+													key: `${media.id}-image-${media.fileName || ''}`,
 													ref: setMediaElement(media.id, 'image'),
 													src: mediaFileUrl(media.id),
 													alt: '',
 													onLoad: () => scheduleDrawRef.current && scheduleDrawRef.current(),
+													onError: () => markMediaMissing(media),
 												}),
 											);
 										}
@@ -9102,6 +9412,7 @@ window.__ModuleLoader__.load({
 									onAddText: handleAddText,
 									onUpdateTrack: handleUpdateTrack,
 									onRemoveTrack: handleRemoveTrack,
+									missingMediaIds,
 								}),
 							),
 				dialog

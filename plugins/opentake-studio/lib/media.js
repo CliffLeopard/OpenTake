@@ -931,3 +931,75 @@ export async function ensureThumbnail({ projectRoot, media, atFrame } = {}) {
   }
   return destination;
 }
+
+
+// ---------------------------------------------------------------------------
+// Proxy media
+// ---------------------------------------------------------------------------
+
+export const PROXY_DIR = 'proxies';
+export const DEFAULT_PROXY_HEIGHT = 360;
+
+/** Resolve the proxy file path for a media asset (validated inside root). */
+export function proxyFilePath(projectRoot, media) {
+  if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
+    throw new MediaError('proxyFilePath requires a projectRoot path', 'invalid-input');
+  }
+  if (media === null || typeof media !== 'object' || typeof media.id !== 'string') {
+    throw new MediaError('proxyFilePath requires a media object', 'invalid-input');
+  }
+  const root = path.resolve(projectRoot);
+  const dir = path.join(root, PROXY_DIR);
+  const file = path.join(dir, `${path.basename(media.id)}.mp4`);
+  if (!file.startsWith(`${dir}${path.sep}`)) {
+    throw new MediaError('Proxy path escapes the project proxies directory', 'invalid-input');
+  }
+  return file;
+}
+
+/**
+ * Generate (or reuse) a low-resolution preview proxy for a video asset.
+ * Export always uses the original file; proxies are preview-only.
+ */
+export async function ensureProxy({ projectRoot, media, height = DEFAULT_PROXY_HEIGHT } = {}) {
+  if (media === null || typeof media !== 'object') {
+    throw new MediaError('ensureProxy requires a media object', 'invalid-input');
+  }
+  if (media.kind !== 'video') {
+    throw new MediaError('Proxies are only generated for video media', 'invalid-input');
+  }
+  const tools = resolveTools();
+  if (tools.ffmpeg === null) {
+    throw new MediaError('ffmpeg is not available (set OPENTAKE_STUDIO_FFMPEG or install ffmpeg)', 'ffmpeg-unavailable');
+  }
+  const source = mediaFilePath(projectRoot, media);
+  const destination = proxyFilePath(projectRoot, media);
+  try {
+    const info = await stat(destination);
+    if (info.isFile() && info.size > 0) return destination;
+  } catch {
+    // Generate below.
+  }
+  await mkdir(path.dirname(destination), { recursive: true });
+  const targetHeight = Math.max(120, Math.min(720, Math.round(Number(height) || DEFAULT_PROXY_HEIGHT)));
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-i', source,
+    '-vf', `scale=-2:${targetHeight}`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+    '-pix_fmt', 'yuv420p', '-an', '-movflags', '+faststart',
+    destination,
+  ];
+  try {
+    await runFfmpeg(args, { signal: AbortSignal.timeout(300_000) });
+  } catch (error) {
+    await rm(destination, { force: true }).catch(() => {});
+    throw new MediaError(`Proxy generation failed for media ${media.id}`, 'ffmpeg-failed', { cause: error });
+  }
+  const generated = await stat(destination).catch(() => null);
+  if (generated === null || !generated.isFile() || generated.size === 0) {
+    await rm(destination, { force: true }).catch(() => {});
+    throw new MediaError(`Proxy generation produced no file for media ${media.id}`, 'ffmpeg-failed');
+  }
+  return destination;
+}

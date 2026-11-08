@@ -54,6 +54,8 @@ const PREFIX = '/opentake-studio';
 const EXPECTED_TOOLS = [
   'opentake_studio_get_state',
   'opentake_studio_list_media',
+  'opentake_studio_create_proxy',
+  'opentake_studio_relink_media',
   'opentake_studio_edit',
   'opentake_studio_rename_project',
   'opentake_studio_update_track',

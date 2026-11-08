@@ -175,6 +175,8 @@ Importing only fills the media library; it does not add clips to the timeline.
 - **Blend modes**: normal/screen/multiply/overlay/darken/lighten/add/difference;
   true blend only for full-frame static clips, otherwise overlay fallback.
 - **Track volume**: 0–2 per-track gain in preview and export (mute still wins).
+- **Proxies**: lazily generated 360p H.264 preview proxies; export keeps originals.
+- **Relink**: missing media can be relinked to a new file while clips keep the media id.
 - **Transcription**: optional Whisper-compatible endpoint; per-media
   transcribe action, transcript storage, caption generation, and a Transcripts
   tab. Requires `OPENTAKE_STUDIO_ASR_URL` (or defaults to OpenAI) and a key.
@@ -299,6 +301,8 @@ MCP endpoint, client or credential is involved.
 | `opentake_studio_generate_speech` | `text`, `voice?`, `model?` | Generates speech audio with the configured provider and adds it to the project. |
 | `opentake_studio_generate_video` | `prompt`, `aspectRatio?`, `duration?` | Generates a short video with the configured fal.ai queue model and adds it to the project. |
 | `opentake_studio_index_media_vision` | `mediaId` | Describes an image/video thumbnail with the vision provider and stores it for search. |
+| `opentake_studio_create_proxy` | `mediaId` | Generates/caches a 360p preview proxy for a video. |
+| `opentake_studio_relink_media` | `mediaId`, `path` | Relinks a missing media asset to a new absolute file. |
 | `opentake_studio_library_list` | `query?`, `kind?`, `favorite?`, `category?` | Lists the global media library. |
 | `opentake_studio_library_import` | `path` | Imports an absolute folder into the global library (content-deduped). |
 | `opentake_studio_library_add_to_project` | `id` | Adds a library asset to the current project. |
@@ -499,7 +503,7 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **339/339 tests pass**, 35 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **350/350 tests pass**, 36 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |

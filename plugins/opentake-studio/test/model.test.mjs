@@ -4562,3 +4562,284 @@ describe('track role and ducking', () => {
     assert.deepEqual(normalizeProject(next), next);
   });
 });
+
+// ===========================================================================
+// Phase 12: relink media (same media id, refreshed file/probe metadata).
+// ===========================================================================
+
+describe('relink-media', () => {
+  it('relinks the file name in place and keeps id, metadata and clips', () => {
+    let project = fixture();
+    project = addClip(project, {
+      clipId: 'c1',
+      mediaId: 'm-video',
+      trackId: 't-video',
+      startFrame: 0,
+      durationFrames: 100,
+    });
+    const before = findMedia(project, 'm-video');
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-video',
+      fileName: 'new-source.mp4',
+    });
+    const media = findMedia(project, 'm-video');
+    assert.equal(media.id, 'm-video');
+    assert.equal(media.fileName, 'new-source.mp4');
+    assert.equal(media.name, before.name);
+    assert.equal(media.kind, before.kind);
+    assert.equal(media.durationFrames, before.durationFrames);
+    assert.equal(media.sourceDurationSeconds, before.sourceDurationSeconds);
+    assert.equal(media.width, before.width);
+    assert.equal(media.height, before.height);
+    assert.equal(media.hasAudio, before.hasAudio);
+    assert.equal(media.sizeBytes, before.sizeBytes);
+    assert.equal(media.importedAt, before.importedAt);
+    assert.equal(project.media.length, 4);
+    const clip = clipById(project, 'c1');
+    assert.equal(clip.mediaId, 'm-video');
+    assert.equal(clip.durationFrames, 100);
+  });
+
+  it('updates provided metadata fields only, preserves importedAt and ignores unknown fields', () => {
+    let project = emptyProject();
+    project = applyOperation(project, {
+      type: 'add-media',
+      media: media({ id: 'm', durationFrames: 300 }),
+    });
+    const importedAt = findMedia(project, 'm').importedAt;
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm',
+      fileName: 'fresh.mp4',
+      name: 'Fresh',
+      kind: 'video',
+      durationFrames: 450,
+      sourceDurationSeconds: 15,
+      width: 1280,
+      height: 720,
+      hasAudio: false,
+      sizeBytes: 2048,
+      importedAt: 1,
+      bogus: true,
+    });
+    const relinked = findMedia(project, 'm');
+    assert.deepEqual(relinked, {
+      id: 'm',
+      name: 'Fresh',
+      kind: 'video',
+      fileName: 'fresh.mp4',
+      durationFrames: 450,
+      sourceDurationSeconds: 15,
+      width: 1280,
+      height: 720,
+      hasAudio: false,
+      sizeBytes: 2048,
+      importedAt,
+    });
+    assert.equal(relinked.importedAt, importedAt);
+  });
+
+  it('supports partial metadata updates, including null width/height', () => {
+    let project = fixture();
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-video',
+      fileName: 'm-video.mp4',
+      name: '',
+      width: null,
+      height: 720,
+      hasAudio: false,
+    });
+    const media = findMedia(project, 'm-video');
+    assert.equal(media.name, '');
+    assert.equal(media.width, null);
+    assert.equal(media.height, 720);
+    assert.equal(media.hasAudio, false);
+    assert.equal(media.durationFrames, 300);
+
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-video',
+      fileName: 'm-video.mp4',
+      durationFrames: 600,
+    });
+    assert.equal(findMedia(project, 'm-video').durationFrames, 600);
+  });
+
+  it('allows kind changes when no clip references the media', () => {
+    let project = fixture();
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-video2',
+      fileName: 'still.png',
+      kind: 'image',
+    });
+    let media = findMedia(project, 'm-video2');
+    assert.equal(media.kind, 'image');
+    assert.equal(media.durationFrames, null);
+    assert.equal(media.hasAudio, false);
+
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-video2',
+      fileName: 'clip.mp4',
+      kind: 'video',
+      durationFrames: 120,
+    });
+    media = findMedia(project, 'm-video2');
+    assert.equal(media.kind, 'video');
+    assert.equal(media.durationFrames, 120);
+
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-image',
+      fileName: 'photo.jpg',
+      kind: 'image',
+    });
+    assert.equal(findMedia(project, 'm-image').fileName, 'photo.jpg');
+  });
+
+  it('rejects a kind change that no longer matches referencing clips', () => {
+    let project = fixture();
+    project = addClip(project, {
+      clipId: 'c1',
+      mediaId: 'm-video',
+      trackId: 't-video',
+      startFrame: 0,
+      durationFrames: 50,
+    });
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'relink-media',
+          mediaId: 'm-video',
+          fileName: 'sound.wav',
+          kind: 'audio',
+          durationFrames: 300,
+        }),
+      'invalid-input',
+    );
+  });
+
+  it('rejects relinks that break a clip source window', () => {
+    let project = fixture();
+    project = addClip(project, {
+      clipId: 'c1',
+      mediaId: 'm-video',
+      trackId: 't-video',
+      startFrame: 0,
+      trimStartFrame: 200,
+      durationFrames: 100,
+    });
+    const before = JSON.stringify(project);
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'relink-media',
+          mediaId: 'm-video',
+          fileName: 'short.mp4',
+          durationFrames: 250,
+        }),
+      'out-of-bounds',
+    );
+    assert.equal(JSON.stringify(project), before);
+  });
+
+  it('rejects unknown media ids and invalid field values', () => {
+    const project = fixture();
+    const relink = (patch) =>
+      applyOperation(project, { type: 'relink-media', mediaId: 'm-video', fileName: 'ok.mp4', ...patch });
+    expectModelError(
+      () => applyOperation(project, { type: 'relink-media', mediaId: 'ghost', fileName: 'ok.mp4' }),
+      'media-not-found',
+    );
+    expectModelError(
+      () => applyOperation(project, { type: 'relink-media', fileName: 'ok.mp4' }),
+      'invalid-input',
+    );
+    for (const fileName of [undefined, '', 42, 'dir/a.mp4', 'a\\b.mp4', '..', '.', '/tmp/a.mp4', 'C:\\a.mp4', 'a\u0000b.mp4']) {
+      expectModelError(() => relink({ fileName }), 'invalid-input');
+    }
+    expectModelError(() => relink({ kind: 'pdf' }), 'invalid-input');
+    for (const durationFrames of [0, -1, 1.5, '300', Number.NaN]) {
+      expectModelError(() => relink({ durationFrames }), 'invalid-input');
+    }
+    expectModelError(() => relink({ kind: 'image', durationFrames: 100 }), 'invalid-input');
+    expectModelError(() => relink({ durationFrames: null }), 'invalid-input');
+    expectModelError(() => relink({ sourceDurationSeconds: -1 }), 'invalid-input');
+    expectModelError(() => relink({ sourceDurationSeconds: 'x' }), 'invalid-input');
+    expectModelError(() => relink({ width: 0 }), 'invalid-input');
+    expectModelError(() => relink({ width: 1.5 }), 'invalid-input');
+    expectModelError(() => relink({ height: -2 }), 'invalid-input');
+    expectModelError(() => relink({ hasAudio: 'yes' }), 'invalid-input');
+    expectModelError(() => relink({ sizeBytes: -1 }), 'invalid-input');
+    expectModelError(() => relink({ sizeBytes: 1.5 }), 'invalid-input');
+    // A bare file name with spaces/parentheses is allowed.
+    assert.doesNotThrow(() => relink({ fileName: 'clip 01 (final).mp4' }));
+    // Image media may use an explicit null duration.
+    assert.doesNotThrow(() =>
+      applyOperation(project, {
+        type: 'relink-media',
+        mediaId: 'm-image',
+        fileName: 'still.png',
+        durationFrames: null,
+      }),
+    );
+  });
+
+  it('requires a duration when changing image media to video/audio', () => {
+    const project = fixture();
+    expectModelError(
+      () =>
+        applyOperation(project, {
+          type: 'relink-media',
+          mediaId: 'm-image',
+          fileName: 'photo.mp4',
+          kind: 'video',
+        }),
+      'invalid-input',
+    );
+  });
+
+  it('keeps every clip that references the media across tracks', () => {
+    let project = fixture();
+    project = addClip(project, {
+      clipId: 'v1',
+      mediaId: 'm-video',
+      trackId: 't-video',
+      startFrame: 0,
+      durationFrames: 50,
+    });
+    project = addClip(project, {
+      clipId: 'v2',
+      mediaId: 'm-video',
+      trackId: 't-video2',
+      startFrame: 100,
+      durationFrames: 50,
+    });
+    const clipSnapshot = JSON.stringify([clipById(project, 'v1'), clipById(project, 'v2')]);
+    project = applyOperation(project, {
+      type: 'relink-media',
+      mediaId: 'm-video',
+      fileName: 'replaced.mp4',
+      durationFrames: 500,
+    });
+    assert.equal(JSON.stringify([clipById(project, 'v1'), clipById(project, 'v2')]), clipSnapshot);
+    assert.equal(findClip(project, 'v1').track.id, 't-video');
+    assert.equal(findClip(project, 'v2').track.id, 't-video2');
+  });
+
+  it('is pure, deterministic and normalize-idempotent', () => {
+    const project = fixture();
+    const before = JSON.stringify(project);
+    const operation = { type: 'relink-media', mediaId: 'm-video', fileName: 'next.mp4', durationFrames: 320 };
+    const operationBefore = JSON.stringify(operation);
+    const first = applyOperation(project, operation);
+    assert.equal(JSON.stringify(project), before);
+    assert.equal(JSON.stringify(operation), operationBefore);
+    assert.deepEqual(normalizeProject(first), first);
+    assert.equal(findMedia(first, 'm-video').fileName, 'next.mp4');
+    assert.equal(findMedia(first, 'm-video').durationFrames, 320);
+  });
+});

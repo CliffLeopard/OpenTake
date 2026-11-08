@@ -9,7 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync } from 'node:fs';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link as linkFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -22,11 +22,14 @@ import {
 } from './lib/model.js';
 import { createProjectAt, openProjectAt, saveProjectAt } from './lib/project.js';
 import {
+  ensureProxy,
   ensureThumbnail,
   importToProject,
+  isMediaFile,
   mediaFilePath,
   mediaMimeType,
   probeMedia,
+  proxyFilePath,
   resolveTools,
 } from './lib/media.js';
 import { defaultExtensionForCodec, runExport } from './lib/export.js';
@@ -617,6 +620,60 @@ export function apply(ctx) {
     });
   }
 
+  async function relinkProjectMedia(input) {
+    const project = ensureProject();
+    const media = findMedia(project, input.mediaId);
+    if (media === null) throw new RouteError('Unknown media id', 'invalid-input');
+    const sourcePath = typeof input.path === 'string' ? path.resolve(input.path) : '';
+    if (sourcePath.length === 0) throw new RouteError('A new media path is required', 'invalid-input');
+    if (!isMediaFile(sourcePath)) throw new RouteError('The new file is not a supported media file', 'invalid-input');
+    const info = await stat(sourcePath).catch(() => null);
+    if (info === null || !info.isFile()) throw new RouteError('The new media file does not exist', 'invalid-input');
+    const probe = await probeMedia(sourcePath);
+    const base = path.basename(sourcePath)
+      .replace(/[^\u0000-\u001f\u007f/\\:*?"<>|]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const fileName = `${media.id}-${(base || 'media').slice(0, 140)}`;
+    const dir = path.join(state.paths.root, 'media');
+    await mkdir(dir, { recursive: true });
+    const target = path.join(dir, fileName);
+    await linkFile(sourcePath, target).catch(async () => {
+      await copyFile(sourcePath, target);
+    });
+    const fps = project.fps;
+    const result = await applyOperations([
+      {
+        type: 'relink-media',
+        mediaId: media.id,
+        fileName,
+        name: path.basename(sourcePath),
+        kind: probe.kind,
+        durationFrames:
+          probe.durationSeconds === null ? null : Math.max(1, Math.round(probe.durationSeconds * fps)),
+        sourceDurationSeconds: probe.durationSeconds,
+        width: probe.width,
+        height: probe.height,
+        hasAudio: probe.hasAudio,
+        sizeBytes: probe.sizeBytes,
+      },
+    ]);
+    // A relinked asset invalidates the old preview proxy and thumbnail cache.
+    await rm(proxyFilePath(state.paths.root, media), { force: true }).catch(() => {});
+    await rm(path.join(state.paths.root, 'thumbnails', `${media.id}.jpg`), { force: true }).catch(() => {});
+    return result;
+  }
+
+  async function serveMediaProxy(req, res, mediaId) {
+    const project = ensureProject();
+    const media = findMedia(project, mediaId);
+    if (media === null || media.kind !== 'video') {
+      throw new RouteError('Proxy not found', 'media-not-found', 404);
+    }
+    const proxy = await ensureProxy({ projectRoot: state.paths.root, media });
+    await serveFileWithRange(req, res, proxy, 'video/mp4');
+  }
+
   async function serveMediaFile(req, res, mediaId) {
     const project = ensureProject();
     const media = findMedia(project, mediaId);
@@ -731,6 +788,8 @@ export function apply(ctx) {
         durationFrames: media.durationFrames,
         width: media.width,
         height: media.height,
+        ...(media.kind === 'video' ? { hasProxy: existsSync(proxyFilePath(state.paths.root, media)) } : {}),
+        missing: !existsSync(mediaFilePath(state.paths.root, media)),
       })),
       tracks: project.tracks.map((track) => ({
         id: track.id,
@@ -1294,6 +1353,14 @@ export function apply(ctx) {
         sendJson(res, 200, await uploadMedia(req, url.searchParams.get('name') ?? ''));
         return;
       }
+      if (sub === '/media/relink' && req.method === 'POST') {
+        sendJson(res, 200, await relinkProjectMedia(await readBoundedJson(req)));
+        return;
+      }
+      if (sub.startsWith('/media/proxy/') && (req.method === 'GET' || req.method === 'HEAD')) {
+        await serveMediaProxy(req, res, safeDecode(sub.slice('/media/proxy/'.length), 'media id'));
+        return;
+      }
       if (sub.startsWith('/media/file/') && (req.method === 'GET' || req.method === 'HEAD')) {
         await serveMediaFile(req, res, safeDecode(sub.slice('/media/file/'.length), 'media id'));
         return;
@@ -1463,6 +1530,40 @@ export function apply(ctx) {
       const project = ensureProject();
       const media = summaryOf(project).media;
       return { text: JSON.stringify(media), data: { media } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_create_proxy',
+    'Generate a low-resolution preview proxy for a project video (export still uses the original).',
+    {
+      type: 'object',
+      properties: { mediaId: { type: 'string' } },
+      required: ['mediaId'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const project = ensureProject();
+      const media = findMedia(project, args.mediaId);
+      if (media === null) throw new RouteError('Unknown media id', 'invalid-input');
+      if (media.kind !== 'video') throw new RouteError('Proxies require video media', 'invalid-input');
+      const proxy = await ensureProxy({ projectRoot: state.paths.root, media });
+      return { text: `Proxy ready: ${proxy}`, data: { mediaId: media.id, proxy } };
+    },
+  );
+
+  registerTool(
+    'opentake_studio_relink_media',
+    'Relink a missing project media asset to a new absolute file path; clips keep the same media id.',
+    {
+      type: 'object',
+      properties: { mediaId: { type: 'string' }, path: { type: 'string' } },
+      required: ['mediaId', 'path'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const result = await relinkProjectMedia(args);
+      return { text: JSON.stringify(summaryOf(result.project)), data: summaryOf(result.project) };
     },
   );
 

@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   MediaError,
+  ensureProxy,
   ensureThumbnail,
   importToProject,
   isMediaFile,
@@ -15,6 +16,7 @@ import {
   mediaKindForFile,
   mediaMimeType,
   probeMedia,
+  proxyFilePath,
   resetToolCache,
   resolveTools,
   runFfmpeg,
@@ -505,4 +507,42 @@ it('rejects invalid thumbnail inputs', async () => {
     ensureThumbnail({ projectRoot: path.join(tempRoot, 'bad-thumb'), media: { id: 'x', fileName: '../escape.mp4' } }),
     (error) => error instanceof MediaError && error.code === 'invalid-path',
   );
+});
+
+it('generates and caches a 360p preview proxy', { skip: toolSkip }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'ots-proxy-'));
+  try {
+    const mediaDir = path.join(root, 'media');
+    await mkdir(mediaDir, { recursive: true });
+    const source = path.join(mediaDir, 'video.mp4');
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc=size=1280x720:rate=30:duration=1',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', source,
+    ]);
+    const media = {
+      id: 'proxy-media',
+      name: 'video.mp4',
+      kind: 'video',
+      fileName: 'video.mp4',
+      durationFrames: 30,
+      sourceDurationSeconds: 1,
+      width: 1280,
+      height: 720,
+      hasAudio: false,
+      sizeBytes: 1,
+      importedAt: Date.now(),
+    };
+    const first = await ensureProxy({ projectRoot: root, media });
+    const second = await ensureProxy({ projectRoot: root, media });
+    assert.equal(first, second);
+    assert.ok((await stat(first)).size > 0);
+    const probe = await probeMedia(first);
+    assert.equal(probe.height, 360);
+    assert.equal(probe.width, 640);
+    assert.equal(probe.hasAudio, false);
+    assert.equal(proxyFilePath(root, media), first);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

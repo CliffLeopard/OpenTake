@@ -1668,6 +1668,140 @@ function removeMediaOperation(project, operation) {
   }
 }
 
+/** A relinked file name must be a bare media file name, not a path. */
+function isSafeMediaFileName(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  if (value === '.' || value === '..') return false;
+  if (/[\\/\u0000-\u001f]/.test(value)) return false;
+  if (/^[A-Za-z]:/.test(value)) return false;
+  return true;
+}
+
+/**
+ * Relink an existing media asset to a new file and/or refreshed probe metadata.
+ *
+ * The media `id` is kept, so every clip referencing it survives unchanged. Only
+ * supplied metadata fields are replaced, `importedAt` is preserved, and unknown
+ * operation fields are ignored. A kind change must stay compatible with the
+ * clips that reference the media.
+ */
+function relinkMediaOperation(project, operation) {
+  const mediaId = requireId(operation.mediaId, 'invalid-input', 'mediaId');
+  const index = project.media.findIndex((media) => media.id === mediaId);
+  if (index < 0) fail('media-not-found', `media not found: ${mediaId}`);
+  const current = project.media[index];
+
+  if (!isSafeMediaFileName(operation.fileName)) {
+    fail('invalid-input', 'fileName must be a non-empty bare media file name');
+  }
+  const fileName = operation.fileName;
+
+  const kind = operation.kind === undefined ? current.kind : operation.kind;
+  if (!MEDIA_KINDS.includes(kind)) {
+    fail('invalid-input', `kind must be one of ${MEDIA_KINDS.join('/')}`);
+  }
+  const name =
+    operation.name === undefined
+      ? current.name
+      : requireString(operation.name, 'invalid-input', 'name');
+
+  let sourceDurationSeconds = current.sourceDurationSeconds;
+  if (operation.sourceDurationSeconds !== undefined) {
+    if (operation.sourceDurationSeconds === null) {
+      sourceDurationSeconds = null;
+    } else {
+      sourceDurationSeconds = requireFiniteNumber(
+        operation.sourceDurationSeconds,
+        'invalid-input',
+        'sourceDurationSeconds',
+      );
+      if (sourceDurationSeconds < 0) {
+        fail('invalid-input', 'sourceDurationSeconds must be >= 0');
+      }
+    }
+  }
+
+  let durationFrames = current.durationFrames;
+  if (operation.durationFrames !== undefined) {
+    if (operation.durationFrames === null) {
+      if (kind !== 'image') {
+        fail('invalid-input', 'durationFrames can be null only for image media');
+      }
+      durationFrames = null;
+    } else {
+      durationFrames = requirePositiveInteger(
+        operation.durationFrames,
+        'invalid-input',
+        'durationFrames',
+      );
+      if (kind === 'image') {
+        fail('invalid-input', 'image media must have durationFrames: null');
+      }
+    }
+  } else if (kind === 'image') {
+    durationFrames = null;
+  } else if (durationFrames === null) {
+    if (sourceDurationSeconds === null) {
+      fail('invalid-input', 'durationFrames is required for video/audio media');
+    }
+    durationFrames = Math.max(1, Math.round(sourceDurationSeconds * project.fps));
+  }
+
+  let width = current.width;
+  if (operation.width !== undefined) {
+    width =
+      operation.width === null
+        ? null
+        : requirePositiveInteger(operation.width, 'invalid-input', 'width');
+  }
+  let height = current.height;
+  if (operation.height !== undefined) {
+    height =
+      operation.height === null
+        ? null
+        : requirePositiveInteger(operation.height, 'invalid-input', 'height');
+  }
+
+  const hasAudio =
+    operation.hasAudio === undefined
+      ? current.hasAudio
+      : requireBoolean(operation.hasAudio, 'invalid-input', 'hasAudio');
+  const sizeBytes =
+    operation.sizeBytes === undefined
+      ? current.sizeBytes
+      : requireInteger(operation.sizeBytes, 'invalid-input', 'sizeBytes', 0);
+
+  if (kind !== current.kind) {
+    for (const track of project.tracks) {
+      for (const clip of track.clips) {
+        if (clip.mediaId === mediaId && clip.type !== kind) {
+          fail(
+            'invalid-input',
+            `relinked kind ${kind} does not match existing clip ${clip.id} (${clip.type})`,
+          );
+        }
+      }
+    }
+  }
+
+  project.media[index] = normalizeMedia(
+    {
+      id: mediaId,
+      name,
+      kind,
+      fileName,
+      durationFrames,
+      sourceDurationSeconds,
+      width,
+      height,
+      hasAudio: kind === 'image' ? false : hasAudio,
+      sizeBytes,
+      importedAt: current.importedAt,
+    },
+    project.fps,
+  );
+}
+
 function addClipOperation(project, operation) {
   const clipId = requireId(operation.clipId, 'invalid-input', 'clipId');
   if (findClip(project, clipId)) fail('duplicate-id', `clip id already exists: ${clipId}`);
@@ -2382,6 +2516,7 @@ const OPERATIONS = Object.freeze({
   'rename-project': renameProjectOperation,
   'add-media': addMediaOperation,
   'remove-media': removeMediaOperation,
+  'relink-media': relinkMediaOperation,
   'add-clip': addClipOperation,
   'move-clip': moveClipOperation,
   'trim-clip': trimClipOperation,
