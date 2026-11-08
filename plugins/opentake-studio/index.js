@@ -1273,7 +1273,10 @@ export function apply(ctx) {
     if (typeof input.path === 'string' && input.path.trim().length > 0) {
       output = path.resolve(input.path);
     } else {
-      const extension = defaultExtensionForCodec(input.codec ?? 'h264');
+      const extension =
+        input.audioOnly === true
+          ? (input.audioCodec === 'mp3' ? '.mp3' : '.m4a')
+          : defaultExtensionForCodec(input.codec ?? 'h264');
       output = path.join(state.paths.exportsDir, `${slugify(project.name)}-${Date.now()}${extension}`);
     }
     if (existsSync(output) && input.overwrite !== true) {
@@ -1285,7 +1288,7 @@ export function apply(ctx) {
     state.exportAbort = controller;
     const exportProject = structuredClone(project);
     const exportOptions = {};
-    for (const key of ['codec', 'width', 'height', 'fps', 'crf', 'bitrate', 'transparent', 'bitDepth', 'colorPrimaries', 'colorTrc', 'colorspace']) {
+    for (const key of ['codec', 'width', 'height', 'fps', 'crf', 'bitrate', 'transparent', 'bitDepth', 'colorPrimaries', 'colorTrc', 'colorspace', 'rangeStartFrame', 'rangeEndFrame', 'audioOnly', 'audioCodec']) {
       if (input[key] !== undefined) exportOptions[key] = input[key];
     }
     void runExport({
@@ -2406,6 +2409,10 @@ export function apply(ctx) {
         colorPrimaries: { type: 'string' },
         colorTrc: { type: 'string' },
         colorspace: { type: 'string' },
+        rangeStartFrame: { type: 'number' },
+        rangeEndFrame: { type: 'number' },
+        audioOnly: { type: 'boolean' },
+        audioCodec: { type: 'string', enum: ['aac', 'mp3'] },
       },
       additionalProperties: false,
     },

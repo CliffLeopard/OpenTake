@@ -97,6 +97,14 @@
  *     extension to the Host. Output resolution is scaled from the normalized
  *     transforms; fps is an output `-r` override while timeline timing stays on
  *     project fps. H.264 remains the default.
+ *   - range: `rangeStartFrame`/`rangeEndFrame` (absolute project frames) clamp
+ *     to the timeline and add an output-side `-ss`/`-t` trim; results report the
+ *     effective range and duration.
+ *   - audio-only: `audioOnly: true` with optional `audioCodec` ('aac' default
+ *     or 'mp3') emits no video graph/stream (`-vn`, audio map only, `-f mp4` /
+ *     `-f mp3`, `.m4a`/`.mp3`). No audible audio throws `no-audio`.
+ *     `defaultExtensionForAudio()` exposes the extension to the Host; range
+ *     trims work for audio-only too.
  *
  * Text rendering still depends on a system font (`drawtext` needs an ffmpeg
  * build with libfreetype).
@@ -200,6 +208,30 @@ function normalizeCodecName(value) {
     );
   }
   return codec;
+}
+
+const AUDIO_CODEC_ALIASES = new Map([
+  ['aac', 'aac'],
+  ['m4a', 'aac'],
+  ['mp3', 'mp3'],
+]);
+
+function normalizeAudioCodecName(value) {
+  if (value === undefined || value === null) return 'aac';
+  const key = String(value).toLowerCase();
+  const codec = AUDIO_CODEC_ALIASES.get(key);
+  if (codec === undefined) {
+    throw new ExportError(
+      `Unsupported audio codec: ${String(value)} (expected aac or mp3)`,
+      'invalid-input',
+    );
+  }
+  return codec;
+}
+
+/** Default output extension for an audio-only export: '.m4a' or '.mp3'. */
+export function defaultExtensionForAudio(audioCodec) {
+  return normalizeAudioCodecName(audioCodec) === 'aac' ? '.m4a' : '.mp3';
 }
 
 /** Default container for a codec ('mp4'|'mov'|'webm'). */
@@ -607,7 +639,7 @@ function canUseTrueTransition(fromEntry, toEntry) {
  *   truePlans: Map fromClipId -> { from, to, sideA, sideB, xfade, transition }
  *   fadeAdditions: Map clipId -> { inFrames, outFrames } (fallback/fadeToBlack)
  */
-function planTransitions(project, fps, { transparent = false } = {}) {
+function planTransitions(project, fps, { transparent = false, audioOnly = false } = {}) {
   const truePlans = new Map();
   const fadeAdditions = new Map();
   const transitions = Array.isArray(project?.transitions) ? project.transitions : [];
@@ -646,7 +678,7 @@ function planTransitions(project, fps, { transparent = false } = {}) {
     const fallbackHalf = Math.max(1, Math.round(duration / 2));
 
     if (TRUE_TRANSITION_TYPES.has(transition.type)) {
-      const plan = buildTrueTransitionPlan(project, item, touchCounts, fps, transparent);
+      const plan = buildTrueTransitionPlan(project, item, touchCounts, fps, transparent, audioOnly);
       if (plan !== null) {
         truePlans.set(from.clip.id, plan);
         continue;
@@ -665,12 +697,12 @@ function planTransitions(project, fps, { transparent = false } = {}) {
  * extension to the headroom actually present in each media file. Returns null
  * when the pair must fall back to fades.
  */
-function buildTrueTransitionPlan(project, item, touchCounts, fps, transparent) {
+function buildTrueTransitionPlan(project, item, touchCounts, fps, transparent, audioOnly) {
   const { transition, from, to, duration } = item;
 
   // xfade layers are opaque yuv frames, which would destroy alpha in a
-  // transparent export.
-  if (transparent) return null;
+  // transparent export; audio-only exports have no visual layers at all.
+  if (transparent || audioOnly) return null;
 
   // A clip in two transitions would need a chained xfade graph; fall back.
   if ((touchCounts.get(from.clip.id) ?? 0) !== 1) return null;
@@ -1018,6 +1050,7 @@ function detectEncoders() {
     prores: names.has('prores_ks') ? 'prores_ks' : names.has('prores_videotoolbox') ? 'prores_videotoolbox' : null,
     vp9: names.has('libvpx-vp9') ? 'libvpx-vp9' : names.has('vp9_videotoolbox') ? 'vp9_videotoolbox' : null,
     libopus: names.has('libopus') ? 'libopus' : null,
+    mp3: names.has('libmp3lame') ? 'libmp3lame' : names.has('mp3') ? 'mp3' : null,
   };
   return encoderCache;
 }
@@ -1132,10 +1165,51 @@ function normalizeExportOptions(project, rawOptions) {
     );
   }
 
+  if (options.audioOnly !== undefined && typeof options.audioOnly !== 'boolean') {
+    throw new ExportError('Export audioOnly must be a boolean', 'invalid-input');
+  }
+  const audioOnly = options.audioOnly === true;
+  let audioCodec = null;
+  if (audioOnly) {
+    audioCodec = normalizeAudioCodecName(options.audioCodec);
+    if (transparent) {
+      throw new ExportError('Audio-only export cannot be transparent (there is no video)', 'invalid-input');
+    }
+    if (containerExplicit) {
+      throw new ExportError(
+        'Audio-only export derives the container from audioCodec; do not pass container',
+        'invalid-input',
+      );
+    }
+    container = audioCodec === 'aac' ? 'm4a' : 'mp3';
+  } else if (options.audioCodec !== undefined) {
+    throw new ExportError('audioCodec requires audioOnly: true', 'invalid-input');
+  }
+
+  const normalizeRangeFrame = (value, name) => {
+    if (value === undefined || value === null) return null;
+    if (!Number.isInteger(value) || value < 0) {
+      throw new ExportError(`Export ${name} must be a non-negative integer frame`, 'invalid-input');
+    }
+    return value;
+  };
+  const rangeStartFrame = normalizeRangeFrame(options.rangeStartFrame, 'rangeStartFrame');
+  const rangeEndFrame = normalizeRangeFrame(options.rangeEndFrame, 'rangeEndFrame');
+  if (rangeStartFrame !== null && rangeEndFrame !== null && rangeEndFrame <= rangeStartFrame) {
+    throw new ExportError('rangeEndFrame must be greater than rangeStartFrame', 'invalid-input');
+  }
+  if (rangeStartFrame === null && rangeEndFrame !== null && rangeEndFrame === 0) {
+    throw new ExportError('rangeEndFrame must be greater than 0', 'invalid-input');
+  }
+
   return {
     codec,
     container,
     containerExplicit,
+    audioOnly,
+    audioCodec,
+    rangeStartFrame,
+    rangeEndFrame,
     bitDepth: normalizeExportBitDepth(options.bitDepth, codec),
     transparent,
     colorPrimaries: normalizeColorOption(options.colorPrimaries, COLOR_PRIMARIES_VALUES, 'colorPrimaries'),
@@ -1239,6 +1313,46 @@ function videoEncodeArgs(settings) {
     }
   }
   return args;
+}
+
+/** Effective output range in absolute project frames, clamped to the timeline. */
+function resolveExportRange(settings, timelineFrames) {
+  const explicit = settings.rangeStartFrame !== null || settings.rangeEndFrame !== null;
+  if (!explicit && timelineFrames === 0) {
+    // Keep the historical zero-duration build behavior; runExport rejects it.
+    return { rangeStartFrame: 0, rangeEndFrame: 0, rangeFrames: 0 };
+  }
+  const requestedStart = settings.rangeStartFrame ?? 0;
+  const requestedEnd = settings.rangeEndFrame ?? timelineFrames;
+  const start = Math.min(Math.max(0, requestedStart), timelineFrames);
+  const end = Math.min(Math.max(0, requestedEnd), timelineFrames);
+  if (end <= start) {
+    throw new ExportError(
+      `Export range [${requestedStart}, ${requestedEnd}) is empty after clamping to the ` +
+      `${timelineFrames}-frame timeline`,
+      'invalid-input',
+    );
+  }
+  return { rangeStartFrame: start, rangeEndFrame: end, rangeFrames: end - start };
+}
+
+/** Audio-only encoder argv (no video stream). */
+function audioOnlyEncodeArgs(settings) {
+  if (settings.audioCodec === 'mp3') {
+    const encoders = detectEncoders();
+    let encoder = encoders.mp3;
+    if (encoder === null) {
+      if (resolveTools().ffmpeg === null) encoder = 'libmp3lame';
+      else {
+        throw new ExportError(
+          'No MP3 audio encoder (libmp3lame/mp3) available in the installed ffmpeg',
+          'encoder-unavailable',
+        );
+      }
+    }
+    return ['-c:a', encoder, '-b:a', '192k'];
+  }
+  return ['-c:a', 'aac', '-b:a', '192k'];
 }
 
 /** Audio encoder/maps for the effective container and codec. */
@@ -1427,8 +1541,15 @@ function drawtextOptions({ content, style, box, startSeconds, endSeconds }) {
  *
  * @param {{ project: object, projectRoot: string, outputPath: string,
  *   options?: { codec?: string, container?: string, width?: number,
- *   height?: number, fps?: number, crf?: number, bitrate?: string|number } }} input
- * @returns {{ args: string[], durationFrames: number, codec: string, container: string }}
+ *   height?: number, fps?: number, crf?: number, bitrate?: string|number,
+ *   bitDepth?: number, transparent?: boolean, colorPrimaries?: string,
+ *   colorTrc?: string, colorspace?: string, audioOnly?: boolean,
+ *   audioCodec?: 'aac'|'mp3', rangeStartFrame?: number,
+ *   rangeEndFrame?: number } }} input
+ * @returns {{ args: string[], durationFrames: number, codec: string,
+ *   container: string, bitDepth: number, transparent: boolean,
+ *   audioOnly: boolean, audioCodec: string|null,
+ *   rangeStartFrame: number, rangeEndFrame: number }}
  */
 export function buildExportArgs({ project, projectRoot, outputPath, options, ...inlineOptions } = {}) {
   if (project === null || typeof project !== 'object') {
@@ -1447,19 +1568,29 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
   // All normalized geometry is expressed against the *output* resolution.
   const width = settings.width;
   const height = settings.height;
-  const durationFrames = timelineDurationFrames(project);
-  const durationSeconds = framesToSeconds(durationFrames, fps);
-  const transitionPlan = planTransitions(project, fps, { transparent: settings.transparent });
+  const audioOnly = settings.audioOnly;
+  const timelineFrames = timelineDurationFrames(project);
+  const timelineSeconds = framesToSeconds(timelineFrames, fps);
+  const range = resolveExportRange(settings, timelineFrames);
+  const rangeSeconds = framesToSeconds(range.rangeFrames, fps);
+  const transitionPlan = planTransitions(project, fps, {
+    transparent: settings.transparent,
+    audioOnly,
+  });
   const transitionFades = transitionPlan.fadeAdditions;
   const trueTransitions = transitionPlan.truePlans;
   const coveredClipIds = new Set();
 
-  const baseColor = settings.transparent ? 'black@0.0' : 'black';
-  const baseSpec =
-    `color=c=${baseColor}:s=${width}x${height}:r=${formatScalar(fps)}:d=${formatSeconds(durationSeconds)}` +
-    (settings.transparent ? ',format=rgba' : '');
-  const inputs = ['-f', 'lavfi', '-i', baseSpec];
-  let inputIndex = 1;
+  const inputs = [];
+  let inputIndex = 0;
+  if (!audioOnly) {
+    const baseColor = settings.transparent ? 'black@0.0' : 'black';
+    const baseSpec =
+      `color=c=${baseColor}:s=${width}x${height}:r=${formatScalar(fps)}:d=${formatSeconds(timelineSeconds)}` +
+      (settings.transparent ? ',format=rgba' : '');
+    inputs.push('-f', 'lavfi', '-i', baseSpec);
+    inputIndex = 1;
+  }
 
   const chains = [];
   const audioGroups = new Map();
@@ -1950,6 +2081,28 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     const trackVolume = normalizeTrackVolume(track);
     const audioGroup = getAudioGroup(track);
 
+    if (audioOnly) {
+      // Audio-only export: only video-clip audio is needed from video tracks
+      // (visual layers, text/lottie/motion frames and transitions are skipped).
+      for (const clip of clips) {
+        if (clip === null || typeof clip !== 'object') continue;
+        if (clip.type !== 'video') continue;
+        const media = findMedia(project, clip.mediaId);
+        if (media === null || media.hasAudio !== true) continue;
+        if (trackMuted) continue;
+        const speed = speedForClip(clip);
+        const durationFramesForClip = clipDurationFrames(clip);
+        const sourceSeconds = framesToSeconds(durationFramesForClip * speed, fps);
+        const trimSeconds = framesToSeconds(Math.max(0, Number(clip.trimStartFrame) || 0), fps);
+        const index = addInput(
+          ['-ss', formatSeconds(trimSeconds), '-t', formatSeconds(sourceSeconds)],
+          mediaFilePath(root, media),
+        );
+        addAudioChain(clip, index, speed, trackVolume, audioGroup);
+      }
+      continue;
+    }
+
     for (const clip of clips) {
       if (clip === null || typeof clip !== 'object') continue;
       if (coveredClipIds.has(clip.id)) continue;
@@ -2016,11 +2169,14 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
   }
 
   // Always end the video chain with a stable label so the mapping never depends
-  // on how many overlay/drawtext steps ran.
-  if (hasVisual) {
-    chains.push(`[${baseLabel}]null[vout]`);
-  } else {
-    chains.push('[0:v]null[vout]');
+  // on how many overlay/drawtext steps ran. Audio-only exports have no video
+  // graph at all.
+  if (!audioOnly) {
+    if (hasVisual) {
+      chains.push(`[${baseLabel}]null[vout]`);
+    } else {
+      chains.push('[0:v]null[vout]');
+    }
   }
 
   const audioGroupsList = [...audioGroups.values()].filter((group) => group.labels.length > 0);
@@ -2108,6 +2264,13 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     );
   }
 
+  if (audioOnly && finalAudioLabels.length === 0) {
+    throw new ExportError(
+      'This export has no audible audio; add audio clips or video clips with audio',
+      'no-audio',
+    );
+  }
+
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
@@ -2115,31 +2278,42 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
     '-y',
     ...inputs,
     '-filter_complex', chains.join(';'),
-    '-map', '[vout]',
   ];
 
-  args.push(...audioEncodeArgs(settings, finalAudioLabels.length > 0));
-  args.push(...videoEncodeArgs(settings));
-  if (settings.colorPrimaries !== null) args.push('-color_primaries', settings.colorPrimaries);
-  if (settings.colorTrc !== null) args.push('-color_trc', settings.colorTrc);
-  if (settings.colorspace !== null) args.push('-colorspace', settings.colorspace);
+  if (audioOnly) {
+    args.push('-map', '[aout]', '-vn');
+    args.push(...audioOnlyEncodeArgs(settings));
+    args.push('-f', settings.container === 'm4a' ? 'mp4' : 'mp3');
+  } else {
+    args.push('-map', '[vout]');
+    args.push(...audioEncodeArgs(settings, finalAudioLabels.length > 0));
+    args.push(...videoEncodeArgs(settings));
+    if (settings.colorPrimaries !== null) args.push('-color_primaries', settings.colorPrimaries);
+    if (settings.colorTrc !== null) args.push('-color_trc', settings.colorTrc);
+    if (settings.colorspace !== null) args.push('-colorspace', settings.colorspace);
 
-  if (settings.container === 'mp4' || settings.container === 'mov') {
-    args.push('-movflags', '+faststart');
+    if (settings.container === 'mp4' || settings.container === 'mov') {
+      args.push('-movflags', '+faststart');
+    }
+    // New formats always force their muxer so the explicit output path may use
+    // any extension; mp4/mov do so when a container was explicitly requested.
+    if (
+      settings.containerExplicit ||
+      settings.codec === 'prores' ||
+      settings.codec === 'prores4444' ||
+      settings.codec === 'vp9'
+    ) {
+      args.push('-f', settings.container);
+    }
+    if (settings.fpsProvided) args.push('-r', formatScalar(settings.fps));
   }
-  // New formats always force their muxer so the explicit output path may use
-  // any extension; mp4/mov do so when a container was explicitly requested.
-  if (
-    settings.containerExplicit ||
-    settings.codec === 'prores' ||
-    settings.codec === 'prores4444' ||
-    settings.codec === 'vp9'
-  ) {
-    args.push('-f', settings.container);
+
+  // Output-side trim for range exports (after inputs/filters, before output).
+  if (range.rangeStartFrame > 0) {
+    args.push('-ss', formatSeconds(framesToSeconds(range.rangeStartFrame, fps)));
   }
-  if (settings.fpsProvided) args.push('-r', formatScalar(settings.fps));
   args.push(
-    '-t', formatSeconds(durationSeconds),
+    '-t', formatSeconds(rangeSeconds),
     '-progress', 'pipe:1',
     '-nostats',
     outputPath,
@@ -2147,11 +2321,15 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
 
   return {
     args,
-    durationFrames,
+    durationFrames: range.rangeFrames,
     codec: settings.codec,
     container: settings.container,
     bitDepth: settings.bitDepth,
     transparent: settings.transparent,
+    audioOnly,
+    audioCodec: settings.audioCodec,
+    rangeStartFrame: range.rangeStartFrame,
+    rangeEndFrame: range.rangeEndFrame,
   };
 }
 
@@ -2164,7 +2342,9 @@ export function buildExportArgs({ project, projectRoot, outputPath, options, ...
  *
  * @param {{ project: object, projectRoot: string, outputPath: string,
  *   onProgress?: (progress: number) => void, signal?: AbortSignal, options?: object }} input
- * @returns {Promise<{ outputPath: string, durationFrames: number, codec: string, container: string }>}
+ * @returns {Promise<{ outputPath: string, durationFrames: number, codec: string,
+ *   container: string, bitDepth: number, transparent: boolean, audioOnly: boolean,
+ *   audioCodec: string|null, rangeStartFrame: number, rangeEndFrame: number }>}
  */
 export async function runExport({
   project,
@@ -2255,5 +2435,9 @@ export async function runExport({
     container: built.container,
     bitDepth: built.bitDepth,
     transparent: built.transparent,
+    audioOnly: built.audioOnly,
+    audioCodec: built.audioCodec,
+    rangeStartFrame: built.rangeStartFrame,
+    rangeEndFrame: built.rangeEndFrame,
   };
 }

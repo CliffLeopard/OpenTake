@@ -168,7 +168,8 @@ Importing only fills the media library; it does not add clips to the timeline.
   project. Library assets are content-addressed and shared across projects.
 - **Export presets/formats**: H.264/H.265/ProRes/ProRes 4444 (alpha)/VP9-WebM,
   project/1080p/720p/custom resolution, fps, CRF/bitrate, 10-bit H.265/VP9/
-  ProRes, transparent ProRes 4444 and optional color tags.
+  ProRes, transparent ProRes 4444, optional color tags, **timeline range
+  export**, and **audio-only M4A/MP3** export.
 - **Frame stepping**: −1/+1 buttons and ArrowLeft/ArrowRight step exactly one
   frame (pauses playback), with the frame counter visible.
 - **Recent projects**: welcome screen and New/Open dialog list recent projects
@@ -341,7 +342,7 @@ MCP endpoint, client or credential is involved.
 | `opentake_studio_add_motion` | `template` (title/lowerThird/callout), `text`, `startFrame`, `durationFrames?`, `subtitle?`, colors, `fontSize?`, `align?`, `background?`, `trackId?` | Adds an editable Canvas motion-template clip on a Motion track. |
 | `opentake_studio_undo` | — | Undoes the most recent edit. |
 | `opentake_studio_redo` | — | Redoes the most recently undone edit. |
-| `opentake_studio_export` | `path?`, `overwrite?`, `codec?` (h264/h265/prores/prores4444/vp9), `transparent?`, `bitDepth?`, `colorPrimaries?`, `colorTrc?`, `colorspace?`, `width?`, `height?`, `fps?`, `crf?`, `bitrate?` | Starts an asynchronous ffmpeg export; omit `path` to write into `exports/`. Existing output refused unless `overwrite:true`. Poll `get_state` for progress. |
+| `opentake_studio_export` | `path?`, `overwrite?`, `codec?` (h264/h265/prores/prores4444/vp9), `transparent?`, `bitDepth?`, `colorPrimaries?`, `colorTrc?`, `colorspace?`, `width?`, `height?`, `fps?`, `crf?`, `bitrate?`, `rangeStartFrame?`, `rangeEndFrame?`, `audioOnly?`, `audioCodec?` | Starts an asynchronous ffmpeg export; omit `path` to write into `exports/`. Existing output refused unless `overwrite:true`. Poll `get_state` for progress. |
 
 ### Frames and fps
 
@@ -522,7 +523,7 @@ this document; the Client/UI/export rows are the verification run's results.
 
 | Evidence | Result |
 |---|---|
-| Node test suite | **400/400 tests pass**, 36 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
+| Node test suite | **407/407 tests pass**, 36 suites, 0 failures (model, project, media, export, captions, library, transcribe, generate, vision, host integration). Re-run for this document with `node --test test/`. |
 | Bundle installation | `@opentake/studio` is installed in the DSH profile as a local link, enabled and active (`plugin_manager` inventory). |
 | Client registration | DSH Client Slots expose `main` and `sidebar.panellist` with key/id `opentake-studio`; the left-sidebar **OpenTake Studio** editor panel was screenshot-verified. |
 | Preview | A real video frame renders in the editor preview; the media route served HTTP **Range 206** partial content. |
@@ -535,6 +536,7 @@ this document; the Client/UI/export rows are the verification run's results.
 | Alpha/10-bit | Transparent ProRes 4444 alphaextract (255/0) and 10-bit H.265 (`yuv420p10le`) were real-export verified. |
 | Lottie | A vendored lottie-web sample rendered in the editor preview/card; UI export pre-rendered 20 PNG frames and produced a 640×360 H.264 clip (0.667 s), verified with ffprobe. |
 | Motion templates | A title template was added via the Host tool, rendered in preview, pre-rendered to PNG frames, and exported into a 640×360 H.264 clip; the exported frame shows the centered title/subtitle/accent. |
+| Range/audio-only | Real ffmpeg exports verified: 15..45 frame range ~1.0s H.264, audio-only M4A/MP3 with no video stream. |
 
 Not verified / not claimed:
 

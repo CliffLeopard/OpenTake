@@ -11,6 +11,7 @@ import {
   ExportError,
   buildExportArgs,
   defaultContainerForCodec,
+  defaultExtensionForAudio,
   defaultExtensionForCodec,
   runExport,
 } from '../lib/export.js';
@@ -3254,5 +3255,242 @@ it(
     assert.ok(outsideAlpha < 20, `expected transparent motion background, alpha ${outsideAlpha}`);
     const cyan = await samplePixel(outputPath, 0.05, 60, 60);
     assert.ok(cyan.g > 90 && cyan.b > 90 && cyan.r < 40, JSON.stringify(cyan));
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Phase 18: range export + audio-only export
+// ---------------------------------------------------------------------------
+
+it('trims output to an absolute frame range with output-side -ss/-t', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'range.mp4');
+  const buildWith = (options) => buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options,
+  });
+
+  const full = buildWith({});
+  assert.equal(full.durationFrames, 90);
+  assert.equal(full.rangeStartFrame, 0);
+  assert.equal(full.rangeEndFrame, 90);
+  assert.ok(
+    full.args.lastIndexOf('-ss') < full.args.indexOf('-filter_complex'),
+    'default full export has only input seeks, no output trim',
+  );
+  assert.ok(hasPair(full.args, '-t', '3'));
+
+  const trimmed = buildWith({ rangeStartFrame: 15, rangeEndFrame: 45 });
+  assert.equal(trimmed.durationFrames, 30);
+  assert.deepEqual([trimmed.rangeStartFrame, trimmed.rangeEndFrame], [15, 45]);
+  assert.ok(hasPair(trimmed.args, '-ss', '0.5'));
+  assert.ok(hasPair(trimmed.args, '-t', '1'));
+  const ssIndex = trimmed.args.indexOf('-ss', trimmed.args.indexOf('-filter_complex'));
+  const outputIndex = trimmed.args.lastIndexOf(outputPath);
+  assert.ok(ssIndex > trimmed.args.indexOf('-filter_complex') && ssIndex < outputIndex,
+    'output trim sits after filters and before the output path');
+
+  const clamped = buildWith({ rangeEndFrame: 1000 });
+  assert.deepEqual([clamped.rangeStartFrame, clamped.rangeEndFrame], [0, 90]);
+  assert.equal(clamped.durationFrames, 90);
+  assert.ok(clamped.args.lastIndexOf('-ss') < clamped.args.indexOf('-filter_complex'));
+
+  for (const options of [
+    { rangeStartFrame: -1 },
+    { rangeStartFrame: 1.5 },
+    { rangeEndFrame: 1.5 },
+    { rangeStartFrame: 60, rangeEndFrame: 30 },
+    { rangeStartFrame: 1000 },
+    { rangeEndFrame: 0 },
+  ]) {
+    assert.throws(
+      () => buildWith(options),
+      (error) => error instanceof ExportError && error.code === 'invalid-input',
+      `expected invalid-input for ${JSON.stringify(options)}`,
+    );
+  }
+});
+
+it('builds an audio-only M4A export with no video graph or stream', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'audio.m4a');
+  const built = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { audioOnly: true },
+  });
+
+  assert.equal(built.audioOnly, true);
+  assert.equal(built.audioCodec, 'aac');
+  assert.equal(built.container, 'm4a');
+  assert.ok(hasPair(built.args, '-map', '[aout]'));
+  assert.ok(!hasPair(built.args, '-map', '[vout]'), 'no video map');
+  assert.ok(built.args.includes('-vn'), 'video stream disabled');
+  assert.ok(hasPair(built.args, '-c:a', 'aac'));
+  assert.ok(hasPair(built.args, '-f', 'mp4'));
+  assert.ok(!built.args.includes('-c:v'), 'no video encoder');
+  assert.ok(!filterOf(built).includes('overlay='), 'no video overlay graph');
+  assert.ok(!inputsOf(built.args).some((input) => input.startsWith('color=')), 'no base canvas input');
+  assert.equal(defaultExtensionForAudio('aac'), '.m4a');
+  assert.equal(defaultExtensionForAudio('m4a'), '.m4a');
+});
+
+it('builds an audio-only MP3 export when an MP3 encoder exists', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'audio.mp3');
+  const build = () => buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { audioOnly: true, audioCodec: 'mp3' },
+  });
+
+  if (encoderNames.has('libmp3lame') || !initialTools.available) {
+    const built = build();
+    assert.equal(built.audioCodec, 'mp3');
+    assert.equal(built.container, 'mp3');
+    assert.ok(hasPair(built.args, '-c:a', 'libmp3lame'));
+    assert.ok(hasPair(built.args, '-f', 'mp3'));
+    assert.ok(built.args.includes('-vn'));
+    assert.ok(!built.args.includes('-c:v'));
+  } else if (encoderNames.has('mp3')) {
+    const built = build();
+    assert.ok(hasPair(built.args, '-c:a', 'mp3'));
+    assert.ok(hasPair(built.args, '-f', 'mp3'));
+  } else {
+    assert.throws(
+      build,
+      (error) => error instanceof ExportError && error.code === 'encoder-unavailable',
+    );
+  }
+  assert.equal(defaultExtensionForAudio('mp3'), '.mp3');
+});
+
+it('supports range + audio-only together and validates audio options', () => {
+  const project = createFixtureProject();
+  const outputPath = path.join(FIXTURE_ROOT, 'range-audio.m4a');
+  const built = buildExportArgs({
+    project,
+    projectRoot: FIXTURE_ROOT,
+    outputPath,
+    options: { audioOnly: true, rangeStartFrame: 15, rangeEndFrame: 45 },
+  });
+  assert.equal(built.durationFrames, 30);
+  assert.deepEqual([built.rangeStartFrame, built.rangeEndFrame], [15, 45]);
+  assert.ok(hasPair(built.args, '-ss', '0.5'));
+  assert.ok(hasPair(built.args, '-t', '1'));
+  assert.ok(!hasPair(built.args, '-map', '[vout]'));
+
+  const silent = createFixtureProject();
+  silent.tracks = [silent.tracks[0]];
+  silent.media[0].hasAudio = false;
+  // The text clip is visual-only; the project has no audible audio.
+  silent.tracks[0].clips = silent.tracks[0].clips.filter((clip) => clip.type !== 'video' || false);
+  silent.tracks[0].clips = [];
+  assert.throws(
+    () => buildExportArgs({
+      project: silent,
+      projectRoot: FIXTURE_ROOT,
+      outputPath,
+      options: { audioOnly: true },
+    }),
+    (error) => error instanceof ExportError && error.code === 'no-audio',
+  );
+
+  for (const options of [
+    { audioCodec: 'mp3' },
+    { audioOnly: true, audioCodec: 'flac' },
+    { audioOnly: true, transparent: true },
+    { audioOnly: true, container: 'mp4' },
+  ]) {
+    assert.throws(
+      () => buildExportArgs({ project, projectRoot: FIXTURE_ROOT, outputPath, options }),
+      (error) => error instanceof ExportError && error.code === 'invalid-input',
+      `expected invalid-input for ${JSON.stringify(options)}`,
+    );
+  }
+  assert.throws(
+    () => defaultExtensionForAudio('flac'),
+    (error) => error instanceof ExportError && error.code === 'invalid-input',
+  );
+});
+
+it('exports a range-trimmed MP4 verified by ffprobe', { skip: toolSkip }, async () => {
+  const outputPath = path.join(exportTemp, 'range-export.mp4');
+  const result = await runExport({
+    project: realProject,
+    projectRoot: exportProjectRoot,
+    outputPath,
+    options: { rangeStartFrame: 15, rangeEndFrame: 45 },
+  });
+  assert.equal(result.durationFrames, 30);
+  assert.deepEqual([result.rangeStartFrame, result.rangeEndFrame], [15, 45]);
+  assert.equal(result.audioOnly, false);
+
+  const probe = await probeMedia(outputPath);
+  assert.equal(probe.kind, 'video');
+  assert.ok(probe.durationSeconds > 0.8 && probe.durationSeconds < 1.2, `duration ${probe.durationSeconds}`);
+  const streams = JSON.parse(await runFfprobe([
+    '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+  ]));
+  assert.ok(streams.streams.some((stream) => stream.codec_type === 'video'));
+  assert.ok(streams.streams.some((stream) => stream.codec_type === 'audio'));
+});
+
+it('exports an audio-only M4A with no video stream', { skip: toolSkip }, async () => {
+  const outputPath = path.join(exportTemp, 'range-audio.m4a');
+  const result = await runExport({
+    project: realProject,
+    projectRoot: exportProjectRoot,
+    outputPath,
+    options: { audioOnly: true, rangeStartFrame: 15, rangeEndFrame: 45 },
+  });
+  assert.equal(result.durationFrames, 30);
+  assert.equal(result.audioOnly, true);
+  assert.equal(result.audioCodec, 'aac');
+  assert.equal(result.container, 'm4a');
+
+  const probe = await probeMedia(outputPath);
+  assert.equal(probe.hasAudio, true);
+  assert.ok(probe.durationSeconds > 0.8 && probe.durationSeconds < 1.2, `duration ${probe.durationSeconds}`);
+
+  const streams = JSON.parse(await runFfprobe([
+    '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+  ]));
+  assert.ok(!streams.streams.some((stream) => stream.codec_type === 'video'), 'no video stream');
+  const audioStream = streams.streams.find((stream) => stream.codec_type === 'audio');
+  assert.equal(audioStream.codec_name, 'aac');
+});
+
+it(
+  'exports an audio-only MP3 with no video stream',
+  {
+    skip: toolSkip
+      ? toolSkip
+      : (!encoderNames.has('libmp3lame') && !encoderNames.has('mp3')
+        ? 'no MP3 encoder available'
+        : false),
+  },
+  async () => {
+    const outputPath = path.join(exportTemp, 'audio-only.mp3');
+    const result = await runExport({
+      project: realProject,
+      projectRoot: exportProjectRoot,
+      outputPath,
+      options: { audioOnly: true, audioCodec: 'mp3' },
+    });
+    assert.equal(result.audioOnly, true);
+    assert.equal(result.audioCodec, 'mp3');
+    assert.equal(result.container, 'mp3');
+
+    const streams = JSON.parse(await runFfprobe([
+      '-v', 'error', '-print_format', 'json', '-show_streams', outputPath,
+    ]));
+    assert.ok(!streams.streams.some((stream) => stream.codec_type === 'video'), 'no video stream');
+    const audioStream = streams.streams.find((stream) => stream.codec_type === 'audio');
+    assert.equal(audioStream.codec_name, 'mp3');
   },
 );

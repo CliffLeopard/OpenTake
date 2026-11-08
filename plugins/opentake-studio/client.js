@@ -445,15 +445,32 @@ window.__ModuleLoader__.load({
 		const EXPORT_COLOR_TRCS = ['bt709', 'smpte2084', 'arib-std-b67'];
 		const EXPORT_COLOR_SPACES = ['bt709', 'bt2020nc', 'bt2020c'];
 
-		function exportCodecExtension(codec) {
+		function exportCodecExtension(codec, audioOnly, audioCodec) {
+			if (audioOnly) return audioCodec === 'mp3' ? '.mp3' : '.m4a';
 			if (codec === 'prores' || codec === 'prores4444') return '.mov';
 			if (codec === 'vp9') return '.webm';
 			return '.mp4';
 		}
 
-		function suggestedExportName(project, codec) {
+		function suggestedExportName(project, codec, audioOnly, audioCodec) {
 			const base = slugify(project && project.name ? project.name : 'opentake-studio');
-			return `${base}-${Date.now()}${exportCodecExtension(codec)}`;
+			return `${base}-${Date.now()}${exportCodecExtension(codec, audioOnly, audioCodec)}`;
+		}
+
+		function exportRangeOf(project, dialog) {
+			const total = project ? timelineDurationFrames(project) : 0;
+			const source = dialog && typeof dialog === 'object' ? dialog : {};
+			const rawStart = source.rangeStartFrame === undefined || source.rangeStartFrame === null ? '' : String(source.rangeStartFrame).trim();
+			const rawEnd = source.rangeEndFrame === undefined || source.rangeEndFrame === null ? '' : String(source.rangeEndFrame).trim();
+			if (rawStart.length === 0 && rawEnd.length === 0) {
+				return { start: null, end: null, duration: total, invalid: false };
+			}
+			const start = rawStart.length === 0 ? 0 : Math.round(Number(rawStart));
+			const end = rawEnd.length === 0 ? total : Math.round(Number(rawEnd));
+			if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > total || start >= end) {
+				return { start: null, end: null, duration: total, invalid: true };
+			}
+			return { start, end, duration: end - start, invalid: false };
 		}
 
 		function transcriptCaptionOperation(transcript, project) {
@@ -539,10 +556,18 @@ window.__ModuleLoader__.load({
 			const colorPrimaries = EXPORT_COLOR_PRIMARIES.includes(source.colorPrimaries) ? source.colorPrimaries : undefined;
 			const colorTrc = EXPORT_COLOR_TRCS.includes(source.colorTrc) ? source.colorTrc : undefined;
 			const colorspace = EXPORT_COLOR_SPACES.includes(source.colorspace) ? source.colorspace : undefined;
+			const audioOnly = source.audioOnly === true;
+			const audioCodec = source.audioCodec === 'mp3' ? 'mp3' : 'aac';
+			const range = exportRangeOf(project, source);
 			return {
 				codec,
-				transparent,
-				bitDepth,
+				audioOnly,
+				audioCodec,
+				...(range.start === null ? {} : { rangeStartFrame: range.start, rangeEndFrame: range.end }),
+				rangeDuration: range.duration,
+				rangeInvalid: range.invalid,
+				transparent: audioOnly ? false : transparent,
+				bitDepth: audioOnly ? 8 : bitDepth,
 				...(colorPrimaries === undefined ? {} : { colorPrimaries }),
 				...(colorTrc === undefined ? {} : { colorTrc }),
 				...(colorspace === undefined ? {} : { colorspace }),
@@ -555,7 +580,7 @@ window.__ModuleLoader__.load({
 				crf,
 				bitrate,
 				overwrite: source.overwrite === true,
-				extension: exportCodecExtension(codec),
+				extension: exportCodecExtension(codec, audioOnly, audioCodec),
 			};
 		}
 
@@ -2274,6 +2299,12 @@ window.__ModuleLoader__.load({
 .ots-track-confirm-actions{display:flex;gap:3px}
 .ots-track-confirm .ots-mini{font-size:9px;height:16px;padding:0 4px}
 .ots-export-grid{display:grid;gap:8px;grid-template-columns:1fr 1fr}
+.ots-export-range{display:flex;flex-direction:column;gap:5px}
+.ots-export-range-fields{align-items:flex-end;display:flex;flex-wrap:wrap;gap:6px}
+.ots-export-range-fields .ots-field{flex:1 1 90px;min-width:90px}
+.ots-export-range-summary{color:var(--dsw-alias-label-secondary);font-size:10px;margin:0}
+.ots-export-range-summary[data-warn="true"]{color:var(--dsw-alias-state-error-primary)}
+.ots-export-audio-format{max-width:150px}
 .ots-export-toggles{display:flex;flex-wrap:wrap;gap:4px 12px}
 .ots-export-summary{background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:6px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.5;padding:6px 8px}
 .ots-export-check{align-items:center;display:flex;gap:6px;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:11.5px}
@@ -2987,6 +3018,17 @@ window.__ModuleLoader__.load({
 			'inspector.motion': 'Motion template',
 			'inspector.kindMotion': 'Motion clip',
 			'status.preparingMotion': 'Rendering motion frame {index}/{total} for {name}…',
+			'export.rangeStart': 'Range start (frame)',
+			'export.rangeEnd': 'Range end (frame)',
+			'export.rangeEndPlaceholder': 'End of timeline',
+			'export.rangeClear': 'Full timeline',
+			'export.rangeSummary': 'Range: {start} – {end} · {duration}',
+			'export.invalidRange': 'Range must satisfy 0 ≤ start < end ≤ project duration.',
+			'export.audioOnly': 'Audio only',
+			'export.audioFormat': 'Audio format',
+			'export.audioAac': 'AAC (.m4a)',
+			'export.audioMp3': 'MP3 (.mp3)',
+			'export.audioSummary': '{codec} · {duration}',
 			'status.preparingText': 'Preparing text…',
 			'dialog.preparingText': 'Rendering text overlays for export…',
 		};
@@ -3604,6 +3646,17 @@ window.__ModuleLoader__.load({
 			'inspector.motion': '动效模板',
 			'inspector.kindMotion': '动效片段',
 			'status.preparingMotion': '正在为 {name} 渲染动效帧 {index}/{total}…',
+			'export.rangeStart': '范围起点（帧）',
+			'export.rangeEnd': '范围终点（帧）',
+			'export.rangeEndPlaceholder': '时间线末尾',
+			'export.rangeClear': '完整时间线',
+			'export.rangeSummary': '范围：{start} – {end} · {duration}',
+			'export.invalidRange': '范围必须满足 0 ≤ 起点 < 终点 ≤ 工程时长。',
+			'export.audioOnly': '仅音频',
+			'export.audioFormat': '音频格式',
+			'export.audioAac': 'AAC（.m4a）',
+			'export.audioMp3': 'MP3（.mp3）',
+			'export.audioSummary': '{codec} · {duration}',
 			'status.preparingText': '正在准备文本…',
 			'dialog.preparingText': '正在为导出渲染文本层…',
 		};
@@ -8815,7 +8868,12 @@ window.__ModuleLoader__.load({
 					: t('export.summaryBitrate', { value: exportSettings.bitrate })
 				: '';
 			const exportSummary = exportSettings
-				? t('export.summary', {
+				? exportSettings.audioOnly
+					? t('export.audioSummary', {
+							codec: exportSettings.audioCodec === 'mp3' ? t('export.audioMp3') : t('export.audioAac'),
+							duration: formatTimecode(exportSettings.rangeDuration, project ? project.fps : 30),
+						})
+					: t('export.summary', {
 						codec:
 							exportSettings.codec === 'h265'
 								? t('export.codecH265')
@@ -8873,6 +8931,94 @@ window.__ModuleLoader__.load({
 				? [
 						h(
 							'div',
+							{ className: 'ots-export-range', key: 'range-options' },
+							h(
+								'div',
+								{ className: 'ots-export-range-fields' },
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('export.rangeStart')),
+									h('input', {
+										className: 'ots-input',
+										type: 'number',
+										min: 0,
+										step: 1,
+										value: dialog.rangeStartFrame,
+										placeholder: '0',
+										'aria-label': t('export.rangeStart'),
+										onChange: (event) => onPatch({ rangeStartFrame: event.target.value }),
+									}),
+								),
+								h(
+									'label',
+									{ className: 'ots-field' },
+									h('span', { className: 'ots-field-label' }, t('export.rangeEnd')),
+									h('input', {
+										className: 'ots-input',
+										type: 'number',
+										min: 0,
+										step: 1,
+										value: dialog.rangeEndFrame,
+										placeholder: t('export.rangeEndPlaceholder'),
+										'aria-label': t('export.rangeEnd'),
+										onChange: (event) => onPatch({ rangeEndFrame: event.target.value }),
+									}),
+								),
+								h(
+									Btn,
+									{
+										variant: 'ghost',
+										onClick: () => onPatch({ rangeStartFrame: '', rangeEndFrame: '' }),
+										disabled: String(dialog.rangeStartFrame || '').length === 0 && String(dialog.rangeEndFrame || '').length === 0,
+										title: t('export.rangeClear'),
+									},
+									t('export.rangeClear'),
+								),
+							),
+							h(
+								'p',
+								{ className: 'ots-export-range-summary', 'data-warn': exportSettings.rangeInvalid ? 'true' : 'false' },
+								exportSettings.rangeInvalid
+									? t('export.invalidRange')
+									: t('export.rangeSummary', {
+											start: exportSettings.rangeStartFrame === undefined ? 0 : exportSettings.rangeStartFrame,
+											end: exportSettings.rangeStartFrame === undefined ? (project ? timelineDurationFrames(project) : 0) : exportSettings.rangeEndFrame,
+											duration: formatTimecode(exportSettings.rangeDuration, project ? project.fps : 30),
+										}),
+							),
+							h(
+								'label',
+								{ className: 'ots-export-check' },
+								h('input', {
+									type: 'checkbox',
+									checked: dialog.audioOnly === true,
+									'aria-label': t('export.audioOnly'),
+									onChange: (event) => onPatch({ audioOnly: event.target.checked }),
+								}),
+								t('export.audioOnly'),
+							),
+							h(
+								'label',
+								{ className: 'ots-field ots-export-audio-format' },
+								h('span', { className: 'ots-field-label' }, t('export.audioFormat')),
+								h(
+									'select',
+									{
+										className: 'ots-select',
+										value: exportSettings.audioCodec,
+										disabled: !exportSettings.audioOnly,
+										'aria-label': t('export.audioFormat'),
+										title: t('export.audioFormat'),
+										onChange: (event) => onPatch({ audioCodec: event.target.value }),
+									},
+									h('option', { value: 'aac' }, t('export.audioAac')),
+									h('option', { value: 'mp3' }, t('export.audioMp3')),
+								),
+							),
+						),
+						h(
+							'div',
 							{ className: 'ots-export-grid', key: 'export-options' },
 							h(
 								'label',
@@ -8883,6 +9029,7 @@ window.__ModuleLoader__.load({
 									{
 										className: 'ots-select',
 										value: ['h264', 'h265', 'prores', 'prores4444', 'vp9'].includes(dialog.codec) ? dialog.codec : 'h264',
+										disabled: exportSettings.audioOnly,
 										'aria-label': t('export.codec'),
 										title: t('export.codec'),
 										onChange: (event) => {
@@ -8910,6 +9057,7 @@ window.__ModuleLoader__.load({
 									{
 										className: 'ots-select',
 										value: String(dialog.fps),
+										disabled: exportSettings.audioOnly,
 										'aria-label': t('export.fps'),
 										title: t('export.fps'),
 										onChange: (event) => onPatch({ fps: event.target.value === 'project' ? 'project' : Number(event.target.value) }),
@@ -8927,6 +9075,7 @@ window.__ModuleLoader__.load({
 									{
 										className: 'ots-select',
 										value: ['project', '1080p', '720p', 'custom'].includes(dialog.resolution) ? dialog.resolution : 'project',
+										disabled: exportSettings.audioOnly,
 										'aria-label': t('export.resolution'),
 										title: t('export.resolution'),
 										onChange: (event) => onPatch({ resolution: event.target.value }),
@@ -8946,6 +9095,7 @@ window.__ModuleLoader__.load({
 									{
 										className: 'ots-select',
 										value: dialog.qualityMode === 'bitrate' ? 'bitrate' : 'crf',
+										disabled: exportSettings.audioOnly,
 										'aria-label': t('export.quality'),
 										title: t('export.quality'),
 										onChange: (event) => onPatch({ qualityMode: event.target.value }),
@@ -8968,6 +9118,7 @@ window.__ModuleLoader__.load({
 												min: 2,
 												step: 1,
 												value: dialog.width,
+												disabled: exportSettings.audioOnly,
 												'aria-label': t('export.customWidth'),
 												title: t('export.customWidth'),
 												onChange: (event) => onPatch({ width: event.target.value }),
@@ -8983,6 +9134,7 @@ window.__ModuleLoader__.load({
 												min: 2,
 												step: 1,
 												value: dialog.height,
+												disabled: exportSettings.audioOnly,
 												'aria-label': t('export.customHeight'),
 												title: t('export.customHeight'),
 												onChange: (event) => onPatch({ height: event.target.value }),
@@ -9000,6 +9152,7 @@ window.__ModuleLoader__.load({
 											type: 'text',
 											value: dialog.bitrate,
 											placeholder: t('export.bitratePlaceholder'),
+											disabled: exportSettings.audioOnly,
 											'aria-label': t('export.bitrate'),
 											title: t('export.bitrate'),
 											spellCheck: false,
@@ -9017,6 +9170,7 @@ window.__ModuleLoader__.load({
 											max: 51,
 											step: 1,
 											value: dialog.crf,
+											disabled: exportSettings.audioOnly,
 											'aria-label': t('export.crf'),
 											title: t('export.crf'),
 											onChange: (event) => onPatch({ crf: event.target.value }),
@@ -9043,7 +9197,7 @@ window.__ModuleLoader__.load({
 								h('input', {
 									type: 'checkbox',
 									checked: exportSettings.codec === 'prores4444' && dialog.transparent === true,
-									disabled: exportSettings.codec !== 'prores4444',
+									disabled: exportSettings.audioOnly || exportSettings.codec !== 'prores4444',
 									'aria-label': t('export.transparent'),
 									onChange: (event) => onPatch({ transparent: event.target.checked }),
 								}),
@@ -9055,7 +9209,7 @@ window.__ModuleLoader__.load({
 								h('input', {
 									type: 'checkbox',
 									checked: exportSettings.bitDepth === 10,
-									disabled: !['h265', 'vp9'].includes(exportSettings.codec),
+									disabled: exportSettings.audioOnly || !['h265', 'vp9'].includes(exportSettings.codec),
 									'aria-label': t('export.bitDepth10'),
 									onChange: (event) => onPatch({ bitDepth: event.target.checked ? 10 : 8 }),
 								}),
@@ -9074,6 +9228,7 @@ window.__ModuleLoader__.load({
 									{
 										className: 'ots-select',
 										value: dialog.colorPrimaries || '',
+										disabled: exportSettings.audioOnly,
 										'aria-label': t('export.colorPrimaries'),
 										title: t('export.colorPrimaries'),
 										onChange: (event) => onPatch({ colorPrimaries: event.target.value }),
@@ -9092,6 +9247,7 @@ window.__ModuleLoader__.load({
 									{
 										className: 'ots-select',
 										value: dialog.colorTrc || '',
+										disabled: exportSettings.audioOnly,
 										'aria-label': t('export.colorTrc'),
 										title: t('export.colorTrc'),
 										onChange: (event) => onPatch({ colorTrc: event.target.value }),
@@ -9111,6 +9267,7 @@ window.__ModuleLoader__.load({
 									{
 										className: 'ots-select',
 										value: dialog.colorspace || '',
+										disabled: exportSettings.audioOnly,
 										'aria-label': t('export.colorspace'),
 										title: t('export.colorspace'),
 										onChange: (event) => onPatch({ colorspace: event.target.value }),
@@ -9871,7 +10028,7 @@ window.__ModuleLoader__.load({
 			const handleExport = () => {
 				const projectValue = projectRef.current;
 				if (!projectValue) return;
-				const suggested = suggestedExportName(projectValue, 'h264');
+				const suggested = suggestedExportName(projectValue, 'h264', false, 'aac');
 				setDialog({
 					mode: 'export',
 					path: '',
@@ -9879,6 +10036,10 @@ window.__ModuleLoader__.load({
 					error: null,
 					busy: false,
 					codec: 'h264',
+					audioOnly: false,
+					audioCodec: 'aac',
+					rangeStartFrame: '',
+					rangeEndFrame: '',
 					transparent: false,
 					bitDepth: 8,
 					colorPrimaries: '',
@@ -10460,7 +10621,7 @@ window.__ModuleLoader__.load({
 					if (picked === null) return;
 					const next = Object.assign({}, current, { error: null });
 					if (current.mode === 'export') {
-						next.path = joinPath(picked, suggestedExportName(projectRef.current, current.codec));
+						next.path = joinPath(picked, suggestedExportName(projectRef.current, current.codec, current.audioOnly === true, current.audioCodec));
 					} else {
 						next.path = picked;
 					}
@@ -10495,10 +10656,15 @@ window.__ModuleLoader__.load({
 						return;
 					}
 					if (
+						!exportSettings.audioOnly &&
 						exportSettings.qualityMode === 'bitrate' &&
 						(typeof current.bitrate !== 'string' || current.bitrate.trim().length === 0)
 					) {
 						setDialog(Object.assign({}, current, { error: t('export.invalidBitrate') }));
+						return;
+					}
+					if (exportSettings.rangeInvalid) {
+						setDialog(Object.assign({}, current, { error: t('export.invalidRange') }));
 						return;
 					}
 				}
@@ -10518,7 +10684,7 @@ window.__ModuleLoader__.load({
 					} else {
 						await flushInspector();
 						const exportProject = projectRef.current;
-						if (countExportRenders(exportProject) > 0) {
+						if (!exportSettings.audioOnly && countExportRenders(exportProject) > 0) {
 							setDialog(Object.assign({}, workingDialog, { status: t('status.preparingText') }));
 							await prepareExportRenders(exportProject, (kind, name, index, total) => {
 								setDialog(
@@ -10543,6 +10709,14 @@ window.__ModuleLoader__.load({
 							height: exportSettings.height,
 							fps: exportSettings.fps,
 						};
+						if (exportSettings.audioOnly) {
+							exportBody.audioOnly = true;
+							exportBody.audioCodec = exportSettings.audioCodec;
+						}
+						if (exportSettings.rangeStartFrame !== undefined) {
+							exportBody.rangeStartFrame = exportSettings.rangeStartFrame;
+							exportBody.rangeEndFrame = exportSettings.rangeEndFrame;
+						}
 						if (exportSettings.colorPrimaries !== undefined) exportBody.colorPrimaries = exportSettings.colorPrimaries;
 						if (exportSettings.colorTrc !== undefined) exportBody.colorTrc = exportSettings.colorTrc;
 						if (exportSettings.colorspace !== undefined) exportBody.colorspace = exportSettings.colorspace;
