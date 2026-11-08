@@ -334,7 +334,7 @@ All scripts only read implementation files and write under the OS temp dir
 - Workstream artifacts are committed in `4c0f8fb` plus `3efd09a`; the task board
   has no in-progress items.
 - Final universal package: `dist/opentake-studio-route-b-0.1.0-darwin-universal.tgz`,
-  21 files, both v28 slices; `scripts/route-b/platform/verify-package.mjs`
+  21 files, both v30 slices; `scripts/route-b/platform/verify-package.mjs`
   reports **35 PASS / 2 WARN / 0 FAIL**. The two warnings are absolute build
   install names in both Mach-O slices.
 - Host search now reports SigLIP as **not installed/not available** instead of
@@ -343,7 +343,9 @@ All scripts only read implementation files and write under the OS temp dir
 - Recursive `import_folder` now generates Host poster thumbnails for video;
   Lottie cards remain client-rendered.
 - Motion template preview/publish is integrated in the Host and verified.
-- Playback, export-pro and providers remain isolated modules/CLIs; they are not
-  wired into the shipping addon/Host, so their parity rows remain Partial.
+- Providers are wired into Host image/speech/video generation; 10-bit H.265 is
+  wired into the addon/Host export path (verified Main10 yuv420p10le).
+- Playback and HDR-tone-map/ducking remain isolated modules; their parity rows
+  remain Partial.
 - Windows/Linux builds and signing remain blocked by missing toolchains,
   wgpu dx12/vulkan features and signing identities.
