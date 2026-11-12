@@ -898,6 +898,151 @@ export function apply(ctx) {
     };
   }
 
+
+  // ------------------------------------------------------------------
+  // Local sample projects for the Home cards. The desktop product fetches
+  // samples from a hosted backend; Route B has no account/backend, so it
+  // materializes three editable local projects with generated media.
+  // ------------------------------------------------------------------
+  const SAMPLE_ROOT = path.join(os.homedir(), '.dsh', 'opentake', 'samples');
+  const SAMPLE_DEFS = {
+    'product-demo': { title: '产品介绍', duration: 8, colors: ['#07111f', '#2563eb'], music: true },
+    'quick-tutorial': { title: '快速教程', duration: 10, colors: ['#151022', '#db2777'], music: false },
+    'template-project': { title: '模板项目', duration: 8, colors: ['#0f172a', '#0d9488'], music: true },
+  };
+
+  function sampleColor(hex, alpha = 1) {
+    const value = /^#?([0-9a-f]{6})$/i.exec(String(hex ?? ''));
+    if (value === null) return { r: 1, g: 1, b: 1, a: alpha };
+    const n = Number.parseInt(value[1], 16);
+    return { r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255, a: alpha };
+  }
+
+  function sampleTextStyle(size, color = '#ffffff', alignment = 'center', fontName = 'Helvetica-Bold') {
+    return {
+      fontName,
+      fontSize: size,
+      fontScale: 1,
+      color: sampleColor(color),
+      alignment,
+      shadow: { enabled: true, color: sampleColor('#000000', 0.65), offsetX: 0, offsetY: 3, blur: 10 },
+      background: { enabled: false, color: sampleColor('#000000', 0.55) },
+      border: { enabled: false, color: sampleColor('#000000', 1) },
+    };
+  }
+
+  function sampleTextTransform(centerX, centerY, width, height) {
+    return {
+      centerX, centerY, width, height, rotation: 0,
+      flipHorizontal: false, flipVertical: false,
+    };
+  }
+
+  async function runSampleFfmpeg(args) {
+    try {
+      await execFileAsync(process.env.OPENTAKE_FFMPEG ?? 'ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args], {
+        timeout: 120000,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+    } catch (error) {
+      throw new Error(`sample media generation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function materializeSample(slug) {
+    const def = SAMPLE_DEFS[slug];
+    if (def === undefined) throw new Error(`unknown sample project: ${slug}`);
+    const directory = path.join(SAMPLE_ROOT, slug);
+    const projectPath = path.join(directory, `${slug}.opentake`);
+    rmSync(directory, { recursive: true, force: true });
+    mkdirSync(directory, { recursive: true });
+    const background = path.join(directory, 'background.mp4');
+    const music = path.join(directory, 'music.m4a');
+    const seconds = def.duration;
+    await runSampleFfmpeg([
+      '-f', 'lavfi', '-i',
+      `gradients=s=1280x720:c0=${def.colors[0]}:c1=${def.colors[1]}:x0=0:y0=0:x1=1280:y1=720:d=${seconds}:speed=0.015`,
+      '-r', '30', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p', background,
+    ]);
+    if (def.music) {
+      await runSampleFfmpeg([
+        '-f', 'lavfi', '-i',
+        `aevalsrc=0.07*sin(2*PI*220*t)+0.05*sin(2*PI*277.18*t)+0.045*sin(2*PI*329.63*t):s=48000:d=${seconds}`,
+        '-c:a', 'aac', '-b:a', '128k', music,
+      ]);
+    }
+
+    const builder = new state.Engine();
+    builder.newProjectAt(projectPath);
+    const catalog = JSON.parse(builder.importMedia(def.music ? [background, music] : [background]));
+    const backgroundMedia = catalog.items.find((item) => item.type === 'video');
+    if (backgroundMedia === undefined) throw new Error('sample background import failed');
+    builder.apply(JSON.stringify({ type: 'setTimelineSettings', fps: 30, width: 1280, height: 720 }));
+    builder.apply(JSON.stringify({ type: 'insertTrack', kind: 'video' }));
+    const frames = seconds * 30;
+    builder.apply(JSON.stringify({
+      type: 'addClips',
+      entries: [{
+        mediaRef: backgroundMedia.id, mediaType: 'video', sourceClipType: 'video',
+        trackIndex: 0, startFrame: 0, durationFrames: frames,
+        hasAudio: false, addLinkedAudio: false,
+      }],
+    }));
+    const texts = sampleTextEntries(slug, seconds);
+    // One fresh auto-track per text so overlapping title/subtitle layers are
+    // preserved; a single batch would overwrite overlapping time ranges.
+    for (const text of texts) {
+      builder.apply(JSON.stringify({ type: 'addTextsAutoTrack', entries: [text] }));
+    }
+    if (def.music) {
+      const audioMedia = catalog.items.find((item) => item.type === 'audio');
+      builder.apply(JSON.stringify({ type: 'insertTrack', kind: 'audio' }));
+      const timeline = JSON.parse(builder.getTimeline()).timeline;
+      const audioTrack = timeline.tracks.findIndex((track) => track.type === 'audio');
+      if (audioMedia !== undefined && audioTrack >= 0) {
+        builder.apply(JSON.stringify({
+          type: 'addClips',
+          entries: [{
+            mediaRef: audioMedia.id, mediaType: 'audio', sourceClipType: 'audio',
+            trackIndex: audioTrack, startFrame: 0, durationFrames: frames,
+            hasAudio: true, addLinkedAudio: false,
+          }],
+        }));
+      }
+    }
+    builder.saveProject(projectPath);
+    return projectPath;
+  }
+
+  function sampleTextEntries(slug, seconds) {
+    const end = seconds * 30;
+    const entry = (start, duration, content, size, color, y, width = 0.9, height = 0.18) => ({
+      startFrame: start, durationFrames: duration, content,
+      textStyle: sampleTextStyle(size, color, 'center', /[\u4e00-\u9fff]/.test(content) ? 'PingFang SC' : 'Helvetica-Bold'),
+      transform: sampleTextTransform(0.5, y, width, height),
+    });
+    if (slug === 'product-demo') {
+      return [
+        entry(0, end, 'OpenTake Studio', 96, '#ffffff', 0.38, 0.9, 0.22),
+        entry(18, end - 18, 'DeepSeek Harness 原生视频编辑', 40, '#dbeafe', 0.55),
+        entry(60, end - 60, '导入 · 剪辑 · 调色 · 字幕 · 导出', 32, '#bfdbfe', 0.68),
+      ];
+    }
+    if (slug === 'quick-tutorial') {
+      return [
+        entry(0, end, '快速教程', 84, '#ffffff', 0.2, 0.7, 0.16),
+        entry(24, 90, '1. 在素材面板导入视频或图片', 40, '#fbcfe8', 0.42, 0.86, 0.16),
+        entry(114, 90, '2. 拖到时间线，调整顺序与时长', 40, '#fbcfe8', 0.54, 0.86, 0.16),
+        entry(204, 90, '3. 用检查器调色、字幕并导出', 40, '#fbcfe8', 0.66, 0.86, 0.16),
+      ];
+    }
+    return [
+      entry(0, end, '在这里输入标题', 76, '#ffffff', 0.38, 0.9, 0.2),
+      entry(24, end - 24, '副标题 / 品牌名', 36, '#ccfbf1', 0.56),
+      entry(60, end - 60, '模板项目 · 替换素材即可使用', 30, '#99f6e4', 0.72),
+    ];
+  }
+
   function invokeCore(cmd, args) {
     if (state.engine === null) throw new Error(state.loadError ?? 'OpenTake Rust engine is unavailable');
     switch (cmd) {
@@ -1564,6 +1709,14 @@ export function apply(ctx) {
         try {
           const cmd = typeof body.cmd === 'string' ? body.cmd : '';
           const args = body.args !== null && typeof body.args === 'object' ? body.args : {};
+          if (cmd === 'sample_project_materialize') {
+            try {
+              sendJson(res, 200, await materializeSample(String(args.slug ?? '')));
+            } catch (error) {
+              sendJson(res, 400, { error: { code: 'sample-materialize-failed', message: error instanceof Error ? error.message : String(error) } });
+            }
+            return;
+          }
           if (cmd === 'request_timeline_sprite') {
             try {
               sendJson(res, 200, await timelineSprite(String(args.mediaRef ?? ''), args.maxFrames));
