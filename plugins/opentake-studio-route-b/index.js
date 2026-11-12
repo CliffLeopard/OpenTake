@@ -2156,6 +2156,22 @@ export function apply(ctx) {
   );
 
   registerTool(
+    'opentake_route_b_materialize_sample',
+    'Materialize a local editable sample project (product-demo, quick-tutorial or template-project) and return its path.',
+    {
+      type: 'object',
+      properties: { slug: { type: 'string', enum: ['product-demo', 'quick-tutorial', 'template-project'] } },
+      required: ['slug'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const samplePath = await materializeSample(String(args.slug ?? ''));
+      const data = { slug: String(args.slug ?? ''), path: samplePath };
+      return { text: JSON.stringify(data), data };
+    },
+  );
+
+  registerTool(
     'opentake_route_b_install_search_model',
     'Verify/stage the SigLIP2 model assets in the persistent models dir; optionally download missing pinned files.',
     {
